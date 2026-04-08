@@ -10,6 +10,8 @@
 - Web 控制台、Notion status、Daily Review
 - 持續運作的 background runner
 
+版本更新與里程碑請看 `CHANGELOG.md`，不再把歷史更新內容全部塞進 README。
+
 ## Repo 目標
 
 這個 repo 已整理成可 Git clone 後再部署的形態：
