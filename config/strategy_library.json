@@ -1,0 +1,26 @@
+{
+  "base_strategy": "momentum_sentiment_v1",
+  "strategies": [
+    {
+      "id": "momentum_sentiment_v1",
+      "name": "Momentum + Sentiment",
+      "source": "local_baseline",
+      "credibility": "internal",
+      "description": "Use short-vs-long momentum with sentiment confirmation to decide buy, sell, or hold."
+    },
+    {
+      "id": "trend_pullback_v1",
+      "name": "Trend Pullback",
+      "source": "common_trading_pattern",
+      "credibility": "reference",
+      "description": "Trade in the direction of the broader trend after a short pullback stabilizes."
+    },
+    {
+      "id": "breakout_volume_v1",
+      "name": "Breakout + Volume",
+      "source": "common_trading_pattern",
+      "credibility": "reference",
+      "description": "Favor breakouts when price expansion is supported by stronger recent volume."
+    }
+  ]
+}

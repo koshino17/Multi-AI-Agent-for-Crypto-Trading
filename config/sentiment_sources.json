@@ -1,0 +1,50 @@
+{
+  "rss_feeds": {
+    "BTC": [
+      {
+        "name": "google_news_bitcoin",
+        "url": "https://news.google.com/rss/search?q=bitcoin+cryptocurrency&hl=en-US&gl=US&ceid=US:en"
+      },
+      {
+        "name": "google_news_btc_usdt",
+        "url": "https://news.google.com/rss/search?q=BTC+USDT+crypto&hl=en-US&gl=US&ceid=US:en"
+      }
+    ],
+    "ETH": [
+      {
+        "name": "google_news_ethereum",
+        "url": "https://news.google.com/rss/search?q=ethereum+cryptocurrency&hl=en-US&gl=US&ceid=US:en"
+      },
+      {
+        "name": "google_news_eth_usdt",
+        "url": "https://news.google.com/rss/search?q=ETH+USDT+crypto&hl=en-US&gl=US&ceid=US:en"
+      }
+    ],
+    "default": [
+      {
+        "name": "google_news_crypto",
+        "url": "https://news.google.com/rss/search?q=cryptocurrency+market&hl=en-US&gl=US&ceid=US:en"
+      }
+    ]
+  },
+  "x_whitelist": [
+    "@lookonchain",
+    "@WuBlockchain",
+    "@tier10k",
+    "@CoinDesk",
+    "@TheBlock__"
+  ],
+  "event_sources": [
+    {
+      "name": "coingecko_trending",
+      "url": "https://api.coingecko.com/api/v3/search/trending"
+    }
+  ],
+  "news_whitelist": [
+    "news.google.com",
+    "coindesk.com",
+    "theblock.co",
+    "decrypt.co",
+    "cointelegraph.com"
+  ]
+}

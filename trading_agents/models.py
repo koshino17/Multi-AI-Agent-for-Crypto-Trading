@@ -1,0 +1,94 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class MarketSnapshot:
+    symbol: str
+    timeframe: str
+    closes: list[float]
+    volumes: list[float]
+    last_price: float
+
+
+@dataclass(frozen=True)
+class SentimentSnapshot:
+    source_count: int
+    sentiment_score: float
+    summary: str
+    references: list[str]
+
+
+@dataclass(frozen=True)
+class TradeIdea:
+    action: str
+    score: float
+    rationale: str
+    invalidation: str
+    holding_horizon: str
+
+
+@dataclass(frozen=True)
+class BacktestSnapshot:
+    sample_count: int
+    trade_count: int
+    win_rate: float
+    avg_return_pct: float
+    cumulative_return_pct: float
+    summary: str
+    avg_win_pct: float = 0.0
+    avg_loss_pct: float = 0.0
+    expectancy_pct: float = 0.0
+    profit_factor: float = 0.0
+
+
+@dataclass(frozen=True)
+class StrategyCandidate:
+    strategy_id: str
+    name: str
+    source: str
+    credibility: str
+    description: str
+    backtest: BacktestSnapshot
+
+
+@dataclass(frozen=True)
+class StrategyResearchSnapshot:
+    base_strategy_id: str
+    selected_strategy_id: str
+    selected_strategy_name: str
+    summary: str
+    candidates: list[StrategyCandidate]
+    selected_strategy_rationale: str = ""
+
+
+@dataclass(frozen=True)
+class Approval:
+    approved: bool
+    reason: str
+    max_notional_usdt: float
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
+class EvaluationReport:
+    grade: str
+    notes: str
+
+
+@dataclass(frozen=True)
+class DailyReviewSnapshot:
+    title: str
+    operations_summary: str
+    decision_summary: str
+    improvement_directions: list[str]
+
+
+@dataclass(frozen=True)
+class StrategyReflectionSnapshot:
+    slot: str
+    summary: str
+    biases: list[str]
+    risk_adjustments: list[str]
+    focus_symbols: list[str]
