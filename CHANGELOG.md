@@ -16,6 +16,44 @@
 
 ---
 
+## v0.9.0 - Latency instrumentation and sentiment caching
+
+### Why
+
+- 4/9 的報表已經明確暴露出決策延遲重新升高，但原本只有單一 `Avg Decision Latency`，很難知道瓶頸卡在哪一段
+- full cycle 內每個標的都做完整辯論，讓本地 LLM 在多標的模式下容易把整輪耗時拉長
+- sentiment 外部資料在同一輪與重啟後都可能重抓相同來源，造成不必要的網路等待
+- dust 部位雖然不致命，但會持續污染決策上下文，讓策略與風控浪費注意力在不可操作倉位上
+
+### What Changed
+
+- 新增 stage-level latency metrics，將延遲拆成：
+  - `Market`
+  - `Sentiment`
+  - `Backtest`
+  - `Research`
+  - `Strategist`
+  - `Risk`
+  - `Selector`
+  - `Executor`
+  - `Evaluator`
+- Daily report、Web UI、Notion Live Status / Daily Review 全部新增：
+  - `Latency Breakdown Avg`
+  - `Latency Breakdown P95`
+- full cycle 的重型 LLM 辯論改為「先跑完整個觀察池，再只對 selector 最後選中的候選做 selected-candidate debate」
+- 新增 `LLM_SELECTED_CANDIDATE_ONLY` 設定，預設減少每輪不必要的多標的辯論成本
+- 新增 dust normalization：低於交易所最小下單額的殘餘部位會保留在帳戶資料中，但不再作為可執行持倉參與決策
+- sentiment 加入兩層快取：
+  - 同進程 TTL 快取
+  - 跨重啟檔案快取 `sentiment_http_cache.json`
+- 新增：
+  - `SENTIMENT_REQUEST_TIMEOUT_SECONDS`
+  - `SENTIMENT_CACHE_TTL_SECONDS`
+  - `DUST_POSITION_MULTIPLIER`
+- Daily Review 的改善建議收斂，不再直接鼓勵因資金利用率低就放寬主策略進場門檻
+
+---
+
 ## v0.8.0 - GitHub-ready portable repo
 
 ### Why

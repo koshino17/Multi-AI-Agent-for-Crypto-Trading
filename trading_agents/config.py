@@ -65,7 +65,10 @@ class Settings:
     notion_daily_review_title_prefix: str = os.getenv("NOTION_DAILY_REVIEW_TITLE_PREFIX", "Trading Agents Daily Review")
     notion_daily_review_hour: float = _float("NOTION_DAILY_REVIEW_HOUR", 12.0)
     llm_timeout_seconds: float = _float("LLM_TIMEOUT_SECONDS", 18.0)
+    sentiment_request_timeout_seconds: float = _float("SENTIMENT_REQUEST_TIMEOUT_SECONDS", 6.0)
+    sentiment_cache_ttl_seconds: float = _float("SENTIMENT_CACHE_TTL_SECONDS", 120.0)
     llm_full_cycle_only: bool = _bool("LLM_FULL_CYCLE_ONLY", True)
+    llm_selected_candidate_only: bool = _bool("LLM_SELECTED_CANDIDATE_ONLY", True)
     demo_aggressive_mode: bool = _bool("DEMO_AGGRESSIVE_MODE", True)
     expectancy_floor_pct: float = _float("EXPECTANCY_FLOOR_PCT", -0.03)
     micro_cycle_trigger_pct: float = _float("MICRO_CYCLE_TRIGGER_PCT", 0.0025)
@@ -74,6 +77,7 @@ class Settings:
     buy_balance_buffer_pct: float = _float("BUY_BALANCE_BUFFER_PCT", 0.95)
     fee_hurdle_multiplier: float = _float("FEE_HURDLE_MULTIPLIER", 1.15)
     fast_cycle_signal_boost: float = _float("FAST_CYCLE_SIGNAL_BOOST", 0.08)
+    dust_position_multiplier: float = _float("DUST_POSITION_MULTIPLIER", 1.0)
 
 
 def load_settings() -> Settings:

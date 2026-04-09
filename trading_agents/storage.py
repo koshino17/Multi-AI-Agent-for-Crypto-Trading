@@ -22,6 +22,7 @@ class StorageLayout:
     notion_daily_review_state: Path
     strategy_memory_state: Path
     trade_cooldown_state: Path
+    sentiment_http_cache_state: Path
 
 
 def build_storage_layout(root: str) -> StorageLayout:
@@ -46,6 +47,7 @@ def build_storage_layout(root: str) -> StorageLayout:
         notion_daily_review_state=base / "service" / "notion_daily_review.json",
         strategy_memory_state=base / "service" / "strategy_memory.json",
         trade_cooldown_state=base / "service" / "trade_cooldowns.json",
+        sentiment_http_cache_state=base / "service" / "sentiment_http_cache.json",
     )
     for path in (
         layout.root,

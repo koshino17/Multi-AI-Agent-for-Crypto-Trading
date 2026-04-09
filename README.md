@@ -240,8 +240,18 @@ BUY_BALANCE_BUFFER_PCT=0.95
 FEE_HURDLE_MULTIPLIER=1.15
 FAST_CYCLE_SIGNAL_BOOST=0.08
 LLM_TIMEOUT_SECONDS=18
+SENTIMENT_REQUEST_TIMEOUT_SECONDS=6
+SENTIMENT_CACHE_TTL_SECONDS=120
 LLM_FULL_CYCLE_ONLY=true
+LLM_SELECTED_CANDIDATE_ONLY=true
+DUST_POSITION_MULTIPLIER=1.0
 ```
+
+其中：
+
+- `LLM_SELECTED_CANDIDATE_ONLY=true` 代表 full cycle 先用規則與摘要跑完整個觀察池，再只對 selector 最後挑中的候選做 LLM 風控辯論，避免每輪每個標的都重跑重型辯論。
+- `DUST_POSITION_MULTIPLIER=1.0` 代表低於交易所最小下單額的殘餘倉位會被視為 dust，保留在帳戶中，但不再拿來當成可賣持倉參與決策。
+- `SENTIMENT_REQUEST_TIMEOUT_SECONDS=6` 與 `SENTIMENT_CACHE_TTL_SECONDS=120` 用來壓低情緒資料抓取延遲；像 Fear & Greed、CoinGecko trending、共用 RSS 這些來源，會在短時間內重用快取而不是每個標的都重抓一次。
 
 ## 專案結構
 

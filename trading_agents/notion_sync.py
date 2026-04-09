@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-from trading_agents.reporting import LOCAL_TZ
+from trading_agents.reporting import LOCAL_TZ, _format_stage_latency_breakdown
 
 
 NOTION_API_BASE = "https://api.notion.com/v1"
@@ -72,6 +72,8 @@ class NotionSyncClient:
         financial = daily_summary.get("financial_snapshot", {})
         top_blocked_reason = next(iter(blocked_reasons.items()), ("none", 0))
         top_rejected_reason = next(iter(rejection_reasons.items()), ("none", 0))
+        stage_latency_seconds = daily_summary.get("stage_latency_seconds", {})
+        stage_latency_p95_seconds = daily_summary.get("stage_latency_p95_seconds", {})
 
         blocks: list[dict[str, Any]] = [
             _heading_1(self.page_title),
@@ -94,6 +96,8 @@ class NotionSyncClient:
             _bullet(f"Executed trades: {daily_summary.get('executed', 0)}"),
             _bullet(f"Rejected orders: {daily_summary.get('rejected_orders', 0)}"),
             _bullet(f"Blocked proposals: {daily_summary.get('blocked', 0)}"),
+            _bullet(f"Latency Breakdown Avg: {_format_stage_latency_breakdown(stage_latency_seconds, limit=5)}"),
+            _bullet(f"Latency Breakdown P95: {_format_stage_latency_breakdown(stage_latency_p95_seconds, limit=5)}"),
             _bullet(f"Top Blocked Reason: {top_blocked_reason[0]} ({top_blocked_reason[1]})"),
             _bullet(f"Top Rejected Reason: {top_rejected_reason[0]} ({top_rejected_reason[1]})"),
         ]
@@ -112,12 +116,15 @@ class NotionSyncClient:
         if debate.get("risk_feedback"):
             blocks.append(_bullet(f"Debate: risk raised {debate['risk_feedback']} before final decision"))
         if account:
+            account_line = (
+                "Account: "
+                f"{float(account.get('free_usdt', 0.0)):.2f} USDT + "
+                f"{float(account.get('base_asset', 0.0)):.6f} {account.get('base_symbol', '')}".strip()
+            )
+            if account.get("dust_position"):
+                account_line += f" (dust ignored: {float(account.get('dust_notional_usdt', 0.0)):.2f} USDT)"
             blocks.append(
-                _bullet(
-                    "Account: "
-                    f"{float(account.get('free_usdt', 0.0)):.2f} USDT + "
-                    f"{float(account.get('base_asset', 0.0)):.6f} {account.get('base_symbol', '')}".strip()
-                )
+                _bullet(account_line)
             )
 
         result = latest.get("result")
@@ -136,6 +143,8 @@ class NotionSyncClient:
         approval = latest.get("approval", {})
         blocked_reasons = daily_summary.get("blocked_reason_counts", {})
         financial = daily_summary.get("financial_snapshot", {})
+        stage_latency_seconds = daily_summary.get("stage_latency_seconds", {})
+        stage_latency_p95_seconds = daily_summary.get("stage_latency_p95_seconds", {})
 
         blocks: list[dict[str, Any]] = [
             _heading_1(self.page_title),
@@ -154,6 +163,8 @@ class NotionSyncClient:
             _bullet(f"Rejected orders: {daily_summary.get('rejected_orders', 0)}"),
             _bullet(f"Blocked proposals: {daily_summary.get('blocked', 0)}"),
             _bullet(f"Blocked by exchange minimum: {daily_summary.get('exchange_minimum_blocked', 0)}"),
+            _bullet(f"Latency Breakdown Avg: {_format_stage_latency_breakdown(stage_latency_seconds, limit=5)}"),
+            _bullet(f"Latency Breakdown P95: {_format_stage_latency_breakdown(stage_latency_p95_seconds, limit=5)}"),
             _heading_2("Latest Decision"),
             _bullet(f"Selected Symbol: {latest.get('selected_symbol', 'n/a')}"),
             _bullet(f"Signal: {idea.get('action', 'n/a')} (score={float(idea.get('score', 0.0)):.2f})"),
@@ -445,6 +456,8 @@ def _build_daily_review_blocks(
     debate = latest.get("debate", {})
     financial = daily_summary.get("financial_snapshot", {})
     avg_scores = daily_summary.get("avg_scores", {})
+    stage_latency_seconds = daily_summary.get("stage_latency_seconds", {})
+    stage_latency_p95_seconds = daily_summary.get("stage_latency_p95_seconds", {})
     blocks: list[dict[str, Any]] = [
         _heading_1(title),
         _paragraph(f"Published at: {datetime.now(LOCAL_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')}"),
@@ -476,6 +489,8 @@ def _build_daily_review_blocks(
         _bullet(f"Executed trades: {daily_summary.get('executed', 0)}"),
         _bullet(f"Rejected orders: {daily_summary.get('rejected_orders', 0)}"),
         _bullet(f"Avg Decision Latency: {float(daily_summary.get('avg_decision_latency_seconds', 0.0)):.2f} seconds"),
+        _bullet(f"Latency Breakdown Avg: {_format_stage_latency_breakdown(stage_latency_seconds)}"),
+        _bullet(f"Latency Breakdown P95: {_format_stage_latency_breakdown(stage_latency_p95_seconds)}"),
         _bullet(
             f"Agent Confidence Distribution: buy={float(avg_scores.get('buy', 0.0)):.2f} | "
             f"sell={float(avg_scores.get('sell', 0.0)):.2f} | hold={float(avg_scores.get('hold', 0.0)):.2f}"

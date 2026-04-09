@@ -4,6 +4,7 @@ import json
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+import time
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
@@ -16,19 +17,52 @@ def _utc_now() -> datetime:
 
 
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) CodexTradingBot/0.1"
+_HTTP_CACHE: dict[str, tuple[float, object]] = {}
 
 
-def _load_json(url: str) -> dict:
+def _cached_fetch(url: str, loader, timeout_seconds: float, cache_ttl_seconds: float):
+    now = time.time()
+    cached = _HTTP_CACHE.get(url)
+    if cached is not None:
+        cached_at, payload = cached
+        if max(cache_ttl_seconds, 0.0) > 0 and (now - cached_at) <= cache_ttl_seconds:
+            return payload
+    payload = loader(url, timeout_seconds)
+    if cache_ttl_seconds > 0:
+        _HTTP_CACHE[url] = (now, payload)
+    return payload
+
+
+def _load_json(url: str, timeout_seconds: float) -> dict:
     request = Request(url, headers={"User-Agent": USER_AGENT})
-    with urlopen(request, timeout=15) as response:
+    with urlopen(request, timeout=max(timeout_seconds, 1.0)) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
-def _load_xml(url: str) -> ElementTree.Element:
+def _load_xml(url: str, timeout_seconds: float) -> ElementTree.Element:
     request = Request(url, headers={"User-Agent": USER_AGENT})
-    with urlopen(request, timeout=15) as response:
+    with urlopen(request, timeout=max(timeout_seconds, 1.0)) as response:
         payload = response.read()
     return ElementTree.fromstring(payload)
+
+
+def _load_cache_file(path: Path | None) -> dict[str, dict]:
+    if path is None or not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _save_cache_file(path: Path | None, payload: dict[str, dict]) -> None:
+    if path is None:
+        return
+    try:
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+    except Exception:
+        return
 
 
 @dataclass(frozen=True)
@@ -66,9 +100,19 @@ class SentimentDataProvider:
     fear_greed_url = "https://api.alternative.me/fng/?limit=1"
     default_config_path = Path("config/sentiment_sources.json")
 
-    def __init__(self, config_path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        config_path: str | Path | None = None,
+        timeout_seconds: float = 6.0,
+        cache_ttl_seconds: float = 120.0,
+        cache_state_path: str | Path | None = None,
+    ) -> None:
         self.config_path = Path(config_path) if config_path else self.default_config_path
         self.config = self._load_config(self.config_path)
+        self.timeout_seconds = max(float(timeout_seconds), 1.0)
+        self.cache_ttl_seconds = max(float(cache_ttl_seconds), 0.0)
+        self.cache_state_path = Path(cache_state_path) if cache_state_path else None
+        self._file_cache = _load_cache_file(self.cache_state_path)
 
     def collect(self, symbol: str) -> SentimentRecord:
         base_asset = symbol.split("/", 1)[0].upper()
@@ -88,7 +132,7 @@ class SentimentDataProvider:
 
     def _fetch_fear_greed(self) -> dict:
         try:
-            payload = _load_json(self.fear_greed_url)
+            payload = self._fetch_json(self.fear_greed_url)
             item = payload["data"][0]
             return {
                 "value": int(item["value"]),
@@ -127,7 +171,7 @@ class SentimentDataProvider:
         successful_sources: list[str] = []
         for source in self._event_sources():
             try:
-                payload = _load_json(source.url)
+                payload = self._fetch_json(source.url)
             except Exception:
                 continue
 
@@ -153,7 +197,7 @@ class SentimentDataProvider:
 
         for feed in self._feeds_for_asset(base_asset):
             try:
-                root = _load_xml(feed.url)
+                root = self._fetch_xml(feed.url)
             except Exception:
                 continue
 
@@ -207,6 +251,61 @@ class SentimentDataProvider:
             summary=summary,
             references=references,
         )
+
+    def _fetch_json(self, url: str) -> dict:
+        now = time.time()
+        cached = _HTTP_CACHE.get(url)
+        if cached is not None:
+            cached_at, payload = cached
+            if self.cache_ttl_seconds > 0 and (now - cached_at) <= self.cache_ttl_seconds:
+                return payload
+        file_cached = self._file_cache.get(url, {})
+        cached_at = float(file_cached.get("cached_at", 0.0))
+        if (
+            self.cache_ttl_seconds > 0
+            and cached_at > 0
+            and (now - cached_at) <= self.cache_ttl_seconds
+            and file_cached.get("kind") == "json"
+            and isinstance(file_cached.get("payload"), dict)
+        ):
+            payload = file_cached["payload"]
+            _HTTP_CACHE[url] = (cached_at, payload)
+            return payload
+        payload = _load_json(url, self.timeout_seconds)
+        if self.cache_ttl_seconds > 0:
+            _HTTP_CACHE[url] = (now, payload)
+            self._file_cache[url] = {"cached_at": now, "kind": "json", "payload": payload}
+            _save_cache_file(self.cache_state_path, self._file_cache)
+        return payload
+
+    def _fetch_xml(self, url: str) -> ElementTree.Element:
+        now = time.time()
+        cached = _HTTP_CACHE.get(url)
+        if cached is not None:
+            cached_at, payload = cached
+            if self.cache_ttl_seconds > 0 and (now - cached_at) <= self.cache_ttl_seconds:
+                return payload
+        file_cached = self._file_cache.get(url, {})
+        cached_at = float(file_cached.get("cached_at", 0.0))
+        if (
+            self.cache_ttl_seconds > 0
+            and cached_at > 0
+            and (now - cached_at) <= self.cache_ttl_seconds
+            and file_cached.get("kind") == "xml"
+            and isinstance(file_cached.get("payload"), str)
+        ):
+            payload = ElementTree.fromstring(file_cached["payload"].encode("utf-8"))
+            _HTTP_CACHE[url] = (cached_at, payload)
+            return payload
+        request = Request(url, headers={"User-Agent": USER_AGENT})
+        with urlopen(request, timeout=max(self.timeout_seconds, 1.0)) as response:
+            raw_payload = response.read().decode("utf-8", errors="replace")
+        payload = ElementTree.fromstring(raw_payload.encode("utf-8"))
+        if self.cache_ttl_seconds > 0:
+            _HTTP_CACHE[url] = (now, payload)
+            self._file_cache[url] = {"cached_at": now, "kind": "xml", "payload": raw_payload}
+            _save_cache_file(self.cache_state_path, self._file_cache)
+        return payload
 
 
 def write_sentiment_record(path: Path, record: SentimentRecord) -> Path:

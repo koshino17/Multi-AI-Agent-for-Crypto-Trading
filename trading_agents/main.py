@@ -4,6 +4,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+from time import perf_counter
 import warnings
 
 warnings.filterwarnings(
@@ -30,6 +31,13 @@ from trading_agents.exchange import (
     MockExchangeClient,
 )
 from trading_agents.llm import OllamaClient
+from trading_agents.models import (
+    BacktestSnapshot,
+    SentimentSnapshot,
+    StrategyCandidate,
+    StrategyResearchSnapshot,
+    TradeIdea,
+)
 from trading_agents.notion_sync import sync_notion_daily_review, sync_notion_status
 from trading_agents.reporting import (
     build_human_report,
@@ -107,6 +115,49 @@ def _load_runner_heartbeat(storage) -> dict[str, str]:
     if not latest_timestamp:
         return {"text": "No monitor heartbeat yet", "timestamp": ""}
     return {"text": f"{latest_timestamp} ({latest_detail or 'runner heartbeat'})", "timestamp": latest_timestamp}
+
+
+def _record_stage_metric(stage_metrics: dict[str, dict[str, float]], stage: str, elapsed_seconds: float) -> None:
+    entry = stage_metrics.setdefault(stage, {"total_seconds": 0.0, "runs": 0.0})
+    entry["total_seconds"] += max(elapsed_seconds, 0.0)
+    entry["runs"] += 1.0
+
+
+def _serialize_stage_metrics(stage_metrics: dict[str, dict[str, float]]) -> dict[str, dict[str, float | int]]:
+    return {
+        stage: {
+            "total_seconds": round(float(metrics.get("total_seconds", 0.0)), 4),
+            "runs": int(metrics.get("runs", 0.0)),
+            "avg_seconds": round(
+                float(metrics.get("total_seconds", 0.0)) / max(float(metrics.get("runs", 0.0)), 1.0),
+                4,
+            ),
+        }
+        for stage, metrics in stage_metrics.items()
+        if float(metrics.get("runs", 0.0)) > 0
+    }
+
+
+def _normalize_dust_position(
+    *,
+    base_asset: float,
+    last_price: float,
+    min_order_value_usdt: float,
+    dust_position_multiplier: float,
+) -> tuple[float, dict[str, float | bool]]:
+    dust_notional = max(base_asset, 0.0) * max(last_price, 0.0)
+    dust_threshold = max(min_order_value_usdt * max(dust_position_multiplier, 0.0), 0.0)
+    if base_asset > 0 and dust_threshold > 0 and dust_notional < dust_threshold:
+        return 0.0, {
+            "is_dust": True,
+            "dust_notional_usdt": round(dust_notional, 4),
+            "dust_threshold_usdt": round(dust_threshold, 4),
+        }
+    return base_asset, {
+        "is_dust": False,
+        "dust_notional_usdt": round(dust_notional, 4),
+        "dust_threshold_usdt": round(dust_threshold, 4),
+    }
 
 
 def _finalize_reporting(
@@ -248,6 +299,44 @@ def execute_cycle(
         if progress_callback is not None:
             progress_callback(stage, status, detail)
 
+    stage_metrics: dict[str, dict[str, float]] = {}
+
+    def timed_stage(stage: str, callback):
+        started_at = perf_counter()
+        result = callback()
+        _record_stage_metric(stage_metrics, stage, perf_counter() - started_at)
+        return result
+
+    def build_trade_idea(payload: dict) -> TradeIdea:
+        return TradeIdea(**payload)
+
+    def build_sentiment_snapshot(payload: dict) -> SentimentSnapshot:
+        return SentimentSnapshot(**payload)
+
+    def build_backtest_snapshot(payload: dict) -> BacktestSnapshot:
+        return BacktestSnapshot(**payload)
+
+    def build_strategy_research_snapshot(payload: dict) -> StrategyResearchSnapshot:
+        return StrategyResearchSnapshot(
+            base_strategy_id=str(payload.get("base_strategy_id", "")),
+            selected_strategy_id=str(payload.get("selected_strategy_id", "")),
+            selected_strategy_name=str(payload.get("selected_strategy_name", "")),
+            summary=str(payload.get("summary", "")),
+            candidates=[
+                StrategyCandidate(
+                    strategy_id=str(item.get("strategy_id", "")),
+                    name=str(item.get("name", "")),
+                    source=str(item.get("source", "")),
+                    credibility=str(item.get("credibility", "")),
+                    description=str(item.get("description", "")),
+                    backtest=build_backtest_snapshot(item.get("backtest", {})),
+                )
+                for item in payload.get("candidates", [])
+                if isinstance(item, dict)
+            ],
+            selected_strategy_rationale=str(payload.get("selected_strategy_rationale", "")),
+        )
+
     settings = load_settings()
     storage = build_storage_layout(settings.data_root)
     now_epoch = datetime.now(timezone.utc).timestamp()
@@ -264,7 +353,12 @@ def execute_cycle(
     if cycle_mode != "full" and settings.llm_full_cycle_only:
         analysis_llm_client = None
     market_collector = MarketCollectorAgent()
-    sentiment_provider = SentimentDataProvider(config_path=settings.sentiment_config_path)
+    sentiment_provider = SentimentDataProvider(
+        config_path=settings.sentiment_config_path,
+        timeout_seconds=settings.sentiment_request_timeout_seconds,
+        cache_ttl_seconds=settings.sentiment_cache_ttl_seconds,
+        cache_state_path=storage.sentiment_http_cache_state,
+    )
     sentiment_collector = SentimentCollectorAgent(provider=sentiment_provider)
     backtester = BacktestAgent()
     strategy_researcher = StrategyResearchAgent(settings.strategy_library_path, llm_client=analysis_llm_client)
@@ -284,80 +378,123 @@ def execute_cycle(
 
     for candidate_symbol in symbol_pool:
         progress("market_collector", "running", f"fetching {candidate_symbol} {settings.timeframe} market data")
-        snapshot = exchange.fetch_snapshot(candidate_symbol, settings.timeframe)
+        snapshot = timed_stage(
+            "market_collector",
+            lambda: exchange.fetch_snapshot(candidate_symbol, settings.timeframe),
+        )
         account = exchange.fetch_account_state(candidate_symbol)
         available_usdt = account.free_usdt
-        available_base_asset = account.base_asset
+        actual_base_asset = account.base_asset
         min_order_value_usdt = 0.0
         if hasattr(exchange, "minimum_order_value_usdt"):
             try:
                 min_order_value_usdt = float(exchange.minimum_order_value_usdt(candidate_symbol))
             except Exception:
                 min_order_value_usdt = 0.0
+        available_base_asset, dust_info = _normalize_dust_position(
+            base_asset=actual_base_asset,
+            last_price=float(snapshot.last_price),
+            min_order_value_usdt=min_order_value_usdt,
+            dust_position_multiplier=settings.dust_position_multiplier,
+        )
 
         market_summary = market_collector.summarize(snapshot)
+        if dust_info.get("is_dust"):
+            market_summary = (
+                f"{market_summary}; dust position ignored for execution "
+                f"({float(dust_info.get('dust_notional_usdt', 0.0)):.2f} < "
+                f"{float(dust_info.get('dust_threshold_usdt', 0.0)):.2f} USDT)"
+            )
         progress("market_collector", "done", market_summary)
         progress("sentiment_collector", "running", f"collecting sentiment for {candidate_symbol}")
-        sentiment_record = sentiment_provider.collect(candidate_symbol)
+        sentiment_record = timed_stage(
+            "sentiment_collector",
+            lambda: sentiment_provider.collect(candidate_symbol),
+        )
         sentiment = sentiment_record.snapshot
         sentiment_log_path = write_sentiment_record(storage.sentiment_data, sentiment_record)
         progress("sentiment_collector", "done", sentiment.summary)
         progress("backtester", "running", f"replaying recent candles for {candidate_symbol}")
-        backtest = backtester.evaluate(snapshot, sentiment)
+        backtest = timed_stage(
+            "backtester",
+            lambda: backtester.evaluate(snapshot, sentiment),
+        )
         progress("backtester", "done", backtest.summary)
         progress("strategy_researcher", "running", f"evaluating strategy library for {candidate_symbol}")
-        strategy_research = strategy_researcher.evaluate_with_memory(snapshot, sentiment, strategy_memory)
+        strategy_research = timed_stage(
+            "strategy_researcher",
+            lambda: strategy_researcher.evaluate_with_memory(snapshot, sentiment, strategy_memory),
+        )
         progress("strategy_researcher", "done", strategy_research.summary)
         progress("strategist", "running", f"generating trade idea for {candidate_symbol}")
-        idea = strategist.evaluate(
-            snapshot,
-            sentiment,
-            backtest,
-            strategy_research,
-            available_usdt=available_usdt,
-            available_base_asset=available_base_asset,
-            min_order_value_usdt=min_order_value_usdt,
-            aggressive_mode=settings.demo_aggressive_mode,
-            trading_mode=mode,
-            strategy_memory=strategy_memory,
-        )
-        risk_feedback = supervisor.critique(
-            idea=idea,
-            sentiment=sentiment,
-            backtest=backtest,
-            strategy_research=strategy_research,
-            strategy_memory=strategy_memory,
-        )
-        if risk_feedback:
-            idea = strategist.refine_with_risk_feedback(
-                idea,
-                risk_feedback,
+        idea = timed_stage(
+            "strategist",
+            lambda: strategist.evaluate(
+                snapshot,
+                sentiment,
+                backtest,
+                strategy_research,
                 available_usdt=available_usdt,
                 available_base_asset=available_base_asset,
+                min_order_value_usdt=min_order_value_usdt,
+                aggressive_mode=settings.demo_aggressive_mode,
+                trading_mode=mode,
                 strategy_memory=strategy_memory,
-            )
+            ),
+        )
+        risk_feedback = ""
         progress("strategist", "done", f"{candidate_symbol}: {idea.action} ({idea.score:.2f})")
         progress("risk_supervisor", "running", f"reviewing {candidate_symbol}")
-        approval = supervisor.review(
-            idea=idea,
-            sentiment=sentiment,
-            backtest=backtest,
-            strategy_research=strategy_research,
-            available_usdt=available_usdt,
-            available_base_asset=available_base_asset,
-            last_price=float(snapshot.last_price),
-            min_order_value_usdt=min_order_value_usdt,
-            min_signal_score=settings.min_signal_score,
-            max_position_pct=settings.max_position_pct,
-            trading_mode=mode,
-            aggressive_mode=settings.demo_aggressive_mode,
-            expectancy_floor_pct=settings.expectancy_floor_pct,
-            taker_fee_pct=settings.taker_fee_pct,
-            buy_balance_buffer_pct=settings.buy_balance_buffer_pct,
-            fee_hurdle_multiplier=settings.fee_hurdle_multiplier,
-            cycle_mode=cycle_mode,
-            signal_boost=settings.fast_cycle_signal_boost if cycle_mode != "full" else 0.0,
-            strategy_memory=strategy_memory,
+        use_candidate_llm_risk = bool(analysis_llm_client) and cycle_mode == "full" and not settings.llm_selected_candidate_only
+        if use_candidate_llm_risk:
+            risk_feedback = timed_stage(
+                "risk_supervisor",
+                lambda: supervisor.critique(
+                    idea=idea,
+                    sentiment=sentiment,
+                    backtest=backtest,
+                    strategy_research=strategy_research,
+                    strategy_memory=strategy_memory,
+                    use_llm=True,
+                ),
+            )
+            if risk_feedback:
+                progress("strategist", "running", f"revising {candidate_symbol} after risk critique")
+                idea = timed_stage(
+                    "strategist",
+                    lambda: strategist.refine_with_risk_feedback(
+                        idea,
+                        risk_feedback,
+                        available_usdt=available_usdt,
+                        available_base_asset=available_base_asset,
+                        strategy_memory=strategy_memory,
+                    ),
+                )
+                progress("strategist", "done", f"{candidate_symbol}: revised to {idea.action} ({idea.score:.2f})")
+        approval = timed_stage(
+            "risk_supervisor",
+            lambda: supervisor.review(
+                idea=idea,
+                sentiment=sentiment,
+                backtest=backtest,
+                strategy_research=strategy_research,
+                available_usdt=available_usdt,
+                available_base_asset=available_base_asset,
+                last_price=float(snapshot.last_price),
+                min_order_value_usdt=min_order_value_usdt,
+                min_signal_score=settings.min_signal_score,
+                max_position_pct=settings.max_position_pct,
+                trading_mode=mode,
+                aggressive_mode=settings.demo_aggressive_mode,
+                expectancy_floor_pct=settings.expectancy_floor_pct,
+                taker_fee_pct=settings.taker_fee_pct,
+                buy_balance_buffer_pct=settings.buy_balance_buffer_pct,
+                fee_hurdle_multiplier=settings.fee_hurdle_multiplier,
+                cycle_mode=cycle_mode,
+                signal_boost=settings.fast_cycle_signal_boost if cycle_mode != "full" else 0.0,
+                strategy_memory=strategy_memory,
+                use_llm=use_candidate_llm_risk,
+            ),
         )
         cooldown_remaining = _cooldown_remaining_seconds(cooldowns, candidate_symbol, now_epoch)
         if idea.action != "hold" and cooldown_remaining > 0:
@@ -409,12 +546,16 @@ def execute_cycle(
                 "approval": approval.__dict__,
                 "account": {
                     "free_usdt": round(available_usdt, 4),
-                    "base_asset": round(available_base_asset, 8),
+                    "base_asset": round(actual_base_asset, 8),
+                    "effective_base_asset": round(available_base_asset, 8),
                     "base_symbol": candidate_symbol.split("/")[0],
+                    "dust_position": bool(dust_info.get("is_dust")),
+                    "dust_notional_usdt": round(float(dust_info.get("dust_notional_usdt", 0.0)), 4),
                 },
                 "execution_constraints": {
                     "min_order_value_usdt": round(min_order_value_usdt, 4),
                     "cooldown_remaining_seconds": int(cooldown_remaining),
+                    "dust_threshold_usdt": round(float(dust_info.get("dust_threshold_usdt", 0.0)), 4),
                 },
                 "debate": {
                     "risk_feedback": risk_feedback,
@@ -423,8 +564,82 @@ def execute_cycle(
         )
 
     progress("selector", "running", "ranking symbol candidates")
-    selected, selection_summary = selector.select(candidates, strategy_memory=strategy_memory)
+    selected, selection_summary = timed_stage(
+        "selector",
+        lambda: selector.select(candidates, strategy_memory=strategy_memory),
+    )
     progress("selector", "done", selection_summary)
+
+    if (
+        bool(analysis_llm_client)
+        and cycle_mode == "full"
+        and settings.llm_selected_candidate_only
+        and selected.get("idea", {}).get("action") != "hold"
+        and selected.get("approval", {}).get("approved")
+    ):
+        selected_idea = build_trade_idea(selected["idea"])
+        selected_sentiment = build_sentiment_snapshot(selected["sentiment"])
+        selected_backtest = build_backtest_snapshot(selected["backtest"])
+        selected_strategy_research = build_strategy_research_snapshot(selected["strategy_research"])
+        progress("risk_supervisor", "running", f"selected-candidate debate for {selected['symbol']}")
+        risk_feedback = timed_stage(
+            "risk_supervisor",
+            lambda: supervisor.critique(
+                idea=selected_idea,
+                sentiment=selected_sentiment,
+                backtest=selected_backtest,
+                strategy_research=selected_strategy_research,
+                strategy_memory=strategy_memory,
+                use_llm=True,
+            ),
+        )
+        if risk_feedback:
+            progress("strategist", "running", f"revising selected candidate {selected['symbol']}")
+            revised_idea = timed_stage(
+                "strategist",
+                lambda: strategist.refine_with_risk_feedback(
+                    selected_idea,
+                    risk_feedback,
+                    available_usdt=float(selected["account"]["free_usdt"]),
+                    available_base_asset=float(selected["account"].get("effective_base_asset", selected["account"]["base_asset"])),
+                    strategy_memory=strategy_memory,
+                ),
+            )
+            selected["idea"] = revised_idea.__dict__
+            selected_idea = revised_idea
+            progress(
+                "strategist",
+                "done",
+                f"{selected['symbol']}: revised to {selected['idea']['action']} ({float(selected['idea']['score']):.2f})",
+            )
+        selected_approval = timed_stage(
+            "risk_supervisor",
+            lambda: supervisor.review(
+                idea=selected_idea,
+                sentiment=selected_sentiment,
+                backtest=selected_backtest,
+                strategy_research=selected_strategy_research,
+                available_usdt=float(selected["account"]["free_usdt"]),
+                available_base_asset=float(selected["account"].get("effective_base_asset", selected["account"]["base_asset"])),
+                last_price=float(selected["last_price"]),
+                min_order_value_usdt=float(selected["execution_constraints"].get("min_order_value_usdt", 0.0)),
+                min_signal_score=settings.min_signal_score,
+                max_position_pct=settings.max_position_pct,
+                trading_mode=mode,
+                aggressive_mode=settings.demo_aggressive_mode,
+                expectancy_floor_pct=settings.expectancy_floor_pct,
+                taker_fee_pct=settings.taker_fee_pct,
+                buy_balance_buffer_pct=settings.buy_balance_buffer_pct,
+                fee_hurdle_multiplier=settings.fee_hurdle_multiplier,
+                cycle_mode=cycle_mode,
+                signal_boost=0.0,
+                strategy_memory=strategy_memory,
+                use_llm=True,
+            ),
+        )
+        selected["approval"] = selected_approval.__dict__
+        selected["debate"] = {"risk_feedback": risk_feedback}
+        progress("risk_supervisor", "done", f"{selected['symbol']}: {selected_approval.reason}")
 
     report = {
         "storage_root": str(storage.root),
@@ -445,6 +660,9 @@ def execute_cycle(
         "idea": selected["idea"],
         "approval": selected["approval"],
         "account": selected["account"],
+        "execution_constraints": selected.get("execution_constraints", {}),
+        "debate": selected.get("debate", {}),
+        "stage_metrics": _serialize_stage_metrics(stage_metrics),
     }
 
     if not report["approval"]["approved"]:
@@ -464,13 +682,14 @@ def execute_cycle(
         )
 
     progress("executor", "running", f"submitting {report['idea']['action']} order for {report['selected_symbol']}")
+    executor_started_at = perf_counter()
     order = executor.build_order(
         symbol=report["selected_symbol"],
         side=report["idea"]["action"],
         notional_usdt=report["approval"]["max_notional_usdt"],
         price=float(report["last_price"]),
         available_usdt=float(report["account"]["free_usdt"]),
-        available_base_asset=float(report["account"]["base_asset"]),
+        available_base_asset=float(report["account"].get("effective_base_asset", report["account"]["base_asset"])),
         buy_balance_buffer_pct=settings.buy_balance_buffer_pct,
     )
     try:
@@ -482,9 +701,15 @@ def execute_cycle(
             "exchange_error": str(exc),
             "order": order,
         }
+    _record_stage_metric(stage_metrics, "executor", perf_counter() - executor_started_at)
+    report["stage_metrics"] = _serialize_stage_metrics(stage_metrics)
     progress("executor", "done", result.get("status", "submitted"))
     progress("post_trade_evaluator", "running", "evaluating trade outcome")
-    evaluation = evaluator.evaluate(selected["idea"], result)
+    evaluation = timed_stage(
+        "post_trade_evaluator",
+        lambda: evaluator.evaluate(selected["idea"], result),
+    )
+    report["stage_metrics"] = _serialize_stage_metrics(stage_metrics)
     progress("post_trade_evaluator", "done", evaluation.grade)
     report["order"] = order
     report["result"] = result

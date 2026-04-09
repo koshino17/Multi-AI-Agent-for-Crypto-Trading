@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import parse_qs
 
 from trading_agents.config import load_settings
-from trading_agents.reporting import load_daily_summary_data, local_date_label
+from trading_agents.reporting import _format_stage_latency_breakdown, load_daily_summary_data, local_date_label
 from trading_agents.service_manager import start_runner_service, stop_runner_service
 from trading_agents.storage import build_storage_layout
 
@@ -55,12 +55,38 @@ class AgentController:
         try:
             return int(storage.runner_pid.read_text().strip())
         except Exception:
+            try:
+                result = subprocess.run(
+                    ["pgrep", "-f", "trading_agents.runner"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                for line in result.stdout.splitlines():
+                    line = line.strip()
+                    if line.isdigit():
+                        return int(line)
+            except Exception:
+                pass
             return None
 
     def _supervisor_pid(self) -> int | None:
         try:
             return int(storage.runner_supervisor_pid.read_text().strip())
         except Exception:
+            try:
+                result = subprocess.run(
+                    ["pgrep", "-f", "run_trading_supervisor.sh"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                for line in result.stdout.splitlines():
+                    line = line.strip()
+                    if line.isdigit():
+                        return int(line)
+            except Exception:
+                pass
             return None
 
     def _pid_is_running(self, pid: int | None) -> bool:
@@ -227,6 +253,8 @@ class AgentController:
         daily_summary = load_daily_summary_data(storage.trade_logs, local_date_label(), storage.runner_log)
         financial = daily_summary.get("financial_snapshot", {})
         blocked_reason_counts = daily_summary.get("blocked_reason_counts", {})
+        stage_latency_seconds = daily_summary.get("stage_latency_seconds", {})
+        stage_latency_p95_seconds = daily_summary.get("stage_latency_p95_seconds", {})
         if blocked_reason_counts:
             top_reason, top_count = next(iter(blocked_reason_counts.items()))
             blocked_hint = f"{top_reason} ({top_count})"
@@ -258,6 +286,8 @@ class AgentController:
             ),
             "capital_utilization": f"{float(financial.get('capital_utilization_pct', 0.0)):.1f}%",
             "fees_today": f"{float(financial.get('daily_fees_usdt', 0.0)):.2f} USDT",
+            "latency_breakdown_avg": _format_stage_latency_breakdown(stage_latency_seconds, limit=5),
+            "latency_breakdown_p95": _format_stage_latency_breakdown(stage_latency_p95_seconds, limit=5),
             "last_debate": str((report.get("debate") or {}).get("risk_feedback") or "No active debate note"),
             "strategy_memory": str(report.get("strategy_memory_sync", {}).get("slot") or "No 12h reflection yet"),
         }
@@ -524,6 +554,8 @@ class Handler(BaseHTTPRequestHandler):
         <div class="stat"><strong>Daily PnL</strong>{html.escape(summary['daily_pnl'])}</div>
         <div class="stat"><strong>Capital Utilization</strong>{html.escape(summary['capital_utilization'])}</div>
         <div class="stat"><strong>Fees Today</strong>{html.escape(summary['fees_today'])}</div>
+        <div class="stat"><strong>Latency Avg</strong>{html.escape(summary['latency_breakdown_avg'])}</div>
+        <div class="stat"><strong>Latency P95</strong>{html.escape(summary['latency_breakdown_p95'])}</div>
         <div class="stat"><strong>Blocked Today</strong>{html.escape(summary['blocked_today'])}</div>
         <div class="stat"><strong>Blocked By Min</strong>{html.escape(summary['blocked_exchange_minimum'])}</div>
         <div class="stat"><strong>Top Why Blocked</strong>{html.escape(summary['blocked_top_reason'])}</div>

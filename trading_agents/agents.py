@@ -410,6 +410,7 @@ class RiskSupervisorAgent:
         cycle_mode: str,
         signal_boost: float = 0.0,
         strategy_memory: dict | None = None,
+        use_llm: bool = True,
     ) -> Approval:
         selected_backtest = self._selected_strategy_backtest(strategy_research)
         buffered_available_usdt = max(available_usdt * buy_balance_buffer_pct, 0.0)
@@ -504,7 +505,7 @@ class RiskSupervisorAgent:
             return Approval(False, f"fast-cycle confidence too low: {idea.score:.2f}", 0.0, warnings)
         if idea.action == "sell" and available_base_asset > 0:
             max_notional = max(max_notional, 1.0)
-        if self.llm_client is not None:
+        if self.llm_client is not None and use_llm:
             try:
                 response = self.llm_client.generate_json(
                     (
@@ -547,6 +548,7 @@ class RiskSupervisorAgent:
         backtest: BacktestSnapshot,
         strategy_research: StrategyResearchSnapshot,
         strategy_memory: dict | None = None,
+        use_llm: bool = True,
     ) -> str:
         selected_backtest = self._selected_strategy_backtest(strategy_research)
         fallback_reasons: list[str] = []
@@ -557,7 +559,7 @@ class RiskSupervisorAgent:
         if idea.action == "sell" and backtest.trade_count > 0 and backtest.expectancy_pct > 0.03:
             fallback_reasons.append("baseline replay is still net positive, so exit may be too early")
         fallback = "; ".join(fallback_reasons)
-        if self.llm_client is None:
+        if self.llm_client is None or not use_llm:
             return fallback
         try:
             response = self.llm_client.generate_json(
@@ -743,7 +745,7 @@ class DailyReviewAgent:
         if daily_summary.get("accepted_orders", 0) == 0:
             improvements.append("盤中已有訊號但沒有實際成交時，優先檢查 sizing、最小單額與資金切分邏輯。")
         if float(financial.get("capital_utilization_pct", 0.0)) < 20:
-            improvements.append("資金利用率偏低時，可放寬 demo 模式的進場閾值，增加可訓練的有效樣本。")
+            improvements.append("資金利用率偏低時，優先維持主策略門檻；若要增加 demo 訓練樣本，應額外設計獨立的 exploration budget，而不是直接降低整體進場標準。")
         if not improvements:
             improvements.append("持續追蹤各策略的 expectancy 與實際填單結果，讓 selector 更偏向真正可成交且報酬風險比佳的候選。")
 

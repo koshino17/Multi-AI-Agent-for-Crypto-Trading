@@ -9,6 +9,28 @@ from zoneinfo import ZoneInfo
 
 
 LOCAL_TZ = ZoneInfo("Asia/Taipei")
+STAGE_DISPLAY_ORDER = (
+    "market_collector",
+    "sentiment_collector",
+    "backtester",
+    "strategy_researcher",
+    "strategist",
+    "risk_supervisor",
+    "selector",
+    "executor",
+    "post_trade_evaluator",
+)
+STAGE_LABELS = {
+    "market_collector": "Market",
+    "sentiment_collector": "Sentiment",
+    "backtester": "Backtest",
+    "strategy_researcher": "Research",
+    "strategist": "Strategist",
+    "risk_supervisor": "Risk",
+    "selector": "Selector",
+    "executor": "Executor",
+    "post_trade_evaluator": "Evaluator",
+}
 
 
 def _normalize_blocked_reason(reason: str) -> str:
@@ -53,6 +75,33 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _format_stage_latency_breakdown(stage_latency_seconds: dict[str, float], limit: int | None = None) -> str:
+    ordered_items = [
+        (stage, float(stage_latency_seconds.get(stage, 0.0)))
+        for stage in STAGE_DISPLAY_ORDER
+        if float(stage_latency_seconds.get(stage, 0.0)) > 0
+    ]
+    if limit is not None:
+        ordered_items = ordered_items[:limit]
+    if not ordered_items:
+        return "n/a"
+    return " | ".join(f"{STAGE_LABELS.get(stage, stage)}={value:.2f}s" for stage, value in ordered_items)
+
+
+def _percentile(values: list[float], quantile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(float(item) for item in values)
+    if len(ordered) == 1:
+        return ordered[0]
+    q = min(max(float(quantile), 0.0), 1.0)
+    index = q * (len(ordered) - 1)
+    lower = int(index)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = index - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -109,9 +158,10 @@ def build_human_report(report: dict, mode: str, symbol: str) -> str:
         lines.append(f"- Selection: {report['selection_summary']}")
     account = report.get("account")
     if account:
-        lines.append(
-            f"- Account: {account['free_usdt']:.2f} USDT + {account['base_asset']:.6f} {account['base_symbol']}"
-        )
+        account_line = f"- Account: {account['free_usdt']:.2f} USDT + {account['base_asset']:.6f} {account['base_symbol']}"
+        if account.get("dust_position"):
+            account_line += f" (dust ignored for execution: {float(account.get('dust_notional_usdt', 0.0)):.2f} USDT)"
+        lines.append(account_line)
 
     warnings = approval.get("warnings", [])
     if warnings:
@@ -523,6 +573,7 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
     action_counts: Counter[str] = Counter()
     selected_symbol_counts: Counter[str] = Counter()
     executed_symbol_counts: Counter[str] = Counter()
+    stage_latency_samples = {stage: [] for stage in STAGE_DISPLAY_ORDER}
     score_totals = {"buy": 0.0, "sell": 0.0, "hold": 0.0}
     score_counts = {"buy": 0, "sell": 0, "hold": 0}
     for item in records:
@@ -542,6 +593,12 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
             rejection_reason_counts[_result_reason(item)] += 1
         if _result_status(item) == "accepted":
             executed_symbol_counts[str(item.get("selected_symbol", "unknown"))] += 1
+        stage_metrics = item.get("stage_metrics", {})
+        if isinstance(stage_metrics, dict):
+            for stage, metrics in stage_metrics.items():
+                if stage not in stage_latency_samples or not isinstance(metrics, dict):
+                    continue
+                stage_latency_samples[stage].append(_safe_float(metrics.get("total_seconds", 0.0)))
 
     total = len(records)
     proposals = sum(1 for item in records if item.get("idea", {}).get("action") != "hold")
@@ -565,6 +622,16 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
         key: (score_totals[key] / score_counts[key] if score_counts[key] else 0.0)
         for key in score_totals
     }
+    stage_latency_seconds = {
+        stage: (sum(stage_latency_samples[stage]) / len(stage_latency_samples[stage]))
+        for stage in STAGE_DISPLAY_ORDER
+        if stage_latency_samples[stage]
+    }
+    stage_latency_p95_seconds = {
+        stage: _percentile(stage_latency_samples[stage], 0.95)
+        for stage in STAGE_DISPLAY_ORDER
+        if stage_latency_samples[stage]
+    }
     return {
         "total": total,
         "proposals": proposals,
@@ -584,6 +651,8 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
         "selected_symbol_counts": dict(selected_symbol_counts.most_common()),
         "executed_symbol_counts": dict(executed_symbol_counts.most_common()),
         "avg_scores": avg_scores,
+        "stage_latency_seconds": stage_latency_seconds,
+        "stage_latency_p95_seconds": stage_latency_p95_seconds,
         "latest": latest,
     }
 
@@ -624,6 +693,8 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
     avg_scores = summary.get("avg_scores", {})
     action_counts = summary.get("action_counts", {})
     executed_symbol_counts = summary.get("executed_symbol_counts", {})
+    stage_latency_seconds = summary.get("stage_latency_seconds", {})
+    stage_latency_p95_seconds = summary.get("stage_latency_p95_seconds", {})
     top_traded_symbol = next(iter(executed_symbol_counts.items()), ("n/a", 0))
 
     lines = [
@@ -689,6 +760,8 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
             f"- Blocked proposals: {blocked}",
             f"- Blocked by exchange minimum: {exchange_minimum_blocked}",
             f"- Avg Decision Latency: {avg_decision_latency_seconds:.2f} seconds",
+            f"- Latency Breakdown Avg: {_format_stage_latency_breakdown(stage_latency_seconds)}",
+            f"- Latency Breakdown P95: {_format_stage_latency_breakdown(stage_latency_p95_seconds)}",
             (
                 f"- Agent Confidence Distribution: "
                 f"buy={float(avg_scores.get('buy', 0.0)):.2f} | "
@@ -735,13 +808,18 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
             lines.append(f"- Debate: risk raised `{debate['risk_feedback']}` before final decision")
         account = latest.get("account")
         if account:
-            lines.append(
+            account_line = (
                 f"- Account: {float(account['free_usdt']):.2f} USDT + "
                 f"{float(account['base_asset']):.6f} {account['base_symbol']}"
             )
-        warnings = latest.get("approval", {}).get("warnings", [])
-        if warnings:
-            lines.append(f"- Main Risk: {'; '.join(warnings[:2])}")
+            if account.get("dust_position"):
+                account_line += (
+                    f" (dust ignored for execution: {float(account.get('dust_notional_usdt', 0.0)):.2f} USDT)"
+                )
+            lines.append(account_line)
+            warnings = latest.get("approval", {}).get("warnings", [])
+            if warnings:
+                lines.append(f"- Main Risk: {'; '.join(warnings[:2])}")
 
     if total == 0:
         lines.extend(["", "今天還沒有任何交易決策紀錄。"])
