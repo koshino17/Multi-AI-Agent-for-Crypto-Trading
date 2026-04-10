@@ -244,12 +244,21 @@ SENTIMENT_REQUEST_TIMEOUT_SECONDS=6
 SENTIMENT_CACHE_TTL_SECONDS=120
 LLM_FULL_CYCLE_ONLY=true
 LLM_SELECTED_CANDIDATE_ONLY=true
+LLM_WAKE_GATE_ENABLED=true
+LLM_WAKE_MIN_SCORE=2
+LLM_WAKE_POSITION_MIN_SCORE=1
+LLM_WAKE_VOLATILITY_PCT=0.15
+LLM_WAKE_MOMENTUM_PCT=0.12
+LLM_WAKE_VOLUME_RATIO=1.15
+LLM_WAKE_BREAKOUT_PROXIMITY_PCT=0.20
+LLM_WAKE_POSITION_MOVE_PCT=0.20
 DUST_POSITION_MULTIPLIER=1.0
 ```
 
 其中：
 
 - `LLM_SELECTED_CANDIDATE_ONLY=true` 代表 full cycle 先用規則與摘要跑完整個觀察池，再只對 selector 最後挑中的候選做 LLM 風控辯論，避免每輪每個標的都重跑重型辯論。
+- `LLM_WAKE_GATE_ENABLED=true` 代表每個候選標的會先用 volatility、momentum、volume expansion、breakout proximity 和持倉價格變化計算 `wake_score`，沒達標就不喚醒重型 LLM。
 - `DUST_POSITION_MULTIPLIER=1.0` 代表低於交易所最小下單額的殘餘倉位會被視為 dust，保留在帳戶中，但不再拿來當成可賣持倉參與決策。
 - `SENTIMENT_REQUEST_TIMEOUT_SECONDS=6` 與 `SENTIMENT_CACHE_TTL_SECONDS=120` 用來壓低情緒資料抓取延遲；像 Fear & Greed、CoinGecko trending、共用 RSS 這些來源，會在短時間內重用快取而不是每個標的都重抓一次。
 

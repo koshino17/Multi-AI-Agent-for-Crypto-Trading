@@ -98,6 +98,11 @@ class NotionSyncClient:
             _bullet(f"Blocked proposals: {daily_summary.get('blocked', 0)}"),
             _bullet(f"Latency Breakdown Avg: {_format_stage_latency_breakdown(stage_latency_seconds, limit=5)}"),
             _bullet(f"Latency Breakdown P95: {_format_stage_latency_breakdown(stage_latency_p95_seconds, limit=5)}"),
+            _bullet(
+                "LLM Wake Rate: "
+                f"{daily_summary.get('llm_wake_enabled', 0)}/{daily_summary.get('llm_wake_candidates', 0)} candidates "
+                f"({float(daily_summary.get('llm_wake_rate_pct', 0.0)):.1f}%)"
+            ),
             _bullet(f"Top Blocked Reason: {top_blocked_reason[0]} ({top_blocked_reason[1]})"),
             _bullet(f"Top Rejected Reason: {top_rejected_reason[0]} ({top_rejected_reason[1]})"),
         ]
@@ -165,6 +170,11 @@ class NotionSyncClient:
             _bullet(f"Blocked by exchange minimum: {daily_summary.get('exchange_minimum_blocked', 0)}"),
             _bullet(f"Latency Breakdown Avg: {_format_stage_latency_breakdown(stage_latency_seconds, limit=5)}"),
             _bullet(f"Latency Breakdown P95: {_format_stage_latency_breakdown(stage_latency_p95_seconds, limit=5)}"),
+            _bullet(
+                "LLM Wake Rate: "
+                f"{daily_summary.get('llm_wake_enabled', 0)}/{daily_summary.get('llm_wake_candidates', 0)} candidates "
+                f"({float(daily_summary.get('llm_wake_rate_pct', 0.0)):.1f}%)"
+            ),
             _heading_2("Latest Decision"),
             _bullet(f"Selected Symbol: {latest.get('selected_symbol', 'n/a')}"),
             _bullet(f"Signal: {idea.get('action', 'n/a')} (score={float(idea.get('score', 0.0)):.2f})"),
@@ -491,6 +501,11 @@ def _build_daily_review_blocks(
         _bullet(f"Avg Decision Latency: {float(daily_summary.get('avg_decision_latency_seconds', 0.0)):.2f} seconds"),
         _bullet(f"Latency Breakdown Avg: {_format_stage_latency_breakdown(stage_latency_seconds)}"),
         _bullet(f"Latency Breakdown P95: {_format_stage_latency_breakdown(stage_latency_p95_seconds)}"),
+        _bullet(
+            "LLM Wake Rate: "
+            f"{daily_summary.get('llm_wake_enabled', 0)}/{daily_summary.get('llm_wake_candidates', 0)} candidates "
+            f"({float(daily_summary.get('llm_wake_rate_pct', 0.0)):.1f}%)"
+        ),
         _bullet(
             f"Agent Confidence Distribution: buy={float(avg_scores.get('buy', 0.0)):.2f} | "
             f"sell={float(avg_scores.get('sell', 0.0)):.2f} | hold={float(avg_scores.get('hold', 0.0)):.2f}"

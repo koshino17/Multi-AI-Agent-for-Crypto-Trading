@@ -4,6 +4,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+from statistics import fmean
 from time import perf_counter
 import warnings
 
@@ -157,6 +158,79 @@ def _normalize_dust_position(
         "is_dust": False,
         "dust_notional_usdt": round(dust_notional, 4),
         "dust_threshold_usdt": round(dust_threshold, 4),
+    }
+
+
+def _pct(value: float) -> float:
+    return value * 100.0
+
+
+def _market_wake_gate(snapshot, effective_base_asset: float, settings) -> dict:
+    closes = [float(item) for item in snapshot.closes if float(item) > 0]
+    volumes = [float(item) for item in snapshot.volumes if float(item) >= 0]
+    if len(closes) < 21:
+        return {
+            "enabled": True,
+            "score": 0,
+            "required_score": settings.llm_wake_min_score,
+            "reasons": ["not enough candles; allow LLM for safety"],
+            "metrics": {},
+        }
+
+    recent_returns = [
+        abs((closes[index] - closes[index - 1]) / closes[index - 1])
+        for index in range(max(1, len(closes) - 6), len(closes))
+        if closes[index - 1] > 0
+    ]
+    recent_volatility_pct = _pct(fmean(recent_returns)) if recent_returns else 0.0
+    short_avg = fmean(closes[-5:])
+    long_avg = fmean(closes[-20:])
+    momentum_pct = _pct((short_avg - long_avg) / long_avg) if long_avg else 0.0
+    recent_volume = fmean(volumes[-3:]) if len(volumes) >= 3 else 0.0
+    baseline_volume = fmean(volumes[-20:]) if len(volumes) >= 20 else (fmean(volumes) if volumes else 0.0)
+    volume_ratio = recent_volume / baseline_volume if baseline_volume > 0 else 0.0
+    rolling_high = max(closes[-20:])
+    rolling_low = min(closes[-20:])
+    high_distance_pct = _pct((rolling_high - closes[-1]) / rolling_high) if rolling_high else 999.0
+    low_distance_pct = _pct((closes[-1] - rolling_low) / rolling_low) if rolling_low else 999.0
+    breakout_proximity_pct = min(high_distance_pct, low_distance_pct)
+    last_move_pct = _pct(abs((closes[-1] - closes[-2]) / closes[-2])) if len(closes) >= 2 and closes[-2] else 0.0
+
+    score = 0
+    reasons: list[str] = []
+    if recent_volatility_pct >= settings.llm_wake_volatility_pct:
+        score += 1
+        reasons.append(f"volatility {recent_volatility_pct:.2f}%")
+    if abs(momentum_pct) >= settings.llm_wake_momentum_pct:
+        score += 1
+        reasons.append(f"momentum {momentum_pct:+.2f}%")
+    if volume_ratio >= settings.llm_wake_volume_ratio:
+        score += 1
+        reasons.append(f"volume {volume_ratio:.2f}x")
+    if breakout_proximity_pct <= settings.llm_wake_breakout_proximity_pct:
+        score += 1
+        reasons.append(f"near range edge {breakout_proximity_pct:.2f}%")
+    if effective_base_asset > 0 and last_move_pct >= settings.llm_wake_position_move_pct:
+        score += 1
+        reasons.append(f"held position moved {last_move_pct:.2f}%")
+
+    required_score = settings.llm_wake_position_min_score if effective_base_asset > 0 else settings.llm_wake_min_score
+    enabled = (not settings.llm_wake_gate_enabled) or score >= required_score
+    if not reasons:
+        reasons.append("quiet market")
+    return {
+        "enabled": bool(enabled),
+        "score": int(score),
+        "required_score": float(required_score),
+        "reasons": reasons,
+        "metrics": {
+            "recent_volatility_pct": round(recent_volatility_pct, 4),
+            "momentum_pct": round(momentum_pct, 4),
+            "volume_ratio": round(volume_ratio, 4),
+            "breakout_proximity_pct": round(breakout_proximity_pct, 4),
+            "last_move_pct": round(last_move_pct, 4),
+            "has_position": bool(effective_base_asset > 0),
+        },
     }
 
 
@@ -362,8 +436,11 @@ def execute_cycle(
     sentiment_collector = SentimentCollectorAgent(provider=sentiment_provider)
     backtester = BacktestAgent()
     strategy_researcher = StrategyResearchAgent(settings.strategy_library_path, llm_client=analysis_llm_client)
+    rule_strategy_researcher = StrategyResearchAgent(settings.strategy_library_path, llm_client=None)
     strategist = StrategistAgent(llm_client=analysis_llm_client)
+    rule_strategist = StrategistAgent(llm_client=None)
     supervisor = RiskSupervisorAgent(llm_client=analysis_llm_client)
+    rule_supervisor = RiskSupervisorAgent(llm_client=None)
     selector = SelectorAgent(llm_client=analysis_llm_client)
     executor = ExecutorAgent()
     evaluator = PostTradeEvaluatorAgent(llm_client=analysis_llm_client)
@@ -397,6 +474,11 @@ def execute_cycle(
             min_order_value_usdt=min_order_value_usdt,
             dust_position_multiplier=settings.dust_position_multiplier,
         )
+        llm_wake = _market_wake_gate(snapshot, available_base_asset, settings)
+        candidate_llm_client = analysis_llm_client if llm_wake["enabled"] else None
+        candidate_strategy_researcher = strategy_researcher if candidate_llm_client is not None else rule_strategy_researcher
+        candidate_strategist = strategist if candidate_llm_client is not None else rule_strategist
+        candidate_supervisor = supervisor if candidate_llm_client is not None else rule_supervisor
 
         market_summary = market_collector.summarize(snapshot)
         if dust_info.get("is_dust"):
@@ -404,6 +486,12 @@ def execute_cycle(
                 f"{market_summary}; dust position ignored for execution "
                 f"({float(dust_info.get('dust_notional_usdt', 0.0)):.2f} < "
                 f"{float(dust_info.get('dust_threshold_usdt', 0.0)):.2f} USDT)"
+            )
+        if not llm_wake["enabled"]:
+            market_summary = (
+                f"{market_summary}; LLM wake gate skipped "
+                f"(score={llm_wake['score']}/{llm_wake['required_score']}, "
+                f"{'; '.join(llm_wake['reasons'][:3])})"
             )
         progress("market_collector", "done", market_summary)
         progress("sentiment_collector", "running", f"collecting sentiment for {candidate_symbol}")
@@ -423,13 +511,21 @@ def execute_cycle(
         progress("strategy_researcher", "running", f"evaluating strategy library for {candidate_symbol}")
         strategy_research = timed_stage(
             "strategy_researcher",
-            lambda: strategy_researcher.evaluate_with_memory(snapshot, sentiment, strategy_memory),
+            lambda: candidate_strategy_researcher.evaluate_with_memory(snapshot, sentiment, strategy_memory),
         )
         progress("strategy_researcher", "done", strategy_research.summary)
-        progress("strategist", "running", f"generating trade idea for {candidate_symbol}")
+        progress(
+            "strategist",
+            "running",
+            (
+                f"generating trade idea for {candidate_symbol}"
+                if llm_wake["enabled"]
+                else f"using fallback idea for quiet {candidate_symbol}"
+            ),
+        )
         idea = timed_stage(
             "strategist",
-            lambda: strategist.evaluate(
+            lambda: candidate_strategist.evaluate(
                 snapshot,
                 sentiment,
                 backtest,
@@ -445,11 +541,15 @@ def execute_cycle(
         risk_feedback = ""
         progress("strategist", "done", f"{candidate_symbol}: {idea.action} ({idea.score:.2f})")
         progress("risk_supervisor", "running", f"reviewing {candidate_symbol}")
-        use_candidate_llm_risk = bool(analysis_llm_client) and cycle_mode == "full" and not settings.llm_selected_candidate_only
+        use_candidate_llm_risk = (
+            bool(candidate_llm_client)
+            and cycle_mode == "full"
+            and not settings.llm_selected_candidate_only
+        )
         if use_candidate_llm_risk:
             risk_feedback = timed_stage(
                 "risk_supervisor",
-                lambda: supervisor.critique(
+                lambda: candidate_supervisor.critique(
                     idea=idea,
                     sentiment=sentiment,
                     backtest=backtest,
@@ -462,7 +562,7 @@ def execute_cycle(
                 progress("strategist", "running", f"revising {candidate_symbol} after risk critique")
                 idea = timed_stage(
                     "strategist",
-                    lambda: strategist.refine_with_risk_feedback(
+                    lambda: candidate_strategist.refine_with_risk_feedback(
                         idea,
                         risk_feedback,
                         available_usdt=available_usdt,
@@ -473,7 +573,7 @@ def execute_cycle(
                 progress("strategist", "done", f"{candidate_symbol}: revised to {idea.action} ({idea.score:.2f})")
         approval = timed_stage(
             "risk_supervisor",
-            lambda: supervisor.review(
+            lambda: candidate_supervisor.review(
                 idea=idea,
                 sentiment=sentiment,
                 backtest=backtest,
@@ -557,6 +657,7 @@ def execute_cycle(
                     "cooldown_remaining_seconds": int(cooldown_remaining),
                     "dust_threshold_usdt": round(float(dust_info.get("dust_threshold_usdt", 0.0)), 4),
                 },
+                "llm_wake": llm_wake,
                 "debate": {
                     "risk_feedback": risk_feedback,
                 },
@@ -574,6 +675,7 @@ def execute_cycle(
         bool(analysis_llm_client)
         and cycle_mode == "full"
         and settings.llm_selected_candidate_only
+        and selected.get("llm_wake", {}).get("enabled", True)
         and selected.get("idea", {}).get("action") != "hold"
         and selected.get("approval", {}).get("approved")
     ):
@@ -661,6 +763,7 @@ def execute_cycle(
         "approval": selected["approval"],
         "account": selected["account"],
         "execution_constraints": selected.get("execution_constraints", {}),
+        "llm_wake": selected.get("llm_wake", {}),
         "debate": selected.get("debate", {}),
         "stage_metrics": _serialize_stage_metrics(stage_metrics),
     }

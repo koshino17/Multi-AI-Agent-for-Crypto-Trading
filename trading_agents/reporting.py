@@ -574,6 +574,9 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
     selected_symbol_counts: Counter[str] = Counter()
     executed_symbol_counts: Counter[str] = Counter()
     stage_latency_samples = {stage: [] for stage in STAGE_DISPLAY_ORDER}
+    llm_wake_candidates = 0
+    llm_wake_enabled = 0
+    llm_wake_selected_enabled = 0
     score_totals = {"buy": 0.0, "sell": 0.0, "hold": 0.0}
     score_counts = {"buy": 0, "sell": 0, "hold": 0}
     for item in records:
@@ -593,6 +596,22 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
             rejection_reason_counts[_result_reason(item)] += 1
         if _result_status(item) == "accepted":
             executed_symbol_counts[str(item.get("selected_symbol", "unknown"))] += 1
+        candidates = item.get("candidates", [])
+        if isinstance(candidates, list):
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                if "llm_wake" not in candidate:
+                    continue
+                wake = candidate.get("llm_wake", {})
+                if not isinstance(wake, dict) or "enabled" not in wake:
+                    continue
+                llm_wake_candidates += 1
+                if wake.get("enabled"):
+                    llm_wake_enabled += 1
+        selected_wake = item.get("llm_wake", {})
+        if isinstance(selected_wake, dict) and selected_wake.get("enabled"):
+            llm_wake_selected_enabled += 1
         stage_metrics = item.get("stage_metrics", {})
         if isinstance(stage_metrics, dict):
             for stage, metrics in stage_metrics.items():
@@ -632,6 +651,8 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
         for stage in STAGE_DISPLAY_ORDER
         if stage_latency_samples[stage]
     }
+    llm_wake_rate_pct = (llm_wake_enabled / llm_wake_candidates * 100.0) if llm_wake_candidates else 0.0
+    llm_selected_wake_rate_pct = (llm_wake_selected_enabled / total * 100.0) if total else 0.0
     return {
         "total": total,
         "proposals": proposals,
@@ -653,6 +674,11 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
         "avg_scores": avg_scores,
         "stage_latency_seconds": stage_latency_seconds,
         "stage_latency_p95_seconds": stage_latency_p95_seconds,
+        "llm_wake_candidates": llm_wake_candidates,
+        "llm_wake_enabled": llm_wake_enabled,
+        "llm_wake_rate_pct": llm_wake_rate_pct,
+        "llm_selected_wake_enabled": llm_wake_selected_enabled,
+        "llm_selected_wake_rate_pct": llm_selected_wake_rate_pct,
         "latest": latest,
     }
 
@@ -695,6 +721,9 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
     executed_symbol_counts = summary.get("executed_symbol_counts", {})
     stage_latency_seconds = summary.get("stage_latency_seconds", {})
     stage_latency_p95_seconds = summary.get("stage_latency_p95_seconds", {})
+    llm_wake_candidates = int(summary.get("llm_wake_candidates", 0))
+    llm_wake_enabled = int(summary.get("llm_wake_enabled", 0))
+    llm_wake_rate_pct = float(summary.get("llm_wake_rate_pct", 0.0))
     top_traded_symbol = next(iter(executed_symbol_counts.items()), ("n/a", 0))
 
     lines = [
@@ -762,6 +791,7 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
             f"- Avg Decision Latency: {avg_decision_latency_seconds:.2f} seconds",
             f"- Latency Breakdown Avg: {_format_stage_latency_breakdown(stage_latency_seconds)}",
             f"- Latency Breakdown P95: {_format_stage_latency_breakdown(stage_latency_p95_seconds)}",
+            f"- LLM Wake Rate: {llm_wake_enabled}/{llm_wake_candidates} candidates ({llm_wake_rate_pct:.1f}%)",
             (
                 f"- Agent Confidence Distribution: "
                 f"buy={float(avg_scores.get('buy', 0.0)):.2f} | "
@@ -797,6 +827,13 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
         )
         if latest.get("selection_summary"):
             lines.append(f"- Selection: {latest['selection_summary']}")
+        llm_wake = latest.get("llm_wake") or {}
+        if llm_wake:
+            lines.append(
+                f"- LLM Wake: {'yes' if llm_wake.get('enabled') else 'no'} "
+                f"(score={llm_wake.get('score', 0)}/{llm_wake.get('required_score', 0)}, "
+                f"{'; '.join(llm_wake.get('reasons', [])[:3])})"
+            )
         backtest = latest.get("backtest")
         if backtest:
             lines.append(f"- Replay Test: {backtest['summary']}")

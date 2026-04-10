@@ -288,6 +288,11 @@ class AgentController:
             "fees_today": f"{float(financial.get('daily_fees_usdt', 0.0)):.2f} USDT",
             "latency_breakdown_avg": _format_stage_latency_breakdown(stage_latency_seconds, limit=5),
             "latency_breakdown_p95": _format_stage_latency_breakdown(stage_latency_p95_seconds, limit=5),
+            "llm_wake_rate": (
+                f"{int(daily_summary.get('llm_wake_enabled', 0))}/"
+                f"{int(daily_summary.get('llm_wake_candidates', 0))} "
+                f"({float(daily_summary.get('llm_wake_rate_pct', 0.0)):.1f}%)"
+            ),
             "last_debate": str((report.get("debate") or {}).get("risk_feedback") or "No active debate note"),
             "strategy_memory": str(report.get("strategy_memory_sync", {}).get("slot") or "No 12h reflection yet"),
         }
@@ -556,6 +561,7 @@ class Handler(BaseHTTPRequestHandler):
         <div class="stat"><strong>Fees Today</strong>{html.escape(summary['fees_today'])}</div>
         <div class="stat"><strong>Latency Avg</strong>{html.escape(summary['latency_breakdown_avg'])}</div>
         <div class="stat"><strong>Latency P95</strong>{html.escape(summary['latency_breakdown_p95'])}</div>
+        <div class="stat"><strong>LLM Wake Rate</strong>{html.escape(summary['llm_wake_rate'])}</div>
         <div class="stat"><strong>Blocked Today</strong>{html.escape(summary['blocked_today'])}</div>
         <div class="stat"><strong>Blocked By Min</strong>{html.escape(summary['blocked_exchange_minimum'])}</div>
         <div class="stat"><strong>Top Why Blocked</strong>{html.escape(summary['blocked_top_reason'])}</div>

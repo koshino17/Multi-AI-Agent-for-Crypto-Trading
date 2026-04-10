@@ -16,6 +16,40 @@
 
 ---
 
+## v0.10.0 - LLM wake gate and early-exit filtering
+
+### Why
+
+- 4/10 的討論確認 full cycle 最大壓力不是市場資料抓取，而是本地 LLM 在多標的流程中被過度喚醒
+- 即使 sentiment cache 與 latency breakdown 已經降低外部資料成本，系統仍需要在喚醒 strategist / risk LLM 前做一層輕量判斷
+- 需要避免「安靜盤勢」也耗費完整 LLM 推理，同時又不能漏掉已有持倉時的出場與風控訊號
+
+### What Changed
+
+- 新增 `wake_score` early-exit 流程，每個候選標的會先用輕量 market/account 訊號判斷是否值得喚醒 LLM
+- `wake_score` 目前使用：
+  - recent volatility
+  - MA5 / MA20 momentum spread
+  - recent volume expansion
+  - 20-candle high / low breakout proximity
+  - held-position price move
+- 空倉標的預設 `wake_score >= 2` 才喚醒 LLM
+- 有持倉標的預設 `wake_score >= 1` 就可喚醒 LLM，避免錯過退場或風控判斷
+- 沒達標的候選仍會保留 market / sentiment / backtest / deterministic strategy 結果，但不花本地 LLM 推理成本
+- Daily report、Web UI、Notion Live Status / Daily Review 新增 `LLM Wake Rate`
+- 新增 wake gate 設定：
+  - `LLM_WAKE_GATE_ENABLED`
+  - `LLM_WAKE_MIN_SCORE`
+  - `LLM_WAKE_POSITION_MIN_SCORE`
+  - `LLM_WAKE_VOLATILITY_PCT`
+  - `LLM_WAKE_MOMENTUM_PCT`
+  - `LLM_WAKE_VOLUME_RATIO`
+  - `LLM_WAKE_BREAKOUT_PROXIMITY_PCT`
+  - `LLM_WAKE_POSITION_MOVE_PCT`
+- 修正 wake rate 報表口徑：舊紀錄若沒有 `llm_wake` 欄位，不再被誤算成「未喚醒」
+
+---
+
 ## v0.9.0 - Latency instrumentation and sentiment caching
 
 ### Why
