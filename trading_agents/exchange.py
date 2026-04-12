@@ -23,11 +23,25 @@ except ImportError:  # pragma: no cover
 class AccountState:
     free_usdt: float
     base_asset: float = 0.0
+    market_type: str = "spot"
+    position_side: str = "flat"
+    net_position: float = 0.0
+    entry_price: float = 0.0
+    mark_price: float = 0.0
+    position_notional_usdt: float = 0.0
+    unrealized_pnl_usdt: float = 0.0
+    cum_realized_pnl_usdt: float = 0.0
+    total_equity_usdt: float = 0.0
+    available_balance_usdt: float = 0.0
 
 
 class MockExchangeClient:
     def __init__(self, initial_balance_usdt: float, seed: int = 7) -> None:
-        self.account = AccountState(free_usdt=initial_balance_usdt)
+        self.account = AccountState(
+            free_usdt=initial_balance_usdt,
+            total_equity_usdt=initial_balance_usdt,
+            available_balance_usdt=initial_balance_usdt,
+        )
         self._rng = Random(seed)
 
     def fetch_snapshot(self, symbol: str, timeframe: str) -> MarketSnapshot:
@@ -54,6 +68,8 @@ class MockExchangeClient:
         elif order["side"] == "sell":
             self.account.free_usdt += order["notional_usdt"]
             self.account.base_asset = max(0.0, self.account.base_asset - order["quantity"])
+        self.account.available_balance_usdt = self.account.free_usdt
+        self.account.total_equity_usdt = self.account.free_usdt + self.account.base_asset * order["price"]
         return {
             "status": "filled",
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -108,6 +124,8 @@ class BinanceTestnetExchangeClient:
         return AccountState(
             free_usdt=float(balance["free"].get("USDT", 0.0)),
             base_asset=float(balance["free"].get(base_asset, 0.0)),
+            total_equity_usdt=float(balance["total"].get("USDT", balance["free"].get("USDT", 0.0))),
+            available_balance_usdt=float(balance["free"].get("USDT", 0.0)),
         )
 
     def execute_order(self, order: dict) -> dict:
@@ -226,12 +244,19 @@ class BybitDemoExchangeClient:
         coins = accounts[0].get("coin", [])
         free_usdt = 0.0
         free_base_asset = 0.0
+        total_equity = float(accounts[0].get("totalEquity", 0.0) or 0.0)
+        available_balance = float(accounts[0].get("totalAvailableBalance", 0.0) or 0.0)
         for coin in coins:
             if coin.get("coin") == "USDT":
                 free_usdt = float(coin.get("walletBalance", 0.0))
             if coin.get("coin") == base_asset_code:
                 free_base_asset = float(coin.get("walletBalance", 0.0))
-        return AccountState(free_usdt=free_usdt, base_asset=free_base_asset)
+        return AccountState(
+            free_usdt=free_usdt,
+            base_asset=free_base_asset,
+            total_equity_usdt=total_equity or free_usdt,
+            available_balance_usdt=available_balance or free_usdt,
+        )
 
     def _instrument_info(self, symbol: str) -> dict:
         exchange_symbol = self._symbol(symbol)
@@ -311,6 +336,153 @@ class BybitDemoExchangeClient:
             "status": "accepted",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "exchange": "bybit-demo",
+            "response": response["result"],
+            "submitted_qty": qty,
+            "order": order,
+        }
+
+
+class BybitDemoPerpExchangeClient(BybitDemoExchangeClient):
+    def fetch_snapshot(self, symbol: str, timeframe: str) -> MarketSnapshot:
+        interval = self.interval_map.get(timeframe, "5")
+        response = self._request(
+            "GET",
+            "/v5/market/kline",
+            {
+                "category": "linear",
+                "symbol": self._symbol(symbol),
+                "interval": interval,
+                "limit": 48,
+            },
+        )
+        raw_rows = response["result"]["list"]
+        rows = list(reversed(raw_rows))
+        closes = [float(row[4]) for row in rows]
+        volumes = [float(row[5]) for row in rows]
+        return MarketSnapshot(
+            symbol=symbol,
+            timeframe=timeframe,
+            closes=closes,
+            volumes=volumes,
+            last_price=closes[-1],
+        )
+
+    def fetch_account_state(self, symbol: str) -> AccountState:
+        wallet = self._request(
+            "GET",
+            "/v5/account/wallet-balance",
+            {"accountType": "UNIFIED"},
+            private=True,
+        )
+        accounts = wallet.get("result", {}).get("list", [])
+        if not accounts:
+            return AccountState(free_usdt=0.0, market_type="perp")
+        account = accounts[0]
+        total_equity = float(account.get("totalEquity", 0.0) or 0.0)
+        available_balance = float(account.get("totalAvailableBalance", 0.0) or 0.0)
+        coins = account.get("coin", [])
+        wallet_usdt = 0.0
+        for coin in coins:
+            if coin.get("coin") == "USDT":
+                wallet_usdt = float(coin.get("walletBalance", 0.0) or 0.0)
+                break
+
+        position_response = self._request(
+            "GET",
+            "/v5/position/list",
+            {
+                "category": "linear",
+                "symbol": self._symbol(symbol),
+            },
+            private=True,
+        )
+        positions = position_response.get("result", {}).get("list", [])
+        if not positions:
+            return AccountState(
+                free_usdt=available_balance or wallet_usdt,
+                market_type="perp",
+                total_equity_usdt=total_equity or available_balance or wallet_usdt,
+                available_balance_usdt=available_balance or wallet_usdt,
+            )
+
+        position = positions[0]
+        side = str(position.get("side", "") or "")
+        size = float(position.get("size", 0.0) or 0.0)
+        if not side or size <= 0:
+            return AccountState(
+                free_usdt=available_balance or wallet_usdt,
+                market_type="perp",
+                total_equity_usdt=total_equity or available_balance or wallet_usdt,
+                available_balance_usdt=available_balance or wallet_usdt,
+            )
+        position_side = "long" if side == "Buy" else "short"
+        net_position = size if position_side == "long" else -size
+        mark_price = float(position.get("markPrice", 0.0) or 0.0)
+        position_value = float(position.get("positionValue", 0.0) or 0.0)
+        return AccountState(
+            free_usdt=available_balance or wallet_usdt,
+            base_asset=size,
+            market_type="perp",
+            position_side=position_side,
+            net_position=net_position,
+            entry_price=float(position.get("avgPrice", 0.0) or 0.0),
+            mark_price=mark_price,
+            position_notional_usdt=position_value or abs(net_position) * mark_price,
+            unrealized_pnl_usdt=float(position.get("unrealisedPnl", 0.0) or 0.0),
+            cum_realized_pnl_usdt=float(position.get("cumRealisedPnl", 0.0) or 0.0),
+            total_equity_usdt=total_equity or (available_balance or wallet_usdt),
+            available_balance_usdt=available_balance or wallet_usdt,
+        )
+
+    def _instrument_info(self, symbol: str) -> dict:
+        exchange_symbol = self._symbol(symbol)
+        cached = self._instrument_cache.get(exchange_symbol)
+        if cached is not None:
+            return cached
+        response = self._request(
+            "GET",
+            "/v5/market/instruments-info",
+            {"category": "linear", "symbol": exchange_symbol},
+        )
+        instruments = response.get("result", {}).get("list", [])
+        if not instruments:
+            return {}
+        info = instruments[0]
+        self._instrument_cache[exchange_symbol] = info
+        return info
+
+    def minimum_order_value_usdt(self, symbol: str) -> float:
+        info = self._instrument_info(symbol)
+        lot = info.get("lotSizeFilter", {}) if isinstance(info, dict) else {}
+        try:
+            return float(lot.get("minNotionalValue") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def execute_order(self, order: dict) -> dict:
+        qty = self._normalize_quantity(order["symbol"], float(order["quantity"]))
+        self._validate_order_value(order["symbol"], qty, float(order["price"]))
+        payload = {
+            "category": "linear",
+            "symbol": self._symbol(order["symbol"]),
+            "side": "Buy" if order["side"] == "buy" else "Sell",
+            "orderType": "Market",
+            "qty": qty,
+            "positionIdx": 0,
+            "orderLinkId": f"codex-perp-{int(time.time() * 1000)}",
+        }
+        if bool(order.get("reduce_only")):
+            payload["reduceOnly"] = True
+        response = self._request(
+            "POST",
+            "/v5/order/create",
+            payload,
+            private=True,
+        )
+        return {
+            "status": "accepted",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "exchange": "bybit-demo-perp",
             "response": response["result"],
             "submitted_qty": qty,
             "order": order,

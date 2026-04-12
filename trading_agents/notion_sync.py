@@ -74,6 +74,10 @@ class NotionSyncClient:
         top_rejected_reason = next(iter(rejection_reasons.items()), ("none", 0))
         stage_latency_seconds = daily_summary.get("stage_latency_seconds", {})
         stage_latency_p95_seconds = daily_summary.get("stage_latency_p95_seconds", {})
+        long_proposals = int(daily_summary.get("long_proposals", 0))
+        short_proposals = int(daily_summary.get("short_proposals", 0))
+        long_accepted = int(daily_summary.get("long_accepted", 0))
+        short_accepted = int(daily_summary.get("short_accepted", 0))
 
         blocks: list[dict[str, Any]] = [
             _heading_1(self.page_title),
@@ -86,14 +90,29 @@ class NotionSyncClient:
                 f"({float(financial.get('daily_pnl_pct', 0.0)):+.2f}%)"
             ),
             _bullet(
+                "Realized PnL Split: "
+                f"long={float(financial.get('realized_long_pnl_usdt', 0.0)):+.2f} USDT | "
+                f"short={float(financial.get('realized_short_pnl_usdt', 0.0)):+.2f} USDT"
+            ),
+            _bullet(
                 f"Available USDT: {float(financial.get('available_usdt', 0.0)):.2f} USDT "
                 f"({100 - float(financial.get('capital_utilization_pct', 0.0)):.1f}%)"
             ),
             _bullet(f"Capital Utilization: {float(financial.get('capital_utilization_pct', 0.0)):.1f}%"),
+            _bullet(
+                "Directional Exposure: "
+                f"long={float(financial.get('current_long_exposure_usdt', 0.0)):.2f} USDT | "
+                f"short={float(financial.get('current_short_exposure_usdt', 0.0)):.2f} USDT"
+            ),
             _bullet(f"Total decisions: {daily_summary.get('total', 0)}"),
             _bullet(f"Monitor heartbeats: {daily_summary.get('monitor_heartbeats', 0)}"),
             _bullet(f"Orders submitted: {daily_summary.get('submitted_orders', 0)}"),
             _bullet(f"Executed trades: {daily_summary.get('executed', 0)}"),
+            _bullet(
+                "Long vs Short: "
+                f"proposals long={long_proposals}, short={short_proposals} | "
+                f"accepted long={long_accepted}, short={short_accepted}"
+            ),
             _bullet(f"Rejected orders: {daily_summary.get('rejected_orders', 0)}"),
             _bullet(f"Blocked proposals: {daily_summary.get('blocked', 0)}"),
             _bullet(f"Latency Breakdown Avg: {_format_stage_latency_breakdown(stage_latency_seconds, limit=5)}"),
@@ -121,13 +140,24 @@ class NotionSyncClient:
         if debate.get("risk_feedback"):
             blocks.append(_bullet(f"Debate: risk raised {debate['risk_feedback']} before final decision"))
         if account:
-            account_line = (
-                "Account: "
-                f"{float(account.get('free_usdt', 0.0)):.2f} USDT + "
-                f"{float(account.get('base_asset', 0.0)):.6f} {account.get('base_symbol', '')}".strip()
-            )
-            if account.get("dust_position"):
-                account_line += f" (dust ignored: {float(account.get('dust_notional_usdt', 0.0)):.2f} USDT)"
+            if account.get("market_type") == "perp":
+                account_line = (
+                    "Account: "
+                    f"equity {float(account.get('total_equity_usdt', account.get('free_usdt', 0.0))):.2f} USDT | "
+                    f"available {float(account.get('available_balance_usdt', account.get('free_usdt', 0.0))):.2f} USDT | "
+                    f"position {account.get('position_side', 'flat')} "
+                    f"{float(account.get('base_asset', 0.0)):.6f} {account.get('base_symbol', '')} "
+                    f"@ {float(account.get('entry_price', 0.0)):.4f} | "
+                    f"UPnL {float(account.get('unrealized_pnl_usdt', 0.0)):+.2f} USDT"
+                )
+            else:
+                account_line = (
+                    "Account: "
+                    f"{float(account.get('free_usdt', 0.0)):.2f} USDT + "
+                    f"{float(account.get('base_asset', 0.0)):.6f} {account.get('base_symbol', '')}".strip()
+                )
+                if account.get("dust_position"):
+                    account_line += f" (dust ignored: {float(account.get('dust_notional_usdt', 0.0)):.2f} USDT)"
             blocks.append(
                 _bullet(account_line)
             )
@@ -150,6 +180,10 @@ class NotionSyncClient:
         financial = daily_summary.get("financial_snapshot", {})
         stage_latency_seconds = daily_summary.get("stage_latency_seconds", {})
         stage_latency_p95_seconds = daily_summary.get("stage_latency_p95_seconds", {})
+        long_proposals = int(daily_summary.get("long_proposals", 0))
+        short_proposals = int(daily_summary.get("short_proposals", 0))
+        long_accepted = int(daily_summary.get("long_accepted", 0))
+        short_accepted = int(daily_summary.get("short_accepted", 0))
 
         blocks: list[dict[str, Any]] = [
             _heading_1(self.page_title),
@@ -161,10 +195,25 @@ class NotionSyncClient:
                 f"Daily PnL: {float(financial.get('daily_pnl_usdt', 0.0)):+.2f} USDT "
                 f"({float(financial.get('daily_pnl_pct', 0.0)):+.2f}%)"
             ),
+            _bullet(
+                "Realized PnL Split: "
+                f"long={float(financial.get('realized_long_pnl_usdt', 0.0)):+.2f} USDT | "
+                f"short={float(financial.get('realized_short_pnl_usdt', 0.0)):+.2f} USDT"
+            ),
+            _bullet(
+                "Directional Exposure: "
+                f"long={float(financial.get('current_long_exposure_usdt', 0.0)):.2f} USDT | "
+                f"short={float(financial.get('current_short_exposure_usdt', 0.0)):.2f} USDT"
+            ),
             _bullet(f"Monitor heartbeats: {daily_summary.get('monitor_heartbeats', 0)}"),
             _bullet(f"Total decisions: {daily_summary.get('total', 0)}"),
             _bullet(f"Orders submitted: {daily_summary.get('submitted_orders', 0)}"),
             _bullet(f"Executed trades: {daily_summary.get('executed', 0)}"),
+            _bullet(
+                "Long vs Short: "
+                f"proposals long={long_proposals}, short={short_proposals} | "
+                f"accepted long={long_accepted}, short={short_accepted}"
+            ),
             _bullet(f"Rejected orders: {daily_summary.get('rejected_orders', 0)}"),
             _bullet(f"Blocked proposals: {daily_summary.get('blocked', 0)}"),
             _bullet(f"Blocked by exchange minimum: {daily_summary.get('exchange_minimum_blocked', 0)}"),

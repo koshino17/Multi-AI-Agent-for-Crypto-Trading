@@ -99,10 +99,18 @@ TIMEFRAME=15m
 DATA_ROOT=./runtime
 ```
 
-如果你要接 `Bybit Demo`：
+如果你要接 `Bybit Demo` 現貨：
 
 ```bash
 TRADING_MODE=bybit-demo
+BYBIT_DEMO_API_KEY=...
+BYBIT_DEMO_SECRET=...
+```
+
+如果你要接 `Bybit Demo` 永續合約（可做多做空）：
+
+```bash
+TRADING_MODE=bybit-demo-perp
 BYBIT_DEMO_API_KEY=...
 BYBIT_DEMO_SECRET=...
 ```
@@ -157,6 +165,15 @@ http://127.0.0.1:8765
 ### `bybit-demo`
 
 最接近實際下單邏輯，但仍是模擬資金環境。
+
+### `bybit-demo-perp`
+
+使用 Bybit Demo 的 USDT 永續合約路徑。
+
+- 支援 `buy/sell/hold`
+- `buy` 在 perp 模式下代表看多或回補空單
+- `sell` 在 perp 模式下代表看空或平掉多單
+- 日報 / Live Status 會顯示 `equity / available balance / long-short position / unrealized pnl`
 
 ## 預設策略節奏
 

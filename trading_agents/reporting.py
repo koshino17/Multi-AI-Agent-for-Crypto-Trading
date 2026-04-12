@@ -70,6 +70,24 @@ def _result_reason(item: dict[str, Any]) -> str:
     return _normalize_result_reason(str(result.get("exchange_error") or result.get("reason") or ""))
 
 
+def _record_mode(item: dict[str, Any]) -> str:
+    return str(item.get("mode", "")).strip().lower()
+
+
+def _is_perp_record(item: dict[str, Any]) -> bool:
+    return "perp" in _record_mode(item)
+
+
+def _order_payload(item: dict[str, Any]) -> dict[str, Any]:
+    result = item.get("result")
+    if isinstance(result, dict):
+        order = result.get("order")
+        if isinstance(order, dict):
+            return order
+    order = item.get("order")
+    return order if isinstance(order, dict) else {}
+
+
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -158,9 +176,19 @@ def build_human_report(report: dict, mode: str, symbol: str) -> str:
         lines.append(f"- Selection: {report['selection_summary']}")
     account = report.get("account")
     if account:
-        account_line = f"- Account: {account['free_usdt']:.2f} USDT + {account['base_asset']:.6f} {account['base_symbol']}"
-        if account.get("dust_position"):
-            account_line += f" (dust ignored for execution: {float(account.get('dust_notional_usdt', 0.0)):.2f} USDT)"
+        if account.get("market_type") == "perp":
+            account_line = (
+                f"- Account: equity {float(account.get('total_equity_usdt', account['free_usdt'])):.2f} USDT | "
+                f"available {float(account.get('available_balance_usdt', account['free_usdt'])):.2f} USDT | "
+                f"position {account.get('position_side', 'flat')} "
+                f"{float(account.get('base_asset', 0.0)):.6f} {account['base_symbol']} "
+                f"@ {float(account.get('entry_price', 0.0)):.4f} | "
+                f"UPnL {float(account.get('unrealized_pnl_usdt', 0.0)):+.2f} USDT"
+            )
+        else:
+            account_line = f"- Account: {account['free_usdt']:.2f} USDT + {account['base_asset']:.6f} {account['base_symbol']}"
+            if account.get("dust_position"):
+                account_line += f" (dust ignored for execution: {float(account.get('dust_notional_usdt', 0.0)):.2f} USDT)"
         lines.append(account_line)
 
     warnings = approval.get("warnings", [])
@@ -319,6 +347,8 @@ def _portfolio_from_record(record: dict[str, Any]) -> dict[str, Any]:
     candidates = record.get("candidates")
     positions: list[dict[str, Any]] = []
     free_usdt = 0.0
+    total_equity_usdt = 0.0
+    cumulative_realized_pnl_usdt = 0.0
     seen_symbols: set[str] = set()
 
     if isinstance(candidates, list) and candidates:
@@ -330,16 +360,32 @@ def _portfolio_from_record(record: dict[str, Any]) -> dict[str, Any]:
                 continue
             account = item.get("account") or {}
             price = _safe_float(item.get("last_price"))
-            quantity = _safe_float(account.get("base_asset"))
+            market_type = str(account.get("market_type", "spot"))
+            signed_quantity = _safe_float(account.get("net_position", account.get("base_asset")))
+            quantity = abs(signed_quantity) if market_type == "perp" else _safe_float(account.get("base_asset"))
             if not free_usdt:
-                free_usdt = _safe_float(account.get("free_usdt"))
+                free_usdt = _safe_float(account.get("available_balance_usdt", account.get("free_usdt")))
+            total_equity_usdt = max(
+                total_equity_usdt,
+                _safe_float(account.get("total_equity_usdt")),
+            )
+            cumulative_realized_pnl_usdt += _safe_float(account.get("cum_realized_pnl_usdt"))
             positions.append(
                 {
                     "symbol": symbol,
                     "asset": str(account.get("base_symbol") or symbol.split("/")[0]).strip(),
                     "quantity": quantity,
+                    "signed_quantity": signed_quantity,
                     "price": price,
-                    "value_usdt": quantity * price,
+                    "value_usdt": (
+                        abs(_safe_float(account.get("position_notional_usdt")))
+                        if market_type == "perp"
+                        else quantity * price
+                    ),
+                    "market_type": market_type,
+                    "position_side": str(account.get("position_side", "flat")),
+                    "entry_price": _safe_float(account.get("entry_price")),
+                    "unrealized_pnl_usdt": _safe_float(account.get("unrealized_pnl_usdt")),
                 }
             )
             seen_symbols.add(symbol)
@@ -348,24 +394,38 @@ def _portfolio_from_record(record: dict[str, Any]) -> dict[str, Any]:
         account = record.get("account") or {}
         if symbol:
             price = _safe_float(record.get("last_price"))
-            quantity = _safe_float(account.get("base_asset"))
-            free_usdt = _safe_float(account.get("free_usdt"))
+            market_type = str(account.get("market_type", "spot"))
+            signed_quantity = _safe_float(account.get("net_position", account.get("base_asset")))
+            quantity = abs(signed_quantity) if market_type == "perp" else _safe_float(account.get("base_asset"))
+            free_usdt = _safe_float(account.get("available_balance_usdt", account.get("free_usdt")))
+            total_equity_usdt = _safe_float(account.get("total_equity_usdt"))
+            cumulative_realized_pnl_usdt = _safe_float(account.get("cum_realized_pnl_usdt"))
             positions.append(
                 {
                     "symbol": symbol,
                     "asset": str(account.get("base_symbol") or symbol.split("/")[0]).strip(),
                     "quantity": quantity,
+                    "signed_quantity": signed_quantity,
                     "price": price,
-                    "value_usdt": quantity * price,
+                    "value_usdt": (
+                        abs(_safe_float(account.get("position_notional_usdt")))
+                        if market_type == "perp"
+                        else quantity * price
+                    ),
+                    "market_type": market_type,
+                    "position_side": str(account.get("position_side", "flat")),
+                    "entry_price": _safe_float(account.get("entry_price")),
+                    "unrealized_pnl_usdt": _safe_float(account.get("unrealized_pnl_usdt")),
                 }
             )
 
     invested_value = sum(item["value_usdt"] for item in positions)
-    total_value = free_usdt + invested_value
+    total_value = total_equity_usdt if total_equity_usdt > 0 else free_usdt + invested_value
     return {
         "free_usdt": free_usdt,
         "invested_value_usdt": invested_value,
         "total_value_usdt": total_value,
+        "cum_realized_pnl_usdt": cumulative_realized_pnl_usdt,
         "positions": positions,
     }
 
@@ -390,8 +450,11 @@ def _accepted_trade_rows(records: list[dict[str, Any]], taker_fee_pct: float) ->
         if notional <= 0 and quantity > 0 and price > 0:
             notional = quantity * price
         fee = _safe_float(result.get("fee"))
+        effective_fee_pct = taker_fee_pct
+        if str(item.get("mode", "")) == "bybit-demo-perp":
+            effective_fee_pct = min(taker_fee_pct, 0.00055)
         if fee <= 0 and notional > 0:
-            fee = notional * taker_fee_pct
+            fee = notional * effective_fee_pct
         rows.append(
             {
                 "symbol": symbol,
@@ -433,6 +496,140 @@ def _build_financial_snapshot(
     latest_snapshot = _portfolio_from_record(records[-1])
     accepted_today = _accepted_trade_rows(records, taker_fee_pct)
     accepted_all = _accepted_trade_rows(all_records, taker_fee_pct)
+    is_perp = any(item.get("market_type") == "perp" for item in latest_snapshot.get("positions", []))
+
+    if is_perp:
+        latest_positions = latest_snapshot.get("positions", [])
+        invested_value = sum(abs(_safe_float(item.get("value_usdt"))) for item in latest_positions)
+        total_portfolio_value = _safe_float(latest_snapshot.get("total_value_usdt")) or initial_balance_usdt
+        start_value = _safe_float(start_snapshot.get("total_value_usdt")) or initial_balance_usdt
+        unrealized_pnl = sum(_safe_float(item.get("unrealized_pnl_usdt")) for item in latest_positions)
+        state: dict[str, dict[str, float]] = {}
+        for item in start_snapshot.get("positions", []):
+            signed_qty = _safe_float(item.get("signed_quantity", item.get("quantity", 0.0)))
+            if abs(signed_qty) <= 0:
+                continue
+            state[str(item.get("symbol", ""))] = {
+                "signed_qty": signed_qty,
+                "entry_price": _safe_float(item.get("entry_price", item.get("price", 0.0))),
+            }
+        realized_long_pnl = 0.0
+        realized_short_pnl = 0.0
+        for record in records:
+            if _result_status(record) != "accepted" or not _is_perp_record(record):
+                continue
+            order = _order_payload(record)
+            symbol = str(order.get("symbol", "")).strip()
+            if not symbol:
+                continue
+            side = str(order.get("side", "")).lower()
+            qty = _safe_float(order.get("quantity"))
+            price = _safe_float(order.get("price"))
+            notional = _safe_float(order.get("notional_usdt"))
+            fee = _safe_float((record.get("result") or {}).get("fee"))
+            if fee <= 0 and notional > 0:
+                fee = notional * min(taker_fee_pct, 0.00055)
+            if qty <= 0 or price <= 0 or side not in {"buy", "sell"}:
+                continue
+            current = state.setdefault(symbol, {"signed_qty": 0.0, "entry_price": price})
+            signed_qty = _safe_float(current.get("signed_qty"))
+            entry_price = _safe_float(current.get("entry_price"), price) or price
+            if side == "buy":
+                close_qty = min(qty, max(-signed_qty, 0.0))
+                open_qty = max(qty - close_qty, 0.0)
+                if close_qty > 0:
+                    fee_share = fee * (close_qty / qty)
+                    realized_short_pnl += (entry_price - price) * close_qty - fee_share
+                    signed_qty += close_qty
+                if open_qty > 0:
+                    fee_share = fee * (open_qty / qty)
+                    effective_open_price = price + (fee_share / open_qty if open_qty > 0 else 0.0)
+                    if signed_qty > 0:
+                        total_qty = signed_qty + open_qty
+                        entry_price = ((signed_qty * entry_price) + (open_qty * effective_open_price)) / total_qty
+                        signed_qty = total_qty
+                    else:
+                        signed_qty = open_qty
+                        entry_price = effective_open_price
+            else:
+                close_qty = min(qty, max(signed_qty, 0.0))
+                open_qty = max(qty - close_qty, 0.0)
+                if close_qty > 0:
+                    fee_share = fee * (close_qty / qty)
+                    realized_long_pnl += (price - entry_price) * close_qty - fee_share
+                    signed_qty -= close_qty
+                if open_qty > 0:
+                    fee_share = fee * (open_qty / qty)
+                    effective_open_price = price - (fee_share / open_qty if open_qty > 0 else 0.0)
+                    short_qty = max(-signed_qty, 0.0)
+                    if short_qty > 0:
+                        total_qty = short_qty + open_qty
+                        entry_price = ((short_qty * entry_price) + (open_qty * effective_open_price)) / total_qty
+                        signed_qty = -total_qty
+                    else:
+                        signed_qty = -open_qty
+                        entry_price = effective_open_price
+            if abs(signed_qty) <= 1e-12:
+                signed_qty = 0.0
+            current["signed_qty"] = signed_qty
+            current["entry_price"] = entry_price if signed_qty != 0 else 0.0
+        realized_pnl = realized_long_pnl + realized_short_pnl
+        holdings: list[dict[str, Any]] = []
+        current_long_exposure = 0.0
+        current_short_exposure = 0.0
+        for item in latest_positions:
+            position_value = abs(_safe_float(item.get("value_usdt")))
+            weight_pct = (position_value / total_portfolio_value * 100) if total_portfolio_value > 0 else 0.0
+            entry_price = _safe_float(item.get("entry_price"))
+            current_price = _safe_float(item.get("price"))
+            side = str(item.get("position_side", "flat"))
+            unrealized = _safe_float(item.get("unrealized_pnl_usdt"))
+            if side == "long":
+                current_long_exposure += position_value
+            elif side == "short":
+                current_short_exposure += position_value
+            base_pct = 0.0
+            if position_value > 0 and current_price > 0:
+                base_pct = unrealized / position_value * 100
+            holdings.append(
+                {
+                    "symbol": item.get("symbol"),
+                    "asset": item.get("asset"),
+                    "quantity": _safe_float(item.get("quantity")),
+                    "signed_quantity": _safe_float(item.get("signed_quantity")),
+                    "price": current_price,
+                    "entry_price": entry_price,
+                    "value_usdt": position_value,
+                    "weight_pct": weight_pct,
+                    "unrealized_pnl_usdt": unrealized,
+                    "unrealized_pnl_pct": base_pct,
+                    "position_side": side,
+                    "market_type": "perp",
+                }
+            )
+        holdings.sort(key=lambda item: float(item["value_usdt"]), reverse=True)
+        daily_fees = sum(item["fee_usdt"] for item in accepted_today)
+        daily_pnl = total_portfolio_value - start_value
+        cumulative_pnl = total_portfolio_value - initial_balance_usdt
+        return {
+            "initial_capital_usdt": initial_balance_usdt,
+            "total_portfolio_value_usdt": total_portfolio_value,
+            "cumulative_pnl_usdt": cumulative_pnl,
+            "cumulative_pnl_pct": (cumulative_pnl / initial_balance_usdt * 100) if initial_balance_usdt > 0 else 0.0,
+            "daily_pnl_usdt": daily_pnl,
+            "daily_pnl_pct": (daily_pnl / start_value * 100) if start_value > 0 else 0.0,
+            "realized_pnl_usdt": realized_pnl,
+            "realized_long_pnl_usdt": realized_long_pnl,
+            "realized_short_pnl_usdt": realized_short_pnl,
+            "unrealized_pnl_usdt": unrealized_pnl,
+            "daily_fees_usdt": daily_fees,
+            "cumulative_fees_usdt": sum(item["fee_usdt"] for item in accepted_all),
+            "available_usdt": _safe_float(latest_snapshot.get("free_usdt")),
+            "capital_utilization_pct": (invested_value / total_portfolio_value * 100) if total_portfolio_value > 0 else 0.0,
+            "current_long_exposure_usdt": current_long_exposure,
+            "current_short_exposure_usdt": current_short_exposure,
+            "holdings": holdings,
+        }
 
     inventory: dict[str, dict[str, float]] = {}
     start_positions = {item["symbol"]: item for item in start_snapshot["positions"]}
@@ -577,14 +774,23 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
     llm_wake_candidates = 0
     llm_wake_enabled = 0
     llm_wake_selected_enabled = 0
+    long_proposals = 0
+    short_proposals = 0
+    long_accepted = 0
+    short_accepted = 0
     score_totals = {"buy": 0.0, "sell": 0.0, "hold": 0.0}
     score_counts = {"buy": 0, "sell": 0, "hold": 0}
     for item in records:
         idea = item.get("idea", {})
         approval = item.get("approval", {})
         action = str(idea.get("action", "unknown"))
+        is_perp = _is_perp_record(item)
         score = _safe_float(idea.get("score"))
         action_counts[action] += 1
+        if action == "buy":
+            long_proposals += 1
+        elif action == "sell":
+            short_proposals += 1 if is_perp else 0
         if action in score_totals:
             score_totals[action] += score
             score_counts[action] += 1
@@ -596,6 +802,13 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
             rejection_reason_counts[_result_reason(item)] += 1
         if _result_status(item) == "accepted":
             executed_symbol_counts[str(item.get("selected_symbol", "unknown"))] += 1
+            order = _order_payload(item)
+            side = str(order.get("side", "")).lower()
+            reduce_only = bool(order.get("reduce_only"))
+            if side == "buy" and not reduce_only:
+                long_accepted += 1
+            elif side == "sell" and is_perp and not reduce_only:
+                short_accepted += 1
         candidates = item.get("candidates", [])
         if isinstance(candidates, list):
             for candidate in candidates:
@@ -669,6 +882,10 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
         "blocked_reason_counts": dict(blocked_reason_counts.most_common()),
         "rejection_reason_counts": dict(rejection_reason_counts.most_common()),
         "action_counts": dict(action_counts.most_common()),
+        "long_proposals": long_proposals,
+        "short_proposals": short_proposals,
+        "long_accepted": long_accepted,
+        "short_accepted": short_accepted,
         "selected_symbol_counts": dict(selected_symbol_counts.most_common()),
         "executed_symbol_counts": dict(executed_symbol_counts.most_common()),
         "avg_scores": avg_scores,
@@ -725,6 +942,10 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
     llm_wake_enabled = int(summary.get("llm_wake_enabled", 0))
     llm_wake_rate_pct = float(summary.get("llm_wake_rate_pct", 0.0))
     top_traded_symbol = next(iter(executed_symbol_counts.items()), ("n/a", 0))
+    long_proposals = int(summary.get("long_proposals", 0))
+    short_proposals = int(summary.get("short_proposals", 0))
+    long_accepted = int(summary.get("long_accepted", 0))
+    short_accepted = int(summary.get("short_accepted", 0))
 
     lines = [
         f"# Daily Summary: {date_label}",
@@ -740,6 +961,11 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
             f"({float(financial.get('daily_pnl_pct', 0.0)):+.2f}%)"
         ),
         f"- Realized PnL: {float(financial.get('realized_pnl_usdt', 0.0)):+.2f} USDT",
+        (
+            f"- Realized PnL Split: "
+            f"long={float(financial.get('realized_long_pnl_usdt', 0.0)):+.2f} USDT | "
+            f"short={float(financial.get('realized_short_pnl_usdt', 0.0)):+.2f} USDT"
+        ),
         f"- Unrealized PnL: {float(financial.get('unrealized_pnl_usdt', 0.0)):+.2f} USDT",
         f"- Daily Fees Paid: {float(financial.get('daily_fees_usdt', 0.0)):.2f} USDT",
         f"- Cumulative Fees Paid: {float(financial.get('cumulative_fees_usdt', 0.0)):.2f} USDT",
@@ -751,17 +977,30 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
             f"({100 - float(financial.get('capital_utilization_pct', 0.0)):.1f}%)"
         ),
         f"- Capital Utilization: {float(financial.get('capital_utilization_pct', 0.0)):.1f}%",
+        (
+            f"- Directional Exposure: "
+            f"long={float(financial.get('current_long_exposure_usdt', 0.0)):.2f} USDT | "
+            f"short={float(financial.get('current_short_exposure_usdt', 0.0)):.2f} USDT"
+        ),
     ]
 
     holdings = financial.get("holdings", [])
     if holdings:
         lines.append("- Positions:")
         for item in holdings:
-            lines.append(
-                f"  - {item['asset']}: {float(item['quantity']):.6f} "
-                f"(Val: {float(item['value_usdt']):.2f} USDT | Weight: {float(item['weight_pct']):.1f}% | "
-                f"PnL: {float(item['unrealized_pnl_usdt']):+.2f} USDT / {float(item['unrealized_pnl_pct']):+.2f}%)"
-            )
+            if item.get("market_type") == "perp":
+                lines.append(
+                    f"  - {item['asset']} {item.get('position_side', 'flat')}: {float(item['quantity']):.6f} "
+                    f"(Notional: {float(item['value_usdt']):.2f} USDT | Entry: {float(item.get('entry_price', 0.0)):.4f} | "
+                    f"Mark: {float(item['price']):.4f} | Weight: {float(item['weight_pct']):.1f}% | "
+                    f"UPnL: {float(item['unrealized_pnl_usdt']):+.2f} USDT / {float(item['unrealized_pnl_pct']):+.2f}%)"
+                )
+            else:
+                lines.append(
+                    f"  - {item['asset']}: {float(item['quantity']):.6f} "
+                    f"(Val: {float(item['value_usdt']):.2f} USDT | Weight: {float(item['weight_pct']):.1f}% | "
+                    f"PnL: {float(item['unrealized_pnl_usdt']):+.2f} USDT / {float(item['unrealized_pnl_pct']):+.2f}%)"
+                )
     else:
         lines.append("- Positions: no tracked holdings")
 
@@ -780,6 +1019,11 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
             (
                 f"- Trade proposals: {proposals} "
                 f"(buy={action_counts.get('buy', 0)}, sell={action_counts.get('sell', 0)}, hold={action_counts.get('hold', 0)})"
+            ),
+            (
+                f"- Long vs Short: "
+                f"proposals long={long_proposals}, short={short_proposals} | "
+                f"accepted long={long_accepted}, short={short_accepted}"
             ),
             f"- Approved by risk: {approved}",
             f"- Orders submitted: {submitted_orders}",
@@ -845,14 +1089,24 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
             lines.append(f"- Debate: risk raised `{debate['risk_feedback']}` before final decision")
         account = latest.get("account")
         if account:
-            account_line = (
-                f"- Account: {float(account['free_usdt']):.2f} USDT + "
-                f"{float(account['base_asset']):.6f} {account['base_symbol']}"
-            )
-            if account.get("dust_position"):
-                account_line += (
-                    f" (dust ignored for execution: {float(account.get('dust_notional_usdt', 0.0)):.2f} USDT)"
+            if account.get("market_type") == "perp":
+                account_line = (
+                    f"- Account: equity {float(account.get('total_equity_usdt', account['free_usdt'])):.2f} USDT | "
+                    f"available {float(account.get('available_balance_usdt', account['free_usdt'])):.2f} USDT | "
+                    f"position {account.get('position_side', 'flat')} "
+                    f"{float(account.get('base_asset', 0.0)):.6f} {account['base_symbol']} "
+                    f"@ {float(account.get('entry_price', 0.0)):.4f} | "
+                    f"UPnL {float(account.get('unrealized_pnl_usdt', 0.0)):+.2f} USDT"
                 )
+            else:
+                account_line = (
+                    f"- Account: {float(account['free_usdt']):.2f} USDT + "
+                    f"{float(account['base_asset']):.6f} {account['base_symbol']}"
+                )
+                if account.get("dust_position"):
+                    account_line += (
+                        f" (dust ignored for execution: {float(account.get('dust_notional_usdt', 0.0)):.2f} USDT)"
+                    )
             lines.append(account_line)
             warnings = latest.get("approval", {}).get("warnings", [])
             if warnings:

@@ -56,6 +56,7 @@ class StrategistAgent:
         strategy_research: StrategyResearchSnapshot,
         available_usdt: float,
         available_base_asset: float,
+        position_side: str,
         min_order_value_usdt: float,
         aggressive_mode: bool,
         trading_mode: str,
@@ -75,13 +76,16 @@ class StrategistAgent:
             strategy_research,
             available_usdt,
             available_base_asset,
+            position_side,
             snapshot.last_price,
             min_order_value_usdt,
             aggressive_mode,
+            trading_mode,
         )
         if self.llm_client is None:
             return fallback
         memory_summary = self._strategy_memory_summary(strategy_memory)
+        market_type = "perp" if "perp" in trading_mode else "spot"
         try:
             response = self.llm_client.generate_json(
                 (
@@ -97,15 +101,17 @@ class StrategistAgent:
                     f"strategy_research_summary={strategy_research.summary}; "
                     f"available_usdt={available_usdt:.2f}; "
                     f"available_base_asset={available_base_asset:.6f}; "
+                    f"position_side={position_side}; "
                     f"selected_expectancy_pct={self._selected_strategy_backtest(strategy_research).expectancy_pct:+.4f}; "
                     f"selected_profit_factor={self._selected_strategy_backtest(strategy_research).profit_factor:.4f}; "
                     f"strategy_memory={memory_summary}; "
                     f"risk_feedback={risk_feedback}; "
                     f"aggressive_demo_mode={str(aggressive_mode).lower()}; "
                     f"trading_mode={trading_mode}; "
-                    "Prefer executable spot ideas. "
-                    "If there is no base asset available, avoid proposing sell. "
-                    "If there is no available USDT, avoid proposing buy. "
+                    f"market_type={market_type}; "
+                    "In spot mode, avoid proposing sell when there is no base asset. "
+                    "In perp mode, buy means bullish intent (open long or close short) and sell means bearish intent (open short or close long). "
+                    "If there is no available USDT, avoid opening new exposure. "
                     "In demo training mode, prefer positive-expectancy setups even when fear sentiment is elevated."
                 )
             )
@@ -119,7 +125,14 @@ class StrategistAgent:
                 invalidation=str(response.get("invalidation", fallback.invalidation)),
                 holding_horizon=str(response.get("holding_horizon", fallback.holding_horizon)),
             )
-            return self._align_with_account(idea, fallback, available_usdt, available_base_asset)
+            return self._align_with_account(
+                idea,
+                fallback,
+                available_usdt,
+                available_base_asset,
+                position_side,
+                trading_mode,
+            )
         except Exception:
             return fallback
 
@@ -129,6 +142,8 @@ class StrategistAgent:
         risk_feedback: str,
         available_usdt: float,
         available_base_asset: float,
+        position_side: str,
+        trading_mode: str,
         strategy_memory: dict | None = None,
     ) -> TradeIdea:
         if not risk_feedback.strip():
@@ -153,6 +168,8 @@ class StrategistAgent:
                     f"risk_feedback={risk_feedback}; "
                     f"available_usdt={available_usdt:.2f}; "
                     f"available_base_asset={available_base_asset:.6f}; "
+                    f"position_side={position_side}; "
+                    f"trading_mode={trading_mode}; "
                     f"strategy_memory={self._strategy_memory_summary(strategy_memory)}"
                 )
             )
@@ -165,7 +182,14 @@ class StrategistAgent:
             )
             if revised.action not in {"buy", "sell", "hold"}:
                 return idea
-            return self._align_with_account(revised, idea, available_usdt, available_base_asset)
+            return self._align_with_account(
+                revised,
+                idea,
+                available_usdt,
+                available_base_asset,
+                position_side,
+                trading_mode,
+            )
         except Exception:
             return idea
 
@@ -186,10 +210,13 @@ class StrategistAgent:
         strategy_research: StrategyResearchSnapshot,
         available_usdt: float,
         available_base_asset: float,
+        position_side: str,
         last_price: float,
         min_order_value_usdt: float,
         aggressive_mode: bool,
+        trading_mode: str,
     ) -> TradeIdea:
+        perp_mode = "perp" in trading_mode
         selected_backtest = self._selected_strategy_backtest(strategy_research)
         selected_is_base = strategy_research.selected_strategy_id == strategy_research.base_strategy_id
         backtest_supports_long = backtest.trade_count == 0 or (
@@ -203,10 +230,20 @@ class StrategistAgent:
 
         sellable_notional = available_base_asset * last_price
         can_buy = available_usdt > 5
-        can_sell = available_base_asset > 0 and (
-            min_order_value_usdt <= 0 or sellable_notional >= min_order_value_usdt
+        if perp_mode:
+            can_sell = position_side in {"flat", "long", "short"} and (
+                position_side != "long"
+                or min_order_value_usdt <= 0
+                or sellable_notional >= min_order_value_usdt
+            )
+        else:
+            can_sell = available_base_asset > 0 and (
+                min_order_value_usdt <= 0 or sellable_notional >= min_order_value_usdt
+            )
+        cash_heavy = can_buy and (
+            (perp_mode and position_side == "flat")
+            or (not perp_mode and not can_sell)
         )
-        cash_heavy = can_buy and not can_sell
         selected_edge_positive = (
             selected_backtest.trade_count >= 2
             and selected_backtest.expectancy_pct >= (-0.01 if aggressive_mode else 0.0)
@@ -253,7 +290,8 @@ class StrategistAgent:
                     f"backtest={backtest.summary}; "
                     f"strategy={strategy_research.selected_strategy_id}; "
                     f"expectancy={selected_backtest.expectancy_pct:+.2f}%; "
-                    f"profit_factor={selected_backtest.profit_factor:.2f}"
+                    f"profit_factor={selected_backtest.profit_factor:.2f}; "
+                    f"position_side={position_side}"
                 ),
                 invalidation="exit if downward momentum fades",
                 holding_horizon="intraday",
@@ -336,8 +374,11 @@ class StrategistAgent:
         fallback: TradeIdea,
         available_usdt: float,
         available_base_asset: float,
+        position_side: str,
+        trading_mode: str,
     ) -> TradeIdea:
-        if idea.action == "sell" and available_base_asset <= 0:
+        perp_mode = "perp" in trading_mode
+        if not perp_mode and idea.action == "sell" and available_base_asset <= 0:
             if fallback.action != "sell":
                 return fallback
             return TradeIdea(
@@ -349,8 +390,12 @@ class StrategistAgent:
                 invalidation=idea.invalidation,
                 holding_horizon="none",
             )
-        if idea.action == "buy" and available_usdt <= 5:
-            if fallback.action != "buy":
+        opens_new_exposure = (
+            (idea.action == "buy" and (not perp_mode or position_side != "short"))
+            or (idea.action == "sell" and perp_mode and position_side != "long")
+        )
+        if opens_new_exposure and available_usdt <= 5:
+            if fallback.action != idea.action:
                 return fallback
             return TradeIdea(
                 action="hold",
@@ -397,6 +442,7 @@ class RiskSupervisorAgent:
         strategy_research: StrategyResearchSnapshot,
         available_usdt: float,
         available_base_asset: float,
+        position_side: str,
         last_price: float,
         min_order_value_usdt: float,
         min_signal_score: float,
@@ -412,15 +458,17 @@ class RiskSupervisorAgent:
         strategy_memory: dict | None = None,
         use_llm: bool = True,
     ) -> Approval:
+        perp_mode = "perp" in trading_mode
+        demo_mode = trading_mode.startswith("bybit-demo")
         selected_backtest = self._selected_strategy_backtest(strategy_research)
         buffered_available_usdt = max(available_usdt * buy_balance_buffer_pct, 0.0)
         effective_max_position_pct = max_position_pct
-        if aggressive_mode and trading_mode == "bybit-demo":
+        if aggressive_mode and demo_mode:
             effective_max_position_pct = max(max_position_pct, 0.20)
         max_notional = buffered_available_usdt * effective_max_position_pct
         if (
             aggressive_mode
-            and trading_mode == "bybit-demo"
+            and demo_mode
             and idea.action == "buy"
             and min_order_value_usdt > 0
             and buffered_available_usdt >= min_order_value_usdt * 1.15
@@ -432,7 +480,7 @@ class RiskSupervisorAgent:
         if idea.action == "hold":
             return Approval(False, "no trade proposed", 0.0, warnings)
         effective_min_signal = min_signal_score
-        if aggressive_mode and trading_mode == "bybit-demo":
+        if aggressive_mode and demo_mode:
             effective_min_signal = min(min_signal_score, 0.52)
         effective_min_signal = min(max(effective_min_signal + signal_boost, 0.0), 0.99)
         selected_edge_positive = (
@@ -449,8 +497,13 @@ class RiskSupervisorAgent:
             aggressive_mode and idea.action == "buy" and selected_edge_positive and asymmetric_payoff
         ):
             return Approval(False, f"signal score too low: {idea.score:.2f}", 0.0, warnings)
-        round_trip_fee_pct = taker_fee_pct * 200.0
-        fee_hurdle_pct = round_trip_fee_pct * max(fee_hurdle_multiplier, 0.0)
+        effective_taker_fee_pct = taker_fee_pct
+        effective_fee_hurdle_multiplier = fee_hurdle_multiplier
+        if perp_mode and demo_mode:
+            effective_taker_fee_pct = min(taker_fee_pct, 0.00055)
+            effective_fee_hurdle_multiplier = min(fee_hurdle_multiplier, 1.0)
+        round_trip_fee_pct = effective_taker_fee_pct * 200.0
+        fee_hurdle_pct = round_trip_fee_pct * max(effective_fee_hurdle_multiplier, 0.0)
         if (
             idea.action in {"buy", "sell"}
             and selected_backtest.trade_count >= 2
@@ -476,11 +529,17 @@ class RiskSupervisorAgent:
             and not any(item.backtest.trade_count > 0 for item in strategy_research.candidates)
         ):
             warnings.append("research strategy pool has too few recent replay samples")
-        if idea.action == "buy" and buffered_available_usdt <= 5:
+        opening_long = idea.action == "buy" and (not perp_mode or position_side != "short")
+        opening_short = idea.action == "sell" and perp_mode and position_side != "long"
+        closing_position = perp_mode and (
+            (idea.action == "buy" and position_side == "short")
+            or (idea.action == "sell" and position_side == "long")
+        )
+        if opening_long and buffered_available_usdt <= 5:
             return Approval(False, "not enough USDT to open a position", 0.0, warnings)
-        if idea.action == "sell" and available_base_asset <= 0:
+        if not perp_mode and idea.action == "sell" and available_base_asset <= 0:
             return Approval(False, "no base asset available to sell", 0.0, warnings)
-        if idea.action == "sell" and min_order_value_usdt > 0:
+        if idea.action == "sell" and min_order_value_usdt > 0 and (not perp_mode or position_side == "long"):
             sellable_notional = available_base_asset * last_price
             if sellable_notional < min_order_value_usdt:
                 return Approval(
@@ -490,11 +549,21 @@ class RiskSupervisorAgent:
                     warnings,
                 )
             max_notional = sellable_notional
+        if idea.action == "buy" and closing_position and min_order_value_usdt > 0:
+            coverable_notional = available_base_asset * last_price
+            if coverable_notional < min_order_value_usdt:
+                return Approval(
+                    False,
+                    f"position value below exchange minimum: {coverable_notional:.2f} < {min_order_value_usdt:.2f} USDT",
+                    0.0,
+                    warnings,
+                )
+            max_notional = coverable_notional
         if abs(sentiment.sentiment_score) > 0.70:
             warnings.append("social sentiment is extreme; verify with more sources")
-        if idea.action == "buy" and max_notional <= 0:
+        if (opening_long or opening_short) and max_notional <= 0:
             return Approval(False, "no available balance", 0.0, warnings)
-        if idea.action == "buy" and min_order_value_usdt > 0 and max_notional < min_order_value_usdt:
+        if (opening_long or opening_short) and min_order_value_usdt > 0 and max_notional < min_order_value_usdt:
             return Approval(
                 False,
                 f"max position below exchange minimum: {max_notional:.2f} < {min_order_value_usdt:.2f} USDT",
@@ -503,7 +572,9 @@ class RiskSupervisorAgent:
             )
         if cycle_mode == "fast" and idea.action in {"buy", "sell"} and idea.score < max(effective_min_signal, 0.64):
             return Approval(False, f"fast-cycle confidence too low: {idea.score:.2f}", 0.0, warnings)
-        if idea.action == "sell" and available_base_asset > 0:
+        if idea.action == "sell" and available_base_asset > 0 and (not perp_mode or position_side == "long"):
+            max_notional = max(max_notional, 1.0)
+        if idea.action == "buy" and perp_mode and position_side == "short" and available_base_asset > 0:
             max_notional = max(max_notional, 1.0)
         if self.llm_client is not None and use_llm:
             try:
@@ -518,6 +589,7 @@ class RiskSupervisorAgent:
                         f"backtest_summary={backtest.summary}; "
                         f"strategy_research_summary={strategy_research.summary}; "
                         f"available_usdt={available_usdt:.2f}; available_base_asset={available_base_asset:.6f}; "
+                        f"position_side={position_side}; "
                         f"max_position_pct={effective_max_position_pct:.2f}; "
                         f"cycle_mode={cycle_mode}; "
                         f"selected_expectancy_pct={selected_backtest.expectancy_pct:+.4f}; "
@@ -533,7 +605,7 @@ class RiskSupervisorAgent:
                 if isinstance(llm_warnings, list):
                     warnings.extend(str(item) for item in llm_warnings)
                 if not llm_approved:
-                    if aggressive_mode and trading_mode == "bybit-demo" and selected_edge_positive:
+                    if aggressive_mode and demo_mode and selected_edge_positive:
                         warnings.append(f"risk llm caution: {llm_reason}")
                     else:
                         return Approval(False, llm_reason, 0.0, warnings)
@@ -597,21 +669,34 @@ class ExecutorAgent:
         price: float,
         available_usdt: float,
         available_base_asset: float,
+        trading_mode: str,
+        position_side: str = "flat",
         buy_balance_buffer_pct: float = 1.0,
     ) -> dict:
-        if side == "buy":
+        perp_mode = "perp" in trading_mode
+        if not perp_mode and side == "buy":
             capped_notional = min(notional_usdt, max(available_usdt * buy_balance_buffer_pct, 0.0))
             quantity = capped_notional / price if price else 0.0
-        else:
+        elif not perp_mode:
             max_sell_notional = available_base_asset * price if price else 0.0
             capped_notional = min(notional_usdt, max_sell_notional)
             quantity = min(available_base_asset, capped_notional / price) if price else 0.0
+        else:
+            reducing_position = (side == "buy" and position_side == "short") or (side == "sell" and position_side == "long")
+            if reducing_position:
+                max_reducible_notional = available_base_asset * price if price else 0.0
+                capped_notional = min(notional_usdt, max_reducible_notional)
+                quantity = min(available_base_asset, capped_notional / price) if price else 0.0
+            else:
+                capped_notional = min(notional_usdt, max(available_usdt * buy_balance_buffer_pct, 0.0))
+                quantity = capped_notional / price if price else 0.0
         return {
             "symbol": symbol,
             "side": side,
             "notional_usdt": round(capped_notional, 2),
             "quantity": round(quantity, 6),
             "price": round(price, 4),
+            "reduce_only": bool(perp_mode and ((side == "buy" and position_side == "short") or (side == "sell" and position_side == "long"))),
         }
 
 

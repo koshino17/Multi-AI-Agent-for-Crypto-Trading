@@ -16,6 +16,44 @@
 
 ---
 
+## v0.11.0 - Bybit perp prototype and directional reporting
+
+### Why
+
+- 原始專案目標不是只有現貨短線，而是希望在高波動的幣圈市場同時具備做多與做空能力
+- 近半個月的回顧顯示，系統不只 long entry 品質仍待改善，也明顯受限於 spot-only 架構，無法在下跌行情中參與獲利
+- 既然 runner、reporting、Notion、service layer 都已經穩定，下一步就應該把原型正式往 `perp long/short` 推進，並把多空拆分統計納入報表
+
+### What Changed
+
+- 新增 `bybit-demo-perp` 交易模式，接入 Bybit Demo USDT perpetual / linear 交易路徑
+- `AccountState` 擴充為支援合約語意，新增：
+  - `market_type`
+  - `position_side`
+  - `net_position`
+  - `entry_price`
+  - `mark_price`
+  - `position_notional_usdt`
+  - `unrealized_pnl_usdt`
+  - `cum_realized_pnl_usdt`
+  - `total_equity_usdt`
+  - `available_balance_usdt`
+- `strategist`、`risk_supervisor`、`executor` 全部理解 perp 語意：
+  - `buy` 可代表開多或回補空單
+  - `sell` 可代表開空或平掉多單
+  - 平倉時會正確使用 `reduceOnly`
+- 修正 cooldown key，改為以 `mode:symbol` 區分，避免舊 spot 冷卻狀態污染 perp 模式
+- Daily report、Live Status、Notion 狀態頁新增方向性統計：
+  - `Realized PnL Split`
+  - `Directional Exposure`
+  - `Long vs Short`
+  - `long / short proposals`
+  - `long / short accepted`
+- 日報重建後會直接顯示目前多空曝險與方向別損益，讓隔天開始的 daily report 能直接觀察 perp 版本表現
+- `.env.example` 與 `README.md` 補上 `bybit-demo-perp` 的設定與使用說明
+
+---
+
 ## v0.10.0 - LLM wake gate and early-exit filtering
 
 ### Why

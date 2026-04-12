@@ -575,6 +575,7 @@ class Handler(BaseHTTPRequestHandler):
         <label>Mode</label>
         <select name="mode">
           <option value="bybit-demo" {"selected" if controller.mode == "bybit-demo" else ""}>bybit-demo</option>
+          <option value="bybit-demo-perp" {"selected" if controller.mode == "bybit-demo-perp" else ""}>bybit-demo-perp</option>
           <option value="mock" {"selected" if controller.mode == "mock" else ""}>mock</option>
         </select>
         <label>Symbols</label>

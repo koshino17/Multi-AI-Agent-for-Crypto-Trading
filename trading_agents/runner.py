@@ -69,7 +69,7 @@ def _account_tuple(snapshot: dict) -> tuple[float, float]:
     account = snapshot.get("account", {})
     return (
         round(float(account.get("free_usdt", 0.0)), 6),
-        round(float(account.get("base_asset", 0.0)), 8),
+        round(float(account.get("net_position", account.get("base_asset", 0.0))), 8),
     )
 
 
@@ -135,7 +135,7 @@ def _should_run_cycle(
     for candidate_symbol, price in snapshot["prices"].items():
         baseline = cycle_prices.get(candidate_symbol)
         held_state = current_accounts.get(candidate_symbol, (0.0, 0.0))
-        if not baseline or held_state[1] <= 0:
+        if not baseline or abs(held_state[1]) <= 0:
             continue
         move_pct = abs(price - baseline) / baseline if baseline else 0.0
         if move_pct >= position_micro_trigger_pct:
@@ -382,7 +382,7 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
 def main() -> int:
     settings = load_settings()
     parser = argparse.ArgumentParser(description="Run the trading agents continuously.")
-    parser.add_argument("--mode", choices=["mock", "binance-testnet", "bybit-demo"], default=settings.trading_mode)
+    parser.add_argument("--mode", choices=["mock", "binance-testnet", "bybit-demo", "bybit-demo-perp"], default=settings.trading_mode)
     parser.add_argument("--symbol", default=",".join(settings.observation_pool) or settings.symbol)
     parser.add_argument(
         "--interval",

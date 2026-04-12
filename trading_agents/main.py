@@ -29,6 +29,7 @@ from trading_agents.config import load_settings
 from trading_agents.exchange import (
     BinanceTestnetExchangeClient,
     BybitDemoExchangeClient,
+    BybitDemoPerpExchangeClient,
     MockExchangeClient,
 )
 from trading_agents.llm import OllamaClient
@@ -77,15 +78,24 @@ def _save_trade_cooldowns(path: Path, cooldowns: dict[str, float]) -> None:
     path.write_text(json.dumps(cooldowns, ensure_ascii=False, indent=2))
 
 
-def _cooldown_remaining_seconds(cooldowns: dict[str, float], symbol: str, now_epoch: float) -> float:
+def _cooldown_key(mode: str, symbol: str) -> str:
+    return f"{mode}:{symbol}"
+
+
+def _cooldown_remaining_seconds(cooldowns: dict[str, float], mode: str, symbol: str, now_epoch: float) -> float:
+    exact_key = _cooldown_key(mode, symbol)
+    if exact_key in cooldowns:
+        return max(0.0, float(cooldowns.get(exact_key, 0.0)) - now_epoch)
+    if "perp" in mode:
+        return 0.0
     return max(0.0, float(cooldowns.get(symbol, 0.0)) - now_epoch)
 
 
-def _mark_trade_cooldown(path: Path, symbol: str, cooldown_seconds: float) -> None:
+def _mark_trade_cooldown(path: Path, mode: str, symbol: str, cooldown_seconds: float) -> None:
     if cooldown_seconds <= 0:
         return
     cooldowns = _load_trade_cooldowns(path)
-    cooldowns[str(symbol)] = datetime.now(timezone.utc).timestamp() + cooldown_seconds
+    cooldowns[_cooldown_key(mode, str(symbol))] = datetime.now(timezone.utc).timestamp() + cooldown_seconds
     _save_trade_cooldowns(path, cooldowns)
 
 
@@ -359,6 +369,11 @@ def _build_exchange(mode: str, settings):
             api_key=settings.bybit_demo_api_key,
             secret=settings.bybit_demo_secret,
         )
+    if mode == "bybit-demo-perp":
+        return BybitDemoPerpExchangeClient(
+            api_key=settings.bybit_demo_api_key,
+            secret=settings.bybit_demo_secret,
+        )
     return MockExchangeClient(initial_balance_usdt=settings.initial_balance_usdt)
 
 
@@ -462,18 +477,28 @@ def execute_cycle(
         account = exchange.fetch_account_state(candidate_symbol)
         available_usdt = account.free_usdt
         actual_base_asset = account.base_asset
+        position_side = getattr(account, "position_side", "flat")
+        market_type = getattr(account, "market_type", "spot")
         min_order_value_usdt = 0.0
         if hasattr(exchange, "minimum_order_value_usdt"):
             try:
                 min_order_value_usdt = float(exchange.minimum_order_value_usdt(candidate_symbol))
             except Exception:
                 min_order_value_usdt = 0.0
-        available_base_asset, dust_info = _normalize_dust_position(
-            base_asset=actual_base_asset,
-            last_price=float(snapshot.last_price),
-            min_order_value_usdt=min_order_value_usdt,
-            dust_position_multiplier=settings.dust_position_multiplier,
-        )
+        if market_type == "perp":
+            available_base_asset = actual_base_asset
+            dust_info = {
+                "is_dust": False,
+                "dust_notional_usdt": round(actual_base_asset * float(snapshot.last_price), 4),
+                "dust_threshold_usdt": round(min_order_value_usdt, 4),
+            }
+        else:
+            available_base_asset, dust_info = _normalize_dust_position(
+                base_asset=actual_base_asset,
+                last_price=float(snapshot.last_price),
+                min_order_value_usdt=min_order_value_usdt,
+                dust_position_multiplier=settings.dust_position_multiplier,
+            )
         llm_wake = _market_wake_gate(snapshot, available_base_asset, settings)
         candidate_llm_client = analysis_llm_client if llm_wake["enabled"] else None
         candidate_strategy_researcher = strategy_researcher if candidate_llm_client is not None else rule_strategy_researcher
@@ -532,6 +557,7 @@ def execute_cycle(
                 strategy_research,
                 available_usdt=available_usdt,
                 available_base_asset=available_base_asset,
+                position_side=position_side,
                 min_order_value_usdt=min_order_value_usdt,
                 aggressive_mode=settings.demo_aggressive_mode,
                 trading_mode=mode,
@@ -567,6 +593,8 @@ def execute_cycle(
                         risk_feedback,
                         available_usdt=available_usdt,
                         available_base_asset=available_base_asset,
+                        position_side=position_side,
+                        trading_mode=mode,
                         strategy_memory=strategy_memory,
                     ),
                 )
@@ -580,6 +608,7 @@ def execute_cycle(
                 strategy_research=strategy_research,
                 available_usdt=available_usdt,
                 available_base_asset=available_base_asset,
+                position_side=position_side,
                 last_price=float(snapshot.last_price),
                 min_order_value_usdt=min_order_value_usdt,
                 min_signal_score=settings.min_signal_score,
@@ -596,7 +625,7 @@ def execute_cycle(
                 use_llm=use_candidate_llm_risk,
             ),
         )
-        cooldown_remaining = _cooldown_remaining_seconds(cooldowns, candidate_symbol, now_epoch)
+        cooldown_remaining = _cooldown_remaining_seconds(cooldowns, mode, candidate_symbol, now_epoch)
         if idea.action != "hold" and cooldown_remaining > 0:
             cooldown_warnings = list(approval.warnings)
             cooldown_warnings.append("recent trade cooldown active to reduce fee bleed")
@@ -649,6 +678,16 @@ def execute_cycle(
                     "base_asset": round(actual_base_asset, 8),
                     "effective_base_asset": round(available_base_asset, 8),
                     "base_symbol": candidate_symbol.split("/")[0],
+                    "market_type": market_type,
+                    "position_side": position_side,
+                    "net_position": round(float(getattr(account, "net_position", actual_base_asset)), 8),
+                    "entry_price": round(float(getattr(account, "entry_price", 0.0)), 6),
+                    "mark_price": round(float(getattr(account, "mark_price", snapshot.last_price)), 6),
+                    "position_notional_usdt": round(float(getattr(account, "position_notional_usdt", actual_base_asset * float(snapshot.last_price))), 4),
+                    "unrealized_pnl_usdt": round(float(getattr(account, "unrealized_pnl_usdt", 0.0)), 4),
+                    "cum_realized_pnl_usdt": round(float(getattr(account, "cum_realized_pnl_usdt", 0.0)), 4),
+                    "total_equity_usdt": round(float(getattr(account, "total_equity_usdt", available_usdt)), 4),
+                    "available_balance_usdt": round(float(getattr(account, "available_balance_usdt", available_usdt)), 4),
                     "dust_position": bool(dust_info.get("is_dust")),
                     "dust_notional_usdt": round(float(dust_info.get("dust_notional_usdt", 0.0)), 4),
                 },
@@ -704,6 +743,8 @@ def execute_cycle(
                     risk_feedback,
                     available_usdt=float(selected["account"]["free_usdt"]),
                     available_base_asset=float(selected["account"].get("effective_base_asset", selected["account"]["base_asset"])),
+                    position_side=str(selected["account"].get("position_side", "flat")),
+                    trading_mode=mode,
                     strategy_memory=strategy_memory,
                 ),
             )
@@ -723,6 +764,7 @@ def execute_cycle(
                 strategy_research=selected_strategy_research,
                 available_usdt=float(selected["account"]["free_usdt"]),
                 available_base_asset=float(selected["account"].get("effective_base_asset", selected["account"]["base_asset"])),
+                position_side=str(selected["account"].get("position_side", "flat")),
                 last_price=float(selected["last_price"]),
                 min_order_value_usdt=float(selected["execution_constraints"].get("min_order_value_usdt", 0.0)),
                 min_signal_score=settings.min_signal_score,
@@ -744,6 +786,7 @@ def execute_cycle(
         progress("risk_supervisor", "done", f"{selected['symbol']}: {selected_approval.reason}")
 
     report = {
+        "mode": mode,
         "storage_root": str(storage.root),
         "symbol_pool": symbol_pool,
         "cycle_mode": cycle_mode,
@@ -793,6 +836,8 @@ def execute_cycle(
         price=float(report["last_price"]),
         available_usdt=float(report["account"]["free_usdt"]),
         available_base_asset=float(report["account"].get("effective_base_asset", report["account"]["base_asset"])),
+        trading_mode=mode,
+        position_side=str(report["account"].get("position_side", "flat")),
         buy_balance_buffer_pct=settings.buy_balance_buffer_pct,
     )
     try:
@@ -820,6 +865,7 @@ def execute_cycle(
     if str(result.get("status", "")).lower() in {"accepted", "filled"}:
         _mark_trade_cooldown(
             storage.trade_cooldown_state,
+            mode,
             report["selected_symbol"],
             settings.trade_cooldown_seconds,
         )
@@ -858,7 +904,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run the local multi-agent crypto trading MVP.")
     parser.add_argument(
         "--mode",
-        choices=["mock", "binance-testnet", "bybit-demo"],
+        choices=["mock", "binance-testnet", "bybit-demo", "bybit-demo-perp"],
         default=None,
         help="Trading environment to use.",
     )
