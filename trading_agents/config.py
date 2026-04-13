@@ -86,6 +86,12 @@ class Settings:
     fee_hurdle_multiplier: float = _float("FEE_HURDLE_MULTIPLIER", 1.15)
     fast_cycle_signal_boost: float = _float("FAST_CYCLE_SIGNAL_BOOST", 0.08)
     dust_position_multiplier: float = _float("DUST_POSITION_MULTIPLIER", 1.0)
+    perp_max_leverage: float = _float("PERP_MAX_LEVERAGE", 2.0)
+    perp_min_liquidation_buffer_pct: float = _float("PERP_MIN_LIQUIDATION_BUFFER_PCT", 8.0)
+    perp_hard_stop_loss_pct: float = _float("PERP_HARD_STOP_LOSS_PCT", 1.2)
+    perp_take_profit_pct: float = _float("PERP_TAKE_PROFIT_PCT", 2.4)
+    perp_trailing_stop_pct: float = _float("PERP_TRAILING_STOP_PCT", 0.0)
+    perp_enable_protection_orders: bool = _bool("PERP_ENABLE_PROTECTION_ORDERS", True)
 
 
 def load_settings() -> Settings:

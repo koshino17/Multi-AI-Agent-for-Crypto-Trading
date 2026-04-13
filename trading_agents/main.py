@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 from statistics import fmean
-from time import perf_counter
+from time import perf_counter, sleep
 import warnings
 
 warnings.filterwarnings(
@@ -173,6 +173,59 @@ def _normalize_dust_position(
 
 def _pct(value: float) -> float:
     return value * 100.0
+
+
+def _perp_liquidation_buffer_pct(mark_price: float, liq_price: float) -> float:
+    if mark_price <= 0 or liq_price <= 0:
+        return 0.0
+    return abs((mark_price - liq_price) / mark_price) * 100.0
+
+
+def _build_perp_protection_targets(account, settings) -> dict[str, float]:
+    if getattr(account, "market_type", "spot") != "perp":
+        return {"take_profit": 0.0, "stop_loss": 0.0, "trailing_stop": 0.0}
+    position_side = str(getattr(account, "position_side", "flat"))
+    entry_price = float(getattr(account, "entry_price", 0.0) or 0.0)
+    mark_price = float(getattr(account, "mark_price", entry_price) or entry_price)
+    if position_side not in {"long", "short"} or entry_price <= 0:
+        return {"take_profit": 0.0, "stop_loss": 0.0, "trailing_stop": 0.0}
+
+    stop_pct = max(float(settings.perp_hard_stop_loss_pct), 0.0) / 100.0
+    take_pct = max(float(settings.perp_take_profit_pct), 0.0) / 100.0
+    trail_pct = max(float(settings.perp_trailing_stop_pct), 0.0) / 100.0
+
+    if position_side == "long":
+        stop_loss = entry_price * (1.0 - stop_pct) if stop_pct > 0 else 0.0
+        take_profit = entry_price * (1.0 + take_pct) if take_pct > 0 else 0.0
+    else:
+        stop_loss = entry_price * (1.0 + stop_pct) if stop_pct > 0 else 0.0
+        take_profit = entry_price * (1.0 - take_pct) if take_pct > 0 else 0.0
+    trailing_stop = mark_price * trail_pct if trail_pct > 0 else 0.0
+    return {
+        "take_profit": round(max(take_profit, 0.0), 6),
+        "stop_loss": round(max(stop_loss, 0.0), 6),
+        "trailing_stop": round(max(trailing_stop, 0.0), 6),
+    }
+
+
+def _apply_perp_protection(exchange, symbol: str, settings) -> tuple[dict[str, float], dict]:
+    if not settings.perp_enable_protection_orders:
+        return {"take_profit": 0.0, "stop_loss": 0.0, "trailing_stop": 0.0}, {"status": "disabled"}
+    account = None
+    for _ in range(3):
+        account = exchange.fetch_account_state(symbol)
+        if getattr(account, "market_type", "spot") == "perp" and str(getattr(account, "position_side", "flat")) in {"long", "short"}:
+            break
+        sleep(0.6)
+    protection_targets = _build_perp_protection_targets(account, settings) if account is not None else {
+        "take_profit": 0.0,
+        "stop_loss": 0.0,
+        "trailing_stop": 0.0,
+    }
+    if not any(float(value) > 0 for value in protection_targets.values()):
+        return protection_targets, {"status": "skipped", "reason": "no active perp position for protection"}
+    protection_result = exchange.set_position_protection(symbol, **protection_targets)
+    return protection_targets, protection_result
 
 
 def _market_wake_gate(snapshot, effective_base_asset: float, settings) -> dict:
@@ -623,6 +676,13 @@ def execute_cycle(
                 signal_boost=settings.fast_cycle_signal_boost if cycle_mode != "full" else 0.0,
                 strategy_memory=strategy_memory,
                 use_llm=use_candidate_llm_risk,
+                total_equity_usdt=float(getattr(account, "total_equity_usdt", available_usdt)),
+                current_position_notional_usdt=float(getattr(account, "position_notional_usdt", 0.0)),
+                current_leverage=float(getattr(account, "leverage", 0.0)),
+                liq_price=float(getattr(account, "liq_price", 0.0)),
+                position_mm_usdt=float(getattr(account, "position_mm_usdt", 0.0)),
+                perp_max_leverage=settings.perp_max_leverage,
+                perp_min_liquidation_buffer_pct=settings.perp_min_liquidation_buffer_pct,
             ),
         )
         cooldown_remaining = _cooldown_remaining_seconds(cooldowns, mode, candidate_symbol, now_epoch)
@@ -688,6 +748,22 @@ def execute_cycle(
                     "cum_realized_pnl_usdt": round(float(getattr(account, "cum_realized_pnl_usdt", 0.0)), 4),
                     "total_equity_usdt": round(float(getattr(account, "total_equity_usdt", available_usdt)), 4),
                     "available_balance_usdt": round(float(getattr(account, "available_balance_usdt", available_usdt)), 4),
+                    "leverage": round(float(getattr(account, "leverage", 0.0)), 4),
+                    "liq_price": round(float(getattr(account, "liq_price", 0.0)), 6),
+                    "position_im_usdt": round(float(getattr(account, "position_im_usdt", 0.0)), 4),
+                    "position_mm_usdt": round(float(getattr(account, "position_mm_usdt", 0.0)), 4),
+                    "take_profit_price": round(float(getattr(account, "take_profit_price", 0.0)), 6),
+                    "stop_loss_price": round(float(getattr(account, "stop_loss_price", 0.0)), 6),
+                    "trailing_stop_distance": round(float(getattr(account, "trailing_stop_distance", 0.0)), 6),
+                    "position_status": str(getattr(account, "position_status", "Normal")),
+                    "is_reduce_only": bool(getattr(account, "is_reduce_only", False)),
+                    "liquidation_buffer_pct": round(
+                        _perp_liquidation_buffer_pct(
+                            float(getattr(account, "mark_price", snapshot.last_price) or snapshot.last_price),
+                            float(getattr(account, "liq_price", 0.0) or 0.0),
+                        ),
+                        4,
+                    ),
                     "dust_position": bool(dust_info.get("is_dust")),
                     "dust_notional_usdt": round(float(dust_info.get("dust_notional_usdt", 0.0)), 4),
                 },
@@ -779,6 +855,13 @@ def execute_cycle(
                 signal_boost=0.0,
                 strategy_memory=strategy_memory,
                 use_llm=True,
+                total_equity_usdt=float(selected["account"].get("total_equity_usdt", selected["account"]["free_usdt"])),
+                current_position_notional_usdt=float(selected["account"].get("position_notional_usdt", 0.0)),
+                current_leverage=float(selected["account"].get("leverage", 0.0)),
+                liq_price=float(selected["account"].get("liq_price", 0.0)),
+                position_mm_usdt=float(selected["account"].get("position_mm_usdt", 0.0)),
+                perp_max_leverage=settings.perp_max_leverage,
+                perp_min_liquidation_buffer_pct=settings.perp_min_liquidation_buffer_pct,
             ),
         )
         selected["approval"] = selected_approval.__dict__
@@ -839,6 +922,7 @@ def execute_cycle(
         trading_mode=mode,
         position_side=str(report["account"].get("position_side", "flat")),
         buy_balance_buffer_pct=settings.buy_balance_buffer_pct,
+        target_leverage=settings.perp_max_leverage if mode == "bybit-demo-perp" else 0.0,
     )
     try:
         result = exchange.execute_order(order)
@@ -862,6 +946,46 @@ def execute_cycle(
     report["order"] = order
     report["result"] = result
     report["evaluation"] = evaluation.__dict__
+    if str(result.get("status", "")).lower() in {"accepted", "filled"} and mode == "bybit-demo-perp" and not bool(order.get("reduce_only")):
+        try:
+            protection_targets, protection_result = _apply_perp_protection(exchange, report["selected_symbol"], settings)
+            report["protection_targets"] = protection_targets
+            report["protection_result"] = protection_result
+            refreshed_account = exchange.fetch_account_state(report["selected_symbol"])
+            report["account"].update(
+                {
+                    "free_usdt": round(float(getattr(refreshed_account, "free_usdt", report["account"]["free_usdt"])), 4),
+                    "base_asset": round(float(getattr(refreshed_account, "base_asset", report["account"]["base_asset"])), 8),
+                    "effective_base_asset": round(float(getattr(refreshed_account, "base_asset", report["account"].get("effective_base_asset", report["account"]["base_asset"]))), 8),
+                    "position_side": str(getattr(refreshed_account, "position_side", report["account"].get("position_side", "flat"))),
+                    "net_position": round(float(getattr(refreshed_account, "net_position", report["account"].get("net_position", 0.0))), 8),
+                    "entry_price": round(float(getattr(refreshed_account, "entry_price", report["account"].get("entry_price", 0.0))), 6),
+                    "mark_price": round(float(getattr(refreshed_account, "mark_price", report["account"].get("mark_price", report["last_price"]))), 6),
+                    "position_notional_usdt": round(float(getattr(refreshed_account, "position_notional_usdt", report["account"].get("position_notional_usdt", 0.0))), 4),
+                    "unrealized_pnl_usdt": round(float(getattr(refreshed_account, "unrealized_pnl_usdt", report["account"].get("unrealized_pnl_usdt", 0.0))), 4),
+                    "cum_realized_pnl_usdt": round(float(getattr(refreshed_account, "cum_realized_pnl_usdt", report["account"].get("cum_realized_pnl_usdt", 0.0))), 4),
+                    "total_equity_usdt": round(float(getattr(refreshed_account, "total_equity_usdt", report["account"].get("total_equity_usdt", 0.0))), 4),
+                    "available_balance_usdt": round(float(getattr(refreshed_account, "available_balance_usdt", report["account"].get("available_balance_usdt", 0.0))), 4),
+                    "leverage": round(float(getattr(refreshed_account, "leverage", report["account"].get("leverage", 0.0))), 4),
+                    "liq_price": round(float(getattr(refreshed_account, "liq_price", report["account"].get("liq_price", 0.0))), 6),
+                    "position_im_usdt": round(float(getattr(refreshed_account, "position_im_usdt", report["account"].get("position_im_usdt", 0.0))), 4),
+                    "position_mm_usdt": round(float(getattr(refreshed_account, "position_mm_usdt", report["account"].get("position_mm_usdt", 0.0))), 4),
+                    "take_profit_price": round(float(getattr(refreshed_account, "take_profit_price", report["account"].get("take_profit_price", 0.0))), 6),
+                    "stop_loss_price": round(float(getattr(refreshed_account, "stop_loss_price", report["account"].get("stop_loss_price", 0.0))), 6),
+                    "trailing_stop_distance": round(float(getattr(refreshed_account, "trailing_stop_distance", report["account"].get("trailing_stop_distance", 0.0))), 6),
+                    "position_status": str(getattr(refreshed_account, "position_status", report["account"].get("position_status", "Normal"))),
+                    "is_reduce_only": bool(getattr(refreshed_account, "is_reduce_only", report["account"].get("is_reduce_only", False))),
+                    "liquidation_buffer_pct": round(
+                        _perp_liquidation_buffer_pct(
+                            float(getattr(refreshed_account, "mark_price", report["account"].get("mark_price", report["last_price"])) or report["last_price"]),
+                            float(getattr(refreshed_account, "liq_price", report["account"].get("liq_price", 0.0)) or 0.0),
+                        ),
+                        4,
+                    ),
+                }
+            )
+        except Exception as exc:
+            report["protection_result"] = {"status": "error", "reason": str(exc)}
     if str(result.get("status", "")).lower() in {"accepted", "filled"}:
         _mark_trade_cooldown(
             storage.trade_cooldown_state,

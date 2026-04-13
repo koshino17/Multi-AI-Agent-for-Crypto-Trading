@@ -183,7 +183,12 @@ def build_human_report(report: dict, mode: str, symbol: str) -> str:
                 f"position {account.get('position_side', 'flat')} "
                 f"{float(account.get('base_asset', 0.0)):.6f} {account['base_symbol']} "
                 f"@ {float(account.get('entry_price', 0.0)):.4f} | "
-                f"UPnL {float(account.get('unrealized_pnl_usdt', 0.0)):+.2f} USDT"
+                f"UPnL {float(account.get('unrealized_pnl_usdt', 0.0)):+.2f} USDT | "
+                f"Lev {float(account.get('leverage', 0.0)):.2f}x | "
+                f"Liq {float(account.get('liq_price', 0.0)):.4f} | "
+                f"Buffer {float(account.get('liquidation_buffer_pct', 0.0)):.2f}% | "
+                f"TP {float(account.get('take_profit_price', 0.0)):.4f} | "
+                f"SL {float(account.get('stop_loss_price', 0.0)):.4f}"
             )
         else:
             account_line = f"- Account: {account['free_usdt']:.2f} USDT + {account['base_asset']:.6f} {account['base_symbol']}"
@@ -275,6 +280,20 @@ def build_human_report(report: dict, mode: str, symbol: str) -> str:
                 f"- Note: {evaluation['notes']}",
             ]
         )
+    protection_result = report.get("protection_result")
+    protection_targets = report.get("protection_targets")
+    if protection_result or protection_targets:
+        lines.extend(["", "## Protection", ""])
+        if protection_targets:
+            lines.append(
+                f"- Targets: TP {float(protection_targets.get('take_profit', 0.0)):.4f} | "
+                f"SL {float(protection_targets.get('stop_loss', 0.0)):.4f} | "
+                f"Trailing {float(protection_targets.get('trailing_stop', 0.0)):.4f}"
+            )
+        if protection_result:
+            lines.append(f"- Result: {protection_result.get('status', 'unknown')}")
+            if protection_result.get("reason"):
+                lines.append(f"- Note: {protection_result['reason']}")
 
     lines.extend(
         [
@@ -386,6 +405,14 @@ def _portfolio_from_record(record: dict[str, Any]) -> dict[str, Any]:
                     "position_side": str(account.get("position_side", "flat")),
                     "entry_price": _safe_float(account.get("entry_price")),
                     "unrealized_pnl_usdt": _safe_float(account.get("unrealized_pnl_usdt")),
+                    "leverage": _safe_float(account.get("leverage")),
+                    "liq_price": _safe_float(account.get("liq_price")),
+                    "position_im_usdt": _safe_float(account.get("position_im_usdt")),
+                    "position_mm_usdt": _safe_float(account.get("position_mm_usdt")),
+                    "take_profit_price": _safe_float(account.get("take_profit_price")),
+                    "stop_loss_price": _safe_float(account.get("stop_loss_price")),
+                    "trailing_stop_distance": _safe_float(account.get("trailing_stop_distance")),
+                    "liquidation_buffer_pct": _safe_float(account.get("liquidation_buffer_pct")),
                 }
             )
             seen_symbols.add(symbol)
@@ -416,6 +443,14 @@ def _portfolio_from_record(record: dict[str, Any]) -> dict[str, Any]:
                     "position_side": str(account.get("position_side", "flat")),
                     "entry_price": _safe_float(account.get("entry_price")),
                     "unrealized_pnl_usdt": _safe_float(account.get("unrealized_pnl_usdt")),
+                    "leverage": _safe_float(account.get("leverage")),
+                    "liq_price": _safe_float(account.get("liq_price")),
+                    "position_im_usdt": _safe_float(account.get("position_im_usdt")),
+                    "position_mm_usdt": _safe_float(account.get("position_mm_usdt")),
+                    "take_profit_price": _safe_float(account.get("take_profit_price")),
+                    "stop_loss_price": _safe_float(account.get("stop_loss_price")),
+                    "trailing_stop_distance": _safe_float(account.get("trailing_stop_distance")),
+                    "liquidation_buffer_pct": _safe_float(account.get("liquidation_buffer_pct")),
                 }
             )
 
@@ -605,6 +640,14 @@ def _build_financial_snapshot(
                     "unrealized_pnl_pct": base_pct,
                     "position_side": side,
                     "market_type": "perp",
+                    "leverage": _safe_float(item.get("leverage")),
+                    "liq_price": _safe_float(item.get("liq_price")),
+                    "position_im_usdt": _safe_float(item.get("position_im_usdt")),
+                    "position_mm_usdt": _safe_float(item.get("position_mm_usdt")),
+                    "take_profit_price": _safe_float(item.get("take_profit_price")),
+                    "stop_loss_price": _safe_float(item.get("stop_loss_price")),
+                    "trailing_stop_distance": _safe_float(item.get("trailing_stop_distance")),
+                    "liquidation_buffer_pct": _safe_float(item.get("liquidation_buffer_pct")),
                 }
             )
         holdings.sort(key=lambda item: float(item["value_usdt"]), reverse=True)
@@ -625,7 +668,12 @@ def _build_financial_snapshot(
             "daily_fees_usdt": daily_fees,
             "cumulative_fees_usdt": sum(item["fee_usdt"] for item in accepted_all),
             "available_usdt": _safe_float(latest_snapshot.get("free_usdt")),
+            "available_balance_ratio_pct": (_safe_float(latest_snapshot.get("free_usdt")) / total_portfolio_value * 100)
+            if total_portfolio_value > 0
+            else 0.0,
             "capital_utilization_pct": (invested_value / total_portfolio_value * 100) if total_portfolio_value > 0 else 0.0,
+            "gross_exposure_pct": (invested_value / total_portfolio_value * 100) if total_portfolio_value > 0 else 0.0,
+            "effective_leverage": (invested_value / total_portfolio_value) if total_portfolio_value > 0 else 0.0,
             "current_long_exposure_usdt": current_long_exposure,
             "current_short_exposure_usdt": current_short_exposure,
             "holdings": holdings,
@@ -972,17 +1020,40 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
         "",
         "## Current Portfolio",
         "",
-        (
-            f"- Available USDT: {float(financial.get('available_usdt', 0.0)):.2f} USDT "
-            f"({100 - float(financial.get('capital_utilization_pct', 0.0)):.1f}%)"
-        ),
-        f"- Capital Utilization: {float(financial.get('capital_utilization_pct', 0.0)):.1f}%",
-        (
-            f"- Directional Exposure: "
-            f"long={float(financial.get('current_long_exposure_usdt', 0.0)):.2f} USDT | "
-            f"short={float(financial.get('current_short_exposure_usdt', 0.0)):.2f} USDT"
-        ),
     ]
+
+    is_perp_summary = any(item.get("market_type") == "perp" for item in financial.get("holdings", []))
+    if is_perp_summary:
+        lines.extend(
+            [
+                (
+                    f"- Available Balance: {float(financial.get('available_usdt', 0.0)):.2f} USDT "
+                    f"({float(financial.get('available_balance_ratio_pct', 0.0)):.1f}% of equity)"
+                ),
+                f"- Gross Exposure: {float(financial.get('gross_exposure_pct', financial.get('capital_utilization_pct', 0.0))):.1f}% of equity",
+                f"- Effective Leverage: {float(financial.get('effective_leverage', 0.0)):.2f}x",
+                (
+                    f"- Directional Exposure: "
+                    f"long={float(financial.get('current_long_exposure_usdt', 0.0)):.2f} USDT | "
+                    f"short={float(financial.get('current_short_exposure_usdt', 0.0)):.2f} USDT"
+                ),
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                (
+                    f"- Available USDT: {float(financial.get('available_usdt', 0.0)):.2f} USDT "
+                    f"({100 - float(financial.get('capital_utilization_pct', 0.0)):.1f}%)"
+                ),
+                f"- Capital Utilization: {float(financial.get('capital_utilization_pct', 0.0)):.1f}%",
+                (
+                    f"- Directional Exposure: "
+                    f"long={float(financial.get('current_long_exposure_usdt', 0.0)):.2f} USDT | "
+                    f"short={float(financial.get('current_short_exposure_usdt', 0.0)):.2f} USDT"
+                ),
+            ]
+        )
 
     holdings = financial.get("holdings", [])
     if holdings:
@@ -993,7 +1064,9 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
                     f"  - {item['asset']} {item.get('position_side', 'flat')}: {float(item['quantity']):.6f} "
                     f"(Notional: {float(item['value_usdt']):.2f} USDT | Entry: {float(item.get('entry_price', 0.0)):.4f} | "
                     f"Mark: {float(item['price']):.4f} | Weight: {float(item['weight_pct']):.1f}% | "
-                    f"UPnL: {float(item['unrealized_pnl_usdt']):+.2f} USDT / {float(item['unrealized_pnl_pct']):+.2f}%)"
+                    f"UPnL: {float(item['unrealized_pnl_usdt']):+.2f} USDT / {float(item['unrealized_pnl_pct']):+.2f}% | "
+                    f"Lev: {float(item.get('leverage', 0.0)):.2f}x | Liq buffer: {float(item.get('liquidation_buffer_pct', 0.0)):.2f}% | "
+                    f"TP: {float(item.get('take_profit_price', 0.0)):.4f} | SL: {float(item.get('stop_loss_price', 0.0)):.4f})"
                 )
             else:
                 lines.append(
@@ -1096,7 +1169,12 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
                     f"position {account.get('position_side', 'flat')} "
                     f"{float(account.get('base_asset', 0.0)):.6f} {account['base_symbol']} "
                     f"@ {float(account.get('entry_price', 0.0)):.4f} | "
-                    f"UPnL {float(account.get('unrealized_pnl_usdt', 0.0)):+.2f} USDT"
+                    f"UPnL {float(account.get('unrealized_pnl_usdt', 0.0)):+.2f} USDT | "
+                    f"Lev {float(account.get('leverage', 0.0)):.2f}x | "
+                    f"Liq {float(account.get('liq_price', 0.0)):.4f} | "
+                    f"Buffer {float(account.get('liquidation_buffer_pct', 0.0)):.2f}% | "
+                    f"TP {float(account.get('take_profit_price', 0.0)):.4f} | "
+                    f"SL {float(account.get('stop_loss_price', 0.0)):.4f}"
                 )
             else:
                 account_line = (

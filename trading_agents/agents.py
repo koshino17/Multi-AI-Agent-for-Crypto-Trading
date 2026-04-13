@@ -457,6 +457,13 @@ class RiskSupervisorAgent:
         signal_boost: float = 0.0,
         strategy_memory: dict | None = None,
         use_llm: bool = True,
+        total_equity_usdt: float = 0.0,
+        current_position_notional_usdt: float = 0.0,
+        current_leverage: float = 0.0,
+        liq_price: float = 0.0,
+        position_mm_usdt: float = 0.0,
+        perp_max_leverage: float = 0.0,
+        perp_min_liquidation_buffer_pct: float = 0.0,
     ) -> Approval:
         perp_mode = "perp" in trading_mode
         demo_mode = trading_mode.startswith("bybit-demo")
@@ -535,6 +542,8 @@ class RiskSupervisorAgent:
             (idea.action == "buy" and position_side == "short")
             or (idea.action == "sell" and position_side == "long")
         )
+        current_equity = max(total_equity_usdt, available_usdt, 0.0)
+        current_exposure = abs(current_position_notional_usdt)
         if opening_long and buffered_available_usdt <= 5:
             return Approval(False, "not enough USDT to open a position", 0.0, warnings)
         if not perp_mode and idea.action == "sell" and available_base_asset <= 0:
@@ -570,6 +579,36 @@ class RiskSupervisorAgent:
                 0.0,
                 warnings,
             )
+        if perp_mode and current_equity > 0:
+            projected_exposure = current_exposure
+            if opening_long or opening_short:
+                projected_exposure += max_notional
+            elif closing_position:
+                projected_exposure = max(current_exposure - max_notional, 0.0)
+            effective_leverage = projected_exposure / current_equity if current_equity > 0 else 0.0
+            if perp_max_leverage > 0 and effective_leverage > perp_max_leverage + 1e-9:
+                return Approval(
+                    False,
+                    f"projected leverage too high: {effective_leverage:.2f}x > {perp_max_leverage:.2f}x",
+                    0.0,
+                    warnings,
+                )
+            if liq_price > 0 and last_price > 0 and current_exposure > 0:
+                liq_buffer_pct = abs((last_price - liq_price) / last_price) * 100.0
+                if opening_long or opening_short:
+                    if perp_min_liquidation_buffer_pct > 0 and liq_buffer_pct < perp_min_liquidation_buffer_pct:
+                        return Approval(
+                            False,
+                            f"liquidation buffer too tight: {liq_buffer_pct:.2f}% < {perp_min_liquidation_buffer_pct:.2f}%",
+                            0.0,
+                            warnings,
+                        )
+                elif liq_buffer_pct < max(perp_min_liquidation_buffer_pct * 1.25, perp_min_liquidation_buffer_pct):
+                    warnings.append(f"liquidation buffer is tight: {liq_buffer_pct:.2f}%")
+            if position_mm_usdt > 0 and current_equity > 0:
+                mm_ratio_pct = position_mm_usdt / current_equity * 100.0
+                if mm_ratio_pct >= 35.0:
+                    warnings.append(f"maintenance margin elevated: {mm_ratio_pct:.1f}% of equity")
         if cycle_mode == "fast" and idea.action in {"buy", "sell"} and idea.score < max(effective_min_signal, 0.64):
             return Approval(False, f"fast-cycle confidence too low: {idea.score:.2f}", 0.0, warnings)
         if idea.action == "sell" and available_base_asset > 0 and (not perp_mode or position_side == "long"):
@@ -672,6 +711,7 @@ class ExecutorAgent:
         trading_mode: str,
         position_side: str = "flat",
         buy_balance_buffer_pct: float = 1.0,
+        target_leverage: float = 0.0,
     ) -> dict:
         perp_mode = "perp" in trading_mode
         if not perp_mode and side == "buy":
@@ -697,6 +737,7 @@ class ExecutorAgent:
             "quantity": round(quantity, 6),
             "price": round(price, 4),
             "reduce_only": bool(perp_mode and ((side == "buy" and position_side == "short") or (side == "sell" and position_side == "long"))),
+            "target_leverage": round(float(target_leverage), 4) if target_leverage > 0 else 0.0,
         }
 
 

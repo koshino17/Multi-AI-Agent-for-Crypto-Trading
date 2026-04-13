@@ -33,6 +33,15 @@ class AccountState:
     cum_realized_pnl_usdt: float = 0.0
     total_equity_usdt: float = 0.0
     available_balance_usdt: float = 0.0
+    leverage: float = 0.0
+    liq_price: float = 0.0
+    position_im_usdt: float = 0.0
+    position_mm_usdt: float = 0.0
+    take_profit_price: float = 0.0
+    stop_loss_price: float = 0.0
+    trailing_stop_distance: float = 0.0
+    position_status: str = "Normal"
+    is_reduce_only: bool = False
 
 
 class MockExchangeClient:
@@ -83,6 +92,19 @@ class MockExchangeClient:
 
     def minimum_order_value_usdt(self, symbol: str) -> float:
         return 0.0
+
+    def set_leverage(self, symbol: str, leverage: float) -> dict:
+        return {"status": "unsupported", "reason": "mock exchange has no leverage"}
+
+    def set_position_protection(
+        self,
+        symbol: str,
+        *,
+        take_profit: float = 0.0,
+        stop_loss: float = 0.0,
+        trailing_stop: float = 0.0,
+    ) -> dict:
+        return {"status": "unsupported", "reason": "mock exchange has no position protection"}
 
 
 class BinanceTestnetExchangeClient:
@@ -138,6 +160,19 @@ class BinanceTestnetExchangeClient:
 
     def minimum_order_value_usdt(self, symbol: str) -> float:
         return 0.0
+
+    def set_leverage(self, symbol: str, leverage: float) -> dict:
+        return {"status": "unsupported", "reason": "spot testnet has no leverage"}
+
+    def set_position_protection(
+        self,
+        symbol: str,
+        *,
+        take_profit: float = 0.0,
+        stop_loss: float = 0.0,
+        trailing_stop: float = 0.0,
+    ) -> dict:
+        return {"status": "unsupported", "reason": "spot testnet has no position protection"}
 
 
 class BybitDemoExchangeClient:
@@ -341,6 +376,19 @@ class BybitDemoExchangeClient:
             "order": order,
         }
 
+    def set_leverage(self, symbol: str, leverage: float) -> dict:
+        return {"status": "unsupported", "reason": "spot mode has no leverage"}
+
+    def set_position_protection(
+        self,
+        symbol: str,
+        *,
+        take_profit: float = 0.0,
+        stop_loss: float = 0.0,
+        trailing_stop: float = 0.0,
+    ) -> dict:
+        return {"status": "unsupported", "reason": "spot mode has no position protection"}
+
 
 class BybitDemoPerpExchangeClient(BybitDemoExchangeClient):
     def fetch_snapshot(self, symbol: str, timeframe: str) -> MarketSnapshot:
@@ -432,6 +480,15 @@ class BybitDemoPerpExchangeClient(BybitDemoExchangeClient):
             cum_realized_pnl_usdt=float(position.get("cumRealisedPnl", 0.0) or 0.0),
             total_equity_usdt=total_equity or (available_balance or wallet_usdt),
             available_balance_usdt=available_balance or wallet_usdt,
+            leverage=float(position.get("leverage", 0.0) or 0.0),
+            liq_price=float(position.get("liqPrice", 0.0) or 0.0),
+            position_im_usdt=float(position.get("positionIM", 0.0) or 0.0),
+            position_mm_usdt=float(position.get("positionMM", 0.0) or 0.0),
+            take_profit_price=float(position.get("takeProfit", 0.0) or 0.0),
+            stop_loss_price=float(position.get("stopLoss", 0.0) or 0.0),
+            trailing_stop_distance=float(position.get("trailingStop", 0.0) or 0.0),
+            position_status=str(position.get("positionStatus", "Normal") or "Normal"),
+            is_reduce_only=bool(position.get("isReduceOnly", False)),
         )
 
     def _instrument_info(self, symbol: str) -> dict:
@@ -460,6 +517,14 @@ class BybitDemoPerpExchangeClient(BybitDemoExchangeClient):
             return 0.0
 
     def execute_order(self, order: dict) -> dict:
+        target_leverage = float(order.get("target_leverage", 0.0) or 0.0)
+        if target_leverage > 0 and not bool(order.get("reduce_only")):
+            try:
+                self.set_leverage(order["symbol"], target_leverage)
+            except RuntimeError as exc:
+                message = str(exc).lower()
+                if "not modified" not in message and "same to" not in message and "leverage not modified" not in message:
+                    raise
         qty = self._normalize_quantity(order["symbol"], float(order["quantity"]))
         self._validate_order_value(order["symbol"], qty, float(order["price"]))
         payload = {
@@ -486,4 +551,64 @@ class BybitDemoPerpExchangeClient(BybitDemoExchangeClient):
             "response": response["result"],
             "submitted_qty": qty,
             "order": order,
+        }
+
+    def set_leverage(self, symbol: str, leverage: float) -> dict:
+        normalized_leverage = max(float(leverage), 1.0)
+        payload = {
+            "category": "linear",
+            "symbol": self._symbol(symbol),
+            "buyLeverage": format(Decimal(str(normalized_leverage)).normalize(), "f"),
+            "sellLeverage": format(Decimal(str(normalized_leverage)).normalize(), "f"),
+        }
+        response = self._request(
+            "POST",
+            "/v5/position/set-leverage",
+            payload,
+            private=True,
+        )
+        return {
+            "status": "ok",
+            "symbol": symbol,
+            "leverage": normalized_leverage,
+            "response": response.get("result", {}),
+        }
+
+    def set_position_protection(
+        self,
+        symbol: str,
+        *,
+        take_profit: float = 0.0,
+        stop_loss: float = 0.0,
+        trailing_stop: float = 0.0,
+    ) -> dict:
+        payload: dict[str, str | int] = {
+            "category": "linear",
+            "symbol": self._symbol(symbol),
+            "tpslMode": "Full",
+            "positionIdx": 0,
+            "tpTriggerBy": "MarkPrice",
+            "slTriggerBy": "MarkPrice",
+        }
+        if take_profit > 0:
+            payload["takeProfit"] = format(Decimal(str(take_profit)).normalize(), "f")
+        if stop_loss > 0:
+            payload["stopLoss"] = format(Decimal(str(stop_loss)).normalize(), "f")
+        if trailing_stop > 0:
+            payload["trailingStop"] = format(Decimal(str(trailing_stop)).normalize(), "f")
+        if len(payload) == 6:
+            return {"status": "skipped", "reason": "no protection prices provided"}
+        response = self._request(
+            "POST",
+            "/v5/position/trading-stop",
+            payload,
+            private=True,
+        )
+        return {
+            "status": "ok",
+            "symbol": symbol,
+            "take_profit": take_profit,
+            "stop_loss": stop_loss,
+            "trailing_stop": trailing_stop,
+            "response": response.get("result", {}),
         }

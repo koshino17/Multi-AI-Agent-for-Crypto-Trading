@@ -95,10 +95,13 @@ class NotionSyncClient:
                 f"short={float(financial.get('realized_short_pnl_usdt', 0.0)):+.2f} USDT"
             ),
             _bullet(
-                f"Available USDT: {float(financial.get('available_usdt', 0.0)):.2f} USDT "
-                f"({100 - float(financial.get('capital_utilization_pct', 0.0)):.1f}%)"
+                f"Available Balance: {float(financial.get('available_usdt', 0.0)):.2f} USDT "
+                f"({float(financial.get('available_balance_ratio_pct', 100 - float(financial.get('capital_utilization_pct', 0.0)))):.1f}% of equity)"
             ),
-            _bullet(f"Capital Utilization: {float(financial.get('capital_utilization_pct', 0.0)):.1f}%"),
+            _bullet(
+                f"Gross Exposure: {float(financial.get('gross_exposure_pct', financial.get('capital_utilization_pct', 0.0))):.1f}% of equity"
+            ),
+            _bullet(f"Effective Leverage: {float(financial.get('effective_leverage', 0.0)):.2f}x"),
             _bullet(
                 "Directional Exposure: "
                 f"long={float(financial.get('current_long_exposure_usdt', 0.0)):.2f} USDT | "
@@ -148,7 +151,12 @@ class NotionSyncClient:
                     f"position {account.get('position_side', 'flat')} "
                     f"{float(account.get('base_asset', 0.0)):.6f} {account.get('base_symbol', '')} "
                     f"@ {float(account.get('entry_price', 0.0)):.4f} | "
-                    f"UPnL {float(account.get('unrealized_pnl_usdt', 0.0)):+.2f} USDT"
+                    f"UPnL {float(account.get('unrealized_pnl_usdt', 0.0)):+.2f} USDT | "
+                    f"Lev {float(account.get('leverage', 0.0)):.2f}x | "
+                    f"Liq {float(account.get('liq_price', 0.0)):.4f} | "
+                    f"Buffer {float(account.get('liquidation_buffer_pct', 0.0)):.2f}% | "
+                    f"TP {float(account.get('take_profit_price', 0.0)):.4f} | "
+                    f"SL {float(account.get('stop_loss_price', 0.0)):.4f}"
                 )
             else:
                 account_line = (
@@ -205,6 +213,10 @@ class NotionSyncClient:
                 f"long={float(financial.get('current_long_exposure_usdt', 0.0)):.2f} USDT | "
                 f"short={float(financial.get('current_short_exposure_usdt', 0.0)):.2f} USDT"
             ),
+            _bullet(
+                f"Gross Exposure: {float(financial.get('gross_exposure_pct', financial.get('capital_utilization_pct', 0.0))):.1f}% of equity"
+            ),
+            _bullet(f"Effective Leverage: {float(financial.get('effective_leverage', 0.0)):.2f}x"),
             _bullet(f"Monitor heartbeats: {daily_summary.get('monitor_heartbeats', 0)}"),
             _bullet(f"Total decisions: {daily_summary.get('total', 0)}"),
             _bullet(f"Orders submitted: {daily_summary.get('submitted_orders', 0)}"),

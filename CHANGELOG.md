@@ -16,6 +16,53 @@
 
 ---
 
+## v0.11.1 - Perp safety rails and reporting correction
+
+### Why
+
+- `v0.11.0` 已經讓系統能在 Bybit Demo perp 上開多與開空，但合約版仍缺少真正的安全底座
+- 4/13 報表與實際檢查顯示，系統還沒有槓桿上限、強平距離防護與交易所硬停損/止盈保護，這會讓後續要做的 regime / grid 升級缺少安全邊界
+- perp 報表也仍沿用部分現貨語意，像 `Available USDT (-126.5%)` 這種顯示會誤導判讀
+
+### What Changed
+
+- `AccountState` 新增 perp 專用風控欄位：
+  - `leverage`
+  - `liq_price`
+  - `position_im_usdt`
+  - `position_mm_usdt`
+  - `take_profit_price`
+  - `stop_loss_price`
+  - `trailing_stop_distance`
+  - `position_status`
+  - `is_reduce_only`
+- Bybit perp client 新增：
+  - `set_leverage()`
+  - `set_position_protection()`
+- 新開 perp 倉位成功後，會自動嘗試設定交易所保護單：
+  - hard stop loss
+  - take profit
+  - optional trailing stop
+- `risk_supervisor` 新增合約專用檢查：
+  - projected leverage 上限
+  - liquidation buffer 太近時拒絕加碼
+  - maintenance margin 過高時警告
+- Daily report / human report / Notion live status 改為正確的 perp 語意：
+  - `Available Balance`
+  - `Gross Exposure`
+  - `Effective Leverage`
+  - `Liq buffer`
+  - `TP / SL`
+- `.env.example` 與 `README.md` 新增 perp 安全底座參數：
+  - `PERP_MAX_LEVERAGE`
+  - `PERP_MIN_LIQUIDATION_BUFFER_PCT`
+  - `PERP_HARD_STOP_LOSS_PCT`
+  - `PERP_TAKE_PROFIT_PCT`
+  - `PERP_TRAILING_STOP_PCT`
+  - `PERP_ENABLE_PROTECTION_ORDERS`
+
+---
+
 ## v0.11.0 - Bybit perp prototype and directional reporting
 
 ### Why

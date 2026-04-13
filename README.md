@@ -174,6 +174,12 @@ http://127.0.0.1:8765
 - `buy` 在 perp 模式下代表看多或回補空單
 - `sell` 在 perp 模式下代表看空或平掉多單
 - 日報 / Live Status 會顯示 `equity / available balance / long-short position / unrealized pnl`
+- 新開倉位會自動嘗試設定交易所保護：
+  - `PERP_MAX_LEVERAGE`
+  - `PERP_MIN_LIQUIDATION_BUFFER_PCT`
+  - `PERP_HARD_STOP_LOSS_PCT`
+  - `PERP_TAKE_PROFIT_PCT`
+  - `PERP_TRAILING_STOP_PCT`
 
 ## 預設策略節奏
 
@@ -270,6 +276,12 @@ LLM_WAKE_VOLUME_RATIO=1.15
 LLM_WAKE_BREAKOUT_PROXIMITY_PCT=0.20
 LLM_WAKE_POSITION_MOVE_PCT=0.20
 DUST_POSITION_MULTIPLIER=1.0
+PERP_MAX_LEVERAGE=2.0
+PERP_MIN_LIQUIDATION_BUFFER_PCT=8.0
+PERP_HARD_STOP_LOSS_PCT=1.2
+PERP_TAKE_PROFIT_PCT=2.4
+PERP_TRAILING_STOP_PCT=0.0
+PERP_ENABLE_PROTECTION_ORDERS=true
 ```
 
 其中：
@@ -278,6 +290,9 @@ DUST_POSITION_MULTIPLIER=1.0
 - `LLM_WAKE_GATE_ENABLED=true` 代表每個候選標的會先用 volatility、momentum、volume expansion、breakout proximity 和持倉價格變化計算 `wake_score`，沒達標就不喚醒重型 LLM。
 - `DUST_POSITION_MULTIPLIER=1.0` 代表低於交易所最小下單額的殘餘倉位會被視為 dust，保留在帳戶中，但不再拿來當成可賣持倉參與決策。
 - `SENTIMENT_REQUEST_TIMEOUT_SECONDS=6` 與 `SENTIMENT_CACHE_TTL_SECONDS=120` 用來壓低情緒資料抓取延遲；像 Fear & Greed、CoinGecko trending、共用 RSS 這些來源，會在短時間內重用快取而不是每個標的都重抓一次。
+- `PERP_MAX_LEVERAGE=2.0` 會在風控審批時限制有效槓桿，避免合約曝險擴得太快。
+- `PERP_MIN_LIQUIDATION_BUFFER_PCT=8.0` 會在現有倉位距離強平太近時擋下新的加碼。
+- `PERP_HARD_STOP_LOSS_PCT` / `PERP_TAKE_PROFIT_PCT` 會在新開倉後嘗試設定交易所 stop loss / take profit。
 
 ## 專案結構
 
