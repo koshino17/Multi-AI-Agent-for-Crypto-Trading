@@ -70,6 +70,7 @@ class NotionSyncClient:
         blocked_reasons = daily_summary.get("blocked_reason_counts", {})
         rejection_reasons = daily_summary.get("rejection_reason_counts", {})
         financial = daily_summary.get("financial_snapshot", {})
+        equity_curve = daily_summary.get("equity_curve", {})
         top_blocked_reason = next(iter(blocked_reasons.items()), ("none", 0))
         top_rejected_reason = next(iter(rejection_reasons.items()), ("none", 0))
         stage_latency_seconds = daily_summary.get("stage_latency_seconds", {})
@@ -106,6 +107,10 @@ class NotionSyncClient:
                 "Directional Exposure: "
                 f"long={float(financial.get('current_long_exposure_usdt', 0.0)):.2f} USDT | "
                 f"short={float(financial.get('current_short_exposure_usdt', 0.0)):.2f} USDT"
+            ),
+            _bullet(
+                f"Equity Curve: {equity_curve.get('sparkline', 'n/a')} "
+                f"(range {float(equity_curve.get('min_value_usdt', 0.0)):.2f} - {float(equity_curve.get('max_value_usdt', 0.0)):.2f} USDT)"
             ),
             _bullet(f"Total decisions: {daily_summary.get('total', 0)}"),
             _bullet(f"Monitor heartbeats: {daily_summary.get('monitor_heartbeats', 0)}"),
@@ -186,6 +191,7 @@ class NotionSyncClient:
         approval = latest.get("approval", {})
         blocked_reasons = daily_summary.get("blocked_reason_counts", {})
         financial = daily_summary.get("financial_snapshot", {})
+        equity_curve = daily_summary.get("equity_curve", {})
         stage_latency_seconds = daily_summary.get("stage_latency_seconds", {})
         stage_latency_p95_seconds = daily_summary.get("stage_latency_p95_seconds", {})
         long_proposals = int(daily_summary.get("long_proposals", 0))
@@ -212,6 +218,10 @@ class NotionSyncClient:
                 "Directional Exposure: "
                 f"long={float(financial.get('current_long_exposure_usdt', 0.0)):.2f} USDT | "
                 f"short={float(financial.get('current_short_exposure_usdt', 0.0)):.2f} USDT"
+            ),
+            _bullet(
+                f"Equity Curve: {equity_curve.get('sparkline', 'n/a')} "
+                f"(range {float(equity_curve.get('min_value_usdt', 0.0)):.2f} - {float(equity_curve.get('max_value_usdt', 0.0)):.2f} USDT)"
             ),
             _bullet(
                 f"Gross Exposure: {float(financial.get('gross_exposure_pct', financial.get('capital_utilization_pct', 0.0))):.1f}% of equity"
@@ -526,6 +536,7 @@ def _build_daily_review_blocks(
     latest = daily_summary.get("latest") or {}
     debate = latest.get("debate", {})
     financial = daily_summary.get("financial_snapshot", {})
+    equity_curve = daily_summary.get("equity_curve", {})
     avg_scores = daily_summary.get("avg_scores", {})
     stage_latency_seconds = daily_summary.get("stage_latency_seconds", {})
     stage_latency_p95_seconds = daily_summary.get("stage_latency_p95_seconds", {})
@@ -545,6 +556,10 @@ def _build_daily_review_blocks(
         _bullet(f"Unrealized PnL: {float(financial.get('unrealized_pnl_usdt', 0.0)):+.2f} USDT"),
         _bullet(f"Daily Fees Paid: {float(financial.get('daily_fees_usdt', 0.0)):.2f} USDT"),
         _bullet(f"Cumulative Fees Paid: {float(financial.get('cumulative_fees_usdt', 0.0)):.2f} USDT"),
+        _bullet(
+            f"Equity Curve: {equity_curve.get('sparkline', 'n/a')} "
+            f"(range {float(equity_curve.get('min_value_usdt', 0.0)):.2f} - {float(equity_curve.get('max_value_usdt', 0.0)):.2f} USDT)"
+        ),
         _heading_2("Current Portfolio"),
         _bullet(
             f"Available USDT: {float(financial.get('available_usdt', 0.0)):.2f} USDT "

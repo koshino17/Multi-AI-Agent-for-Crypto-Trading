@@ -14,6 +14,7 @@ class StorageLayout:
     trade_logs: Path
     evaluation_logs: Path
     reports: Path
+    chart_reports: Path
     daily_reports: Path
     service: Path
     runner_supervisor_pid: Path
@@ -26,6 +27,8 @@ class StorageLayout:
     trade_cooldown_state: Path
     sentiment_http_cache_state: Path
     position_policy_state: Path
+    equity_curve_history_state: Path
+    equity_curve_svg: Path
 
 
 def build_storage_layout(root: str) -> StorageLayout:
@@ -42,6 +45,7 @@ def build_storage_layout(root: str) -> StorageLayout:
         trade_logs=base / "logs" / "trades",
         evaluation_logs=base / "logs" / "evaluations",
         reports=base / "reports",
+        chart_reports=base / "reports" / "charts",
         daily_reports=base / "reports" / "daily",
         service=base / "service",
         runner_supervisor_pid=base / "service" / "runner_supervisor.pid",
@@ -54,6 +58,8 @@ def build_storage_layout(root: str) -> StorageLayout:
         trade_cooldown_state=base / "service" / "trade_cooldowns.json",
         sentiment_http_cache_state=base / "service" / "sentiment_http_cache.json",
         position_policy_state=base / "service" / "position_policy.json",
+        equity_curve_history_state=base / "service" / "equity_curve_history.jsonl",
+        equity_curve_svg=base / "reports" / "charts" / "equity-curve-latest.svg",
     )
     for path in (
         layout.root,
@@ -64,6 +70,7 @@ def build_storage_layout(root: str) -> StorageLayout:
         layout.trade_logs,
         layout.evaluation_logs,
         layout.reports,
+        layout.chart_reports,
         layout.daily_reports,
         layout.service,
     ):

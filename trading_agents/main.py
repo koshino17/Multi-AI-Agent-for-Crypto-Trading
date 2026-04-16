@@ -46,6 +46,7 @@ from trading_agents.reporting import (
     build_daily_summary,
     load_daily_summary_data,
     local_date_label,
+    update_equity_curve,
     write_human_report,
     write_json_log,
     write_daily_summary,
@@ -534,6 +535,14 @@ def _finalize_reporting(
     daily_content = build_daily_summary(storage.trade_logs, date_label, storage.runner_log)
     daily_report_path = write_daily_summary(storage.daily_reports, date_label, daily_content)
     report["daily_report"] = str(daily_report_path)
+    daily_summary = load_daily_summary_data(storage.trade_logs, date_label, storage.runner_log)
+    equity_curve = update_equity_curve(
+        history_path=storage.equity_curve_history_state,
+        chart_path=storage.equity_curve_svg,
+        financial_snapshot=daily_summary.get("financial_snapshot", {}),
+    )
+    daily_summary["equity_curve"] = equity_curve
+    report["equity_curve"] = equity_curve
 
     notion_sync = {"status": "disabled", "reason": "missing Notion token or status page id"}
     if settings.notion_api_token and settings.notion_status_page_id:
@@ -545,7 +554,6 @@ def _finalize_reporting(
                     "mode": "heartbeat_deferred",
                 }
             else:
-                daily_summary = load_daily_summary_data(storage.trade_logs, date_label, storage.runner_log)
                 notion_sync = sync_notion_status(
                     token=settings.notion_api_token,
                     page_id=settings.notion_status_page_id,
@@ -576,7 +584,6 @@ def _finalize_reporting(
                     "mode": "daily_review",
                 }
             else:
-                daily_summary = load_daily_summary_data(storage.trade_logs, date_label, storage.runner_log)
                 daily_review = daily_reviewer.evaluate(date_label, daily_summary)
                 daily_review_sync = sync_notion_daily_review(
                     token=settings.notion_api_token,
@@ -594,7 +601,6 @@ def _finalize_reporting(
 
     strategy_memory_sync = {"status": "skipped", "reason": "12h reflection already up to date"}
     try:
-        daily_summary = load_daily_summary_data(storage.trade_logs, date_label, storage.runner_log)
         current_slot = current_strategy_slot()
         strategy_memory = load_strategy_memory(storage.strategy_memory_state)
         if strategy_memory.get("slot") != current_slot:

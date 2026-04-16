@@ -95,6 +95,185 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            rows.append(payload)
+    return rows
+
+
+def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    lines = [json.dumps(row, ensure_ascii=False) for row in rows]
+    path.write_text("\n".join(lines) + ("\n" if lines else ""))
+
+
+def _sparkline(values: list[float]) -> str:
+    if not values:
+        return ""
+    ticks = "▁▂▃▄▅▆▇█"
+    low = min(values)
+    high = max(values)
+    if abs(high - low) <= 1e-9:
+        return ticks[0] * len(values)
+    output = []
+    for value in values:
+        idx = int(round((value - low) / (high - low) * (len(ticks) - 1)))
+        output.append(ticks[max(0, min(idx, len(ticks) - 1))])
+    return "".join(output)
+
+
+def update_equity_curve(
+    *,
+    history_path: Path,
+    chart_path: Path,
+    financial_snapshot: dict[str, Any],
+    timestamp: datetime | None = None,
+    min_interval_seconds: float = 300.0,
+    max_points: int = 800,
+) -> dict[str, Any]:
+    total_value = _safe_float(financial_snapshot.get("total_portfolio_value_usdt"))
+    if total_value <= 0:
+        return {"status": "skipped", "reason": "no portfolio value available"}
+    ts = (timestamp or _local_now()).astimezone(LOCAL_TZ)
+    history = _read_jsonl(history_path)
+    last = history[-1] if history else None
+    now_epoch = ts.timestamp()
+    should_append = True
+    if last:
+        last_epoch = _safe_float(last.get("timestamp_epoch"))
+        last_value = _safe_float(last.get("total_portfolio_value_usdt"))
+        if abs(total_value - last_value) < 0.01 and (now_epoch - last_epoch) < min_interval_seconds:
+            should_append = False
+    if should_append:
+        history.append(
+            {
+                "timestamp": ts.isoformat(),
+                "timestamp_epoch": now_epoch,
+                "total_portfolio_value_usdt": round(total_value, 6),
+                "daily_pnl_usdt": round(_safe_float(financial_snapshot.get("daily_pnl_usdt")), 6),
+                "realized_pnl_usdt": round(_safe_float(financial_snapshot.get("realized_pnl_usdt")), 6),
+                "unrealized_pnl_usdt": round(_safe_float(financial_snapshot.get("unrealized_pnl_usdt")), 6),
+            }
+        )
+        history = history[-max_points:]
+        _write_jsonl(history_path, history)
+    svg = build_equity_curve_svg(history)
+    chart_path.parent.mkdir(parents=True, exist_ok=True)
+    chart_path.write_text(svg)
+    recent = history[-24:] if len(history) > 24 else history
+    values = [_safe_float(item.get("total_portfolio_value_usdt")) for item in recent]
+    return {
+        "status": "updated",
+        "history_points": len(history),
+        "chart_path": str(chart_path),
+        "history_path": str(history_path),
+        "latest_value_usdt": round(total_value, 4),
+        "min_value_usdt": round(min(values), 4) if values else round(total_value, 4),
+        "max_value_usdt": round(max(values), 4) if values else round(total_value, 4),
+        "sparkline": _sparkline(values),
+        "recent_points": [
+            {
+                "timestamp": item.get("timestamp", ""),
+                "value_usdt": round(_safe_float(item.get("total_portfolio_value_usdt")), 4),
+            }
+            for item in recent[-8:]
+        ],
+    }
+
+
+def build_equity_curve_svg(history: list[dict[str, Any]], width: int = 960, height: int = 340) -> str:
+    values = [_safe_float(item.get("total_portfolio_value_usdt")) for item in history if _safe_float(item.get("total_portfolio_value_usdt")) > 0]
+    if not values:
+        return (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">'
+            '<rect width="100%" height="100%" fill="#0b1320"/>'
+            '<text x="40" y="60" fill="#e5edf7" font-size="24" font-family="Menlo, monospace">No equity history yet</text>'
+            "</svg>"
+        )
+    pad_l, pad_r, pad_t, pad_b = 56, 24, 28, 42
+    plot_w = max(width - pad_l - pad_r, 1)
+    plot_h = max(height - pad_t - pad_b, 1)
+    low = min(values)
+    high = max(values)
+    if abs(high - low) <= 1e-9:
+        high = low + 1.0
+    coords: list[tuple[float, float]] = []
+    for idx, value in enumerate(values):
+        x = pad_l + (idx / max(len(values) - 1, 1)) * plot_w
+        y = pad_t + (1.0 - ((value - low) / (high - low))) * plot_h
+        coords.append((x, y))
+    polyline = " ".join(f"{x:.2f},{y:.2f}" for x, y in coords)
+    area = " ".join([f"{pad_l:.2f},{pad_t + plot_h:.2f}", polyline, f"{pad_l + plot_w:.2f},{pad_t + plot_h:.2f}"])
+    latest = values[-1]
+    first = values[0]
+    latest_change = latest - first
+    latest_color = "#21c55d" if latest_change >= 0 else "#ef4444"
+    grid_lines = []
+    for step in range(5):
+        y = pad_t + (plot_h * step / 4.0)
+        label_value = high - ((high - low) * step / 4.0)
+        grid_lines.append(
+            f'<line x1="{pad_l}" y1="{y:.2f}" x2="{pad_l + plot_w}" y2="{y:.2f}" stroke="#223047" stroke-width="1" />'
+            f'<text x="8" y="{y + 4:.2f}" fill="#8aa0bf" font-size="12" font-family="Menlo, monospace">{label_value:.2f}</text>'
+        )
+    last_x, last_y = coords[-1]
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
+<rect width="100%" height="100%" fill="#0b1320"/>
+<text x="{pad_l}" y="20" fill="#e5edf7" font-size="18" font-family="Menlo, monospace">Trading Agents Equity Curve</text>
+<text x="{width - 270}" y="20" fill="{latest_color}" font-size="16" font-family="Menlo, monospace">Latest {latest:.2f} USDT ({latest_change:+.2f})</text>
+{''.join(grid_lines)}
+<polyline fill="rgba(59,130,246,0.18)" stroke="none" points="{area}"/>
+<polyline fill="none" stroke="#60a5fa" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" points="{polyline}"/>
+<circle cx="{last_x:.2f}" cy="{last_y:.2f}" r="5" fill="{latest_color}" stroke="#e5edf7" stroke-width="2"/>
+<text x="{pad_l}" y="{height - 14}" fill="#8aa0bf" font-size="12" font-family="Menlo, monospace">Points: {len(values)}</text>
+<text x="{width - 220}" y="{height - 14}" fill="#8aa0bf" font-size="12" font-family="Menlo, monospace">Range: {low:.2f} - {high:.2f} USDT</text>
+</svg>'''
+
+
+def load_equity_curve_summary(history_path: Path, chart_path: Path) -> dict[str, Any]:
+    history = _read_jsonl(history_path)
+    if not history:
+        return {
+            "status": "empty",
+            "history_points": 0,
+            "chart_path": str(chart_path),
+            "sparkline": "",
+            "recent_points": [],
+            "min_value_usdt": 0.0,
+            "max_value_usdt": 0.0,
+            "latest_value_usdt": 0.0,
+        }
+    recent = history[-24:] if len(history) > 24 else history
+    values = [_safe_float(item.get("total_portfolio_value_usdt")) for item in recent]
+    latest = history[-1]
+    return {
+        "status": "loaded",
+        "history_points": len(history),
+        "chart_path": str(chart_path),
+        "sparkline": _sparkline(values),
+        "recent_points": [
+            {
+                "timestamp": item.get("timestamp", ""),
+                "value_usdt": round(_safe_float(item.get("total_portfolio_value_usdt")), 4),
+            }
+            for item in recent[-8:]
+        ],
+        "min_value_usdt": round(min(values), 4) if values else 0.0,
+        "max_value_usdt": round(max(values), 4) if values else 0.0,
+        "latest_value_usdt": round(_safe_float(latest.get("total_portfolio_value_usdt")), 4),
+    }
+
+
 def _format_stage_latency_breakdown(stage_latency_seconds: dict[str, float], limit: int | None = None) -> str:
     ordered_items = [
         (stage, float(stage_latency_seconds.get(stage, 0.0)))
@@ -950,8 +1129,10 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
 
 def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_path: Path | None = None) -> dict[str, Any]:
     from trading_agents.config import load_settings
+    from trading_agents.storage import build_storage_layout
 
     settings = load_settings()
+    storage = build_storage_layout(settings.data_root)
     records = _load_daily_records(trade_logs_dir, date_label)
     all_records = _load_all_records(trade_logs_dir)
     runner_event_counts = _load_runner_event_counts(runner_log_path, date_label)
@@ -961,6 +1142,10 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
         all_records,
         initial_balance_usdt=settings.initial_balance_usdt,
         taker_fee_pct=settings.taker_fee_pct,
+    )
+    summary["equity_curve"] = load_equity_curve_summary(
+        storage.equity_curve_history_state,
+        storage.equity_curve_svg,
     )
     return summary
 
@@ -981,6 +1166,7 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
     latest = summary["latest"]
     blocked_reason_counts = summary["blocked_reason_counts"]
     financial = summary.get("financial_snapshot", {})
+    equity_curve = summary.get("equity_curve", {})
     avg_scores = summary.get("avg_scores", {})
     action_counts = summary.get("action_counts", {})
     executed_symbol_counts = summary.get("executed_symbol_counts", {})
@@ -1017,6 +1203,11 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
         f"- Unrealized PnL: {float(financial.get('unrealized_pnl_usdt', 0.0)):+.2f} USDT",
         f"- Daily Fees Paid: {float(financial.get('daily_fees_usdt', 0.0)):.2f} USDT",
         f"- Cumulative Fees Paid: {float(financial.get('cumulative_fees_usdt', 0.0)):.2f} USDT",
+        (
+            f"- Equity Curve: {equity_curve.get('sparkline', 'n/a')} "
+            f"(range {float(equity_curve.get('min_value_usdt', 0.0)):.2f} - {float(equity_curve.get('max_value_usdt', 0.0)):.2f} USDT)"
+        ),
+        f"- Equity Chart: {equity_curve.get('chart_path', 'n/a')}",
         "",
         "## Current Portfolio",
         "",

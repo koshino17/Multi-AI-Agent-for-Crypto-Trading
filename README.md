@@ -10,6 +10,7 @@
 - Web 控制台、Notion status、Daily Review
 - 持續運作的 background runner
 - 目前策略方向已收斂為 `USDT perpetual intraday long/short` 優先，而不是中長線配置系統
+- 會持續累積資金曲線（equity curve），產生本地 SVG 折線圖，並同步摘要到 Notion
 
 版本更新與里程碑請看 `CHANGELOG.md`，不再把歷史更新內容全部塞進 README。
 若要看 `Alpha Arena` 如何作為 benchmark / research 來源接進目前架構，請看 `ALPHA_ARENA_INTEGRATION_PLAN.md`。
@@ -338,6 +339,26 @@ python scripts/alpha_arena_import_and_backtest.py \
 - 這一階段是 `research / benchmark`，不是 live 下單
 - 最適合拿來比較方向、節奏與公開模型行為
 - 不建議直接繞過本地 risk / executor，把公開訊號原樣下單
+
+## Equity Curve
+
+系統現在會持續記錄總資產變化，並生成一張最新的資金曲線圖：
+
+- History: `<DATA_ROOT>/service/equity_curve_history.jsonl`
+- Chart: `<DATA_ROOT>/reports/charts/equity-curve-latest.svg`
+
+這條曲線會在每次 reporting 階段後持續更新，用來追蹤：
+
+- 總資產變化
+- 日內回撤
+- 長短期資金趨勢
+
+Notion 目前也會同步：
+
+- 一行 sparkline 版 `Equity Curve`
+- 最近區間的 min / max 範圍
+
+這樣你即使不開 UI，也能在 Notion 看出資金曲線是往上、盤整、還是往下。
 
 ## 專案結構
 

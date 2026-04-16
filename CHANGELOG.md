@@ -16,6 +16,31 @@
 
 ---
 
+## v0.11.6 - Equity curve tracking and chart output
+
+### Why
+
+- 只看單日 PnL 與文字摘要，還是不夠直觀，很難快速判斷資金曲線是穩定上升、持平震盪、還是持續回撤
+- 需要一條可持續更新的資金折線圖，讓你不開 UI 也能透過 Notion / 報表掌握整體表現
+- 這條曲線也會成為後續 benchmark、drawdown、風控優化的重要基礎資料
+
+### What Changed
+
+- 新增 equity history 持久化：
+  - `service/equity_curve_history.jsonl`
+- 新增最新資金曲線圖輸出：
+  - `reports/charts/equity-curve-latest.svg`
+- reporting 流程現在每輪會：
+  - 讀取最新 financial snapshot
+  - 追加 equity point
+  - 重畫 SVG 折線圖
+- Notion Live Status / Daily Review 新增：
+  - `Equity Curve` sparkline
+  - 最近區間 min / max 資產範圍
+- README 補上 equity curve 的用途與檔案位置說明
+
+---
+
 ## v0.11.5 - Alpha Arena signal import and benchmark backtest
 
 ### Why
