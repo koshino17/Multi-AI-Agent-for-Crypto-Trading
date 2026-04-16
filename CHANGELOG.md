@@ -16,6 +16,32 @@
 
 ---
 
+## v0.11.3 - Alpha Arena integration plan
+
+### Why
+
+- 專案已經進入 perp + 多空 + safety rails 階段，下一步不只需要持續修策略，也需要一個外部 benchmark 來檢查我們的方向判斷、持倉節奏與 exit 品質
+- `Alpha Arena` 類型的公開 AI 交易競賽資料，適合作為 research 與 evaluator 的參考，但如果直接拿來當 live 訊號，會和現有交易所、成本與風控語意產生落差
+- 需要先把「如何正確接入」寫清楚，避免後續把 benchmark、strategy、grid、live execution 混成一團
+
+### What Changed
+
+- 新增 [ALPHA_ARENA_INTEGRATION_PLAN.md](/Users/koshino/Documents/Playground/ALPHA_ARENA_INTEGRATION_PLAN.md)
+- 明確定義 Alpha Arena 在目前架構中的定位：
+  - benchmark
+  - research source
+  - evaluator reference
+  - regime calibration input
+- 明確說明它與未來 `Grid / OscillationDetector` 並不衝突，而是不同層次的能力
+- 增加分階段導入建議：
+  - offline dataset
+  - research-only integration
+  - regime calibration
+  - soft influence on live decisions
+- README 與 SYSTEM_ARCHITECTURE 補上入口與架構定位說明
+
+---
+
 ## v0.11.2 - Perp profit lock ladder
 
 ### Why

@@ -97,6 +97,24 @@
 5. `executor` 執行 mock / Testnet 訂單
 6. `post_trade_evaluator` 寫入回顧紀錄
 
+## 外部 benchmark 的位置
+
+若後續導入像 `Alpha Arena` 這種公開 AI 交易競賽 / leaderboard / reasoning 資料，建議角色定位是：
+
+- benchmark
+- research source
+- evaluator reference
+
+不建議直接當成 live 下單訊號。
+
+比較合理的接法是：
+
+1. 先進 research，整理成 external context summary
+2. 再進 evaluator，做事後對照
+3. 最後才作為 regime / prompt 的軟性校正
+
+這樣可以保留外部參考價值，同時不破壞本地風控與倉位管理。
+
 ## 建議資料夾
 
 大資料可以放在 repo 內的 `./runtime`，也可以另外指定到外接碟。
