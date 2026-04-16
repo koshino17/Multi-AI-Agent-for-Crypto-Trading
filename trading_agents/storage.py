@@ -9,6 +9,8 @@ class StorageLayout:
     root: Path
     market_data: Path
     sentiment_data: Path
+    alpha_arena_raw: Path
+    alpha_arena_normalized: Path
     trade_logs: Path
     evaluation_logs: Path
     reports: Path
@@ -35,6 +37,8 @@ def build_storage_layout(root: str) -> StorageLayout:
         root=base,
         market_data=base / "data" / "market",
         sentiment_data=base / "data" / "sentiment",
+        alpha_arena_raw=base / "data" / "alpha_arena" / "raw",
+        alpha_arena_normalized=base / "data" / "alpha_arena" / "normalized",
         trade_logs=base / "logs" / "trades",
         evaluation_logs=base / "logs" / "evaluations",
         reports=base / "reports",
@@ -55,6 +59,8 @@ def build_storage_layout(root: str) -> StorageLayout:
         layout.root,
         layout.market_data,
         layout.sentiment_data,
+        layout.alpha_arena_raw,
+        layout.alpha_arena_normalized,
         layout.trade_logs,
         layout.evaluation_logs,
         layout.reports,

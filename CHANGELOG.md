@@ -16,6 +16,33 @@
 
 ---
 
+## v0.11.5 - Alpha Arena signal import and benchmark backtest
+
+### Why
+
+- `Alpha Arena` 對目前專案最有價值的第一步，不是直接當交易訊號，而是先當公開 benchmark / research source
+- 如果公開內容包含 signals / trades / reasoning，我們需要先有一條乾淨的路徑把它匯入、標準化，再拿來做 replay 與比較
+- 這樣才能逐步回答：
+  - 外部強模型和我們的方向是否一致
+  - 它們的節奏是否更像理想的 intraday long/short
+  - 哪些行為值得餵回 strategist / evaluator
+
+### What Changed
+
+- 新增 `trading_agents/alpha_arena.py`
+  - 標準化公開 signal records
+  - 匯出 normalized `jsonl`
+  - 用 Bybit 公開 K 線做基礎 benchmark replay
+- 新增 `scripts/alpha_arena_import_and_backtest.py`
+  - 可直接把一份公開 Alpha Arena / 類 Alpha Arena JSON 匯出轉成 benchmark 報表
+- `StorageLayout` 新增：
+  - `data/alpha_arena/raw`
+  - `data/alpha_arena/normalized`
+- README 補上第一階段 Alpha Arena benchmark 用法
+- 這一版仍維持 research-only，不會把 Alpha Arena 公開訊號直接接入 live executor
+
+---
+
 ## v0.11.4 - Intraday-first strategy pool and adaptive hold policy
 
 ### Why

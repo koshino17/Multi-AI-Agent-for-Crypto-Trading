@@ -13,6 +13,7 @@
 
 版本更新與里程碑請看 `CHANGELOG.md`，不再把歷史更新內容全部塞進 README。
 若要看 `Alpha Arena` 如何作為 benchmark / research 來源接進目前架構，請看 `ALPHA_ARENA_INTEGRATION_PLAN.md`。
+若你已經有一份公開 Alpha Arena / 類 Alpha Arena 訊號 JSON 匯出，可以直接用 `scripts/alpha_arena_import_and_backtest.py` 做第一階段 research benchmark。
 
 ## Repo 目標
 
@@ -305,6 +306,38 @@ PERP_ENABLE_PROTECTION_ORDERS=true
 - `PERP_MAX_LEVERAGE=2.0` 會在風控審批時限制有效槓桿，避免合約曝險擴得太快。
 - `PERP_MIN_LIQUIDATION_BUFFER_PCT=8.0` 會在現有倉位距離強平太近時擋下新的加碼。
 - `PERP_HARD_STOP_LOSS_PCT` / `PERP_TAKE_PROFIT_PCT` 會在新開倉後嘗試設定交易所 stop loss / take profit。
+
+## Alpha Arena 第一階段 Benchmark
+
+目前 repo 已經支援：
+
+- 匯入公開 Alpha Arena / 類 Alpha Arena 訊號 JSON
+- 轉成標準化 `jsonl`
+- 用 Bybit 公開 K 線做一版基礎 benchmark replay
+
+範例：
+
+```bash
+source .venv/bin/activate
+python scripts/alpha_arena_import_and_backtest.py \
+  --input /path/to/alpha_arena_export.json \
+  --symbol BTC/USDT \
+  --model alpha_arena_public \
+  --source-url https://alpha-arena.io/ \
+  --timeframe 15m \
+  --hold-bars 4
+```
+
+輸出會寫到：
+
+- `./runtime/data/alpha_arena/normalized/`
+- `./runtime/reports/alpha-arena-benchmark-*.json`
+
+注意：
+
+- 這一階段是 `research / benchmark`，不是 live 下單
+- 最適合拿來比較方向、節奏與公開模型行為
+- 不建議直接繞過本地 risk / executor，把公開訊號原樣下單
 
 ## 專案結構
 
