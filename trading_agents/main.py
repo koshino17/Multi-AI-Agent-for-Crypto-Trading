@@ -181,6 +181,38 @@ def _perp_liquidation_buffer_pct(mark_price: float, liq_price: float) -> float:
     return abs((mark_price - liq_price) / mark_price) * 100.0
 
 
+def _perp_position_return_pct(account) -> float:
+    position_side = str(getattr(account, "position_side", "flat"))
+    entry_price = float(getattr(account, "entry_price", 0.0) or 0.0)
+    mark_price = float(getattr(account, "mark_price", entry_price) or entry_price)
+    if position_side not in {"long", "short"} or entry_price <= 0 or mark_price <= 0:
+        return 0.0
+    if position_side == "long":
+        return ((mark_price - entry_price) / entry_price) * 100.0
+    return ((entry_price - mark_price) / entry_price) * 100.0
+
+
+def _tighten_stop_loss(position_side: str, current_stop: float, candidate_stop: float) -> float:
+    if candidate_stop <= 0:
+        return max(current_stop, 0.0)
+    if current_stop <= 0:
+        return candidate_stop
+    if position_side == "short":
+        return min(current_stop, candidate_stop)
+    return max(current_stop, candidate_stop)
+
+
+def _protection_targets_match(account, targets: dict[str, float], tolerance: float = 1e-4) -> bool:
+    current_tp = float(getattr(account, "take_profit_price", 0.0) or 0.0)
+    current_sl = float(getattr(account, "stop_loss_price", 0.0) or 0.0)
+    current_trailing = float(getattr(account, "trailing_stop_distance", 0.0) or 0.0)
+    return (
+        abs(current_tp - float(targets.get("take_profit", 0.0))) <= tolerance
+        and abs(current_sl - float(targets.get("stop_loss", 0.0))) <= tolerance
+        and abs(current_trailing - float(targets.get("trailing_stop", 0.0))) <= tolerance
+    )
+
+
 def _build_perp_protection_targets(account, settings) -> dict[str, float]:
     if getattr(account, "market_type", "spot") != "perp":
         return {"take_profit": 0.0, "stop_loss": 0.0, "trailing_stop": 0.0}
@@ -193,6 +225,9 @@ def _build_perp_protection_targets(account, settings) -> dict[str, float]:
     stop_pct = max(float(settings.perp_hard_stop_loss_pct), 0.0) / 100.0
     take_pct = max(float(settings.perp_take_profit_pct), 0.0) / 100.0
     trail_pct = max(float(settings.perp_trailing_stop_pct), 0.0) / 100.0
+    profit_pct = _perp_position_return_pct(account)
+    current_take_profit = float(getattr(account, "take_profit_price", 0.0) or 0.0)
+    current_stop_loss = float(getattr(account, "stop_loss_price", 0.0) or 0.0)
 
     if position_side == "long":
         stop_loss = entry_price * (1.0 - stop_pct) if stop_pct > 0 else 0.0
@@ -200,7 +235,32 @@ def _build_perp_protection_targets(account, settings) -> dict[str, float]:
     else:
         stop_loss = entry_price * (1.0 + stop_pct) if stop_pct > 0 else 0.0
         take_profit = entry_price * (1.0 - take_pct) if take_pct > 0 else 0.0
-    trailing_stop = mark_price * trail_pct if trail_pct > 0 else 0.0
+
+    if current_take_profit > 0:
+        take_profit = current_take_profit
+    stop_loss = _tighten_stop_loss(position_side, current_stop_loss, stop_loss)
+
+    trigger_1 = max(float(settings.perp_profit_lock_trigger_pct), 0.0)
+    breakeven_offset_pct = max(float(settings.perp_profit_lock_breakeven_offset_pct), 0.0) / 100.0
+    trigger_2 = max(float(settings.perp_profit_lock_trigger_2_pct), 0.0)
+    lock_2_pct = max(float(settings.perp_profit_lock_stop_2_pct), 0.0) / 100.0
+
+    if profit_pct >= trigger_1 and breakeven_offset_pct > 0:
+        candidate_stop = (
+            entry_price * (1.0 + breakeven_offset_pct)
+            if position_side == "long"
+            else entry_price * (1.0 - breakeven_offset_pct)
+        )
+        stop_loss = _tighten_stop_loss(position_side, stop_loss, candidate_stop)
+    if profit_pct >= trigger_2 and lock_2_pct > 0:
+        candidate_stop = (
+            entry_price * (1.0 + lock_2_pct)
+            if position_side == "long"
+            else entry_price * (1.0 - lock_2_pct)
+        )
+        stop_loss = _tighten_stop_loss(position_side, stop_loss, candidate_stop)
+
+    trailing_stop = mark_price * trail_pct if trail_pct > 0 and profit_pct >= trigger_1 else 0.0
     return {
         "take_profit": round(max(take_profit, 0.0), 6),
         "stop_loss": round(max(stop_loss, 0.0), 6),
@@ -208,7 +268,7 @@ def _build_perp_protection_targets(account, settings) -> dict[str, float]:
     }
 
 
-def _apply_perp_protection(exchange, symbol: str, settings) -> tuple[dict[str, float], dict]:
+def _apply_perp_protection(exchange, symbol: str, settings, *, force: bool = False) -> tuple[dict[str, float], dict]:
     if not settings.perp_enable_protection_orders:
         return {"take_profit": 0.0, "stop_loss": 0.0, "trailing_stop": 0.0}, {"status": "disabled"}
     account = None
@@ -224,6 +284,8 @@ def _apply_perp_protection(exchange, symbol: str, settings) -> tuple[dict[str, f
     }
     if not any(float(value) > 0 for value in protection_targets.values()):
         return protection_targets, {"status": "skipped", "reason": "no active perp position for protection"}
+    if not force and account is not None and _protection_targets_match(account, protection_targets):
+        return protection_targets, {"status": "unchanged", "reason": "existing protection already matches target"}
     protection_result = exchange.set_position_protection(symbol, **protection_targets)
     return protection_targets, protection_result
 
@@ -528,6 +590,21 @@ def execute_cycle(
             lambda: exchange.fetch_snapshot(candidate_symbol, settings.timeframe),
         )
         account = exchange.fetch_account_state(candidate_symbol)
+        protection_targets = {"take_profit": 0.0, "stop_loss": 0.0, "trailing_stop": 0.0}
+        position_protection = {"status": "skipped", "reason": "no active perp position"}
+        if mode == "bybit-demo-perp" and str(getattr(account, "position_side", "flat")) in {"long", "short"}:
+            protection_started_at = perf_counter()
+            protection_targets, position_protection = _apply_perp_protection(
+                exchange,
+                candidate_symbol,
+                settings,
+                force=False,
+            )
+            _record_stage_metric(stage_metrics, "protection_sync", perf_counter() - protection_started_at)
+            if str(position_protection.get("status", "")).lower() == "ok":
+                account = exchange.fetch_account_state(candidate_symbol)
+            else:
+                protection_targets = _build_perp_protection_targets(account, settings)
         available_usdt = account.free_usdt
         actual_base_asset = account.base_asset
         position_side = getattr(account, "position_side", "flat")
@@ -773,6 +850,8 @@ def execute_cycle(
                     "dust_threshold_usdt": round(float(dust_info.get("dust_threshold_usdt", 0.0)), 4),
                 },
                 "llm_wake": llm_wake,
+                "protection_targets": protection_targets,
+                "protection_sync": position_protection,
                 "debate": {
                     "risk_feedback": risk_feedback,
                 },

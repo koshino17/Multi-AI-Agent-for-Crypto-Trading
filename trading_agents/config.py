@@ -92,6 +92,10 @@ class Settings:
     perp_take_profit_pct: float = _float("PERP_TAKE_PROFIT_PCT", 2.4)
     perp_trailing_stop_pct: float = _float("PERP_TRAILING_STOP_PCT", 0.0)
     perp_enable_protection_orders: bool = _bool("PERP_ENABLE_PROTECTION_ORDERS", True)
+    perp_profit_lock_trigger_pct: float = _float("PERP_PROFIT_LOCK_TRIGGER_PCT", 1.0)
+    perp_profit_lock_breakeven_offset_pct: float = _float("PERP_PROFIT_LOCK_BREAKEVEN_OFFSET_PCT", 0.10)
+    perp_profit_lock_trigger_2_pct: float = _float("PERP_PROFIT_LOCK_TRIGGER_2_PCT", 2.0)
+    perp_profit_lock_stop_2_pct: float = _float("PERP_PROFIT_LOCK_STOP_2_PCT", 0.80)
 
 
 def load_settings() -> Settings:

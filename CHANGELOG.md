@@ -16,6 +16,30 @@
 
 ---
 
+## v0.11.2 - Perp profit lock ladder
+
+### Why
+
+- `v0.11.1` 已經能在 Bybit Demo perp 上自動掛交易所 TP/SL，但保護單仍偏靜態，無法在部位開始浮盈後主動把停損往 breakeven 或獲利區移動
+- 4/15 到 4/16 的報表討論提醒我們，單純有硬停損還不夠，還需要一層「贏家不能輕易變輸家」的鎖利機制
+- 既然現有架構已經能讀取 entry / mark / current TP/SL，最合理的下一步就是把 profit lock 做成輕量、規則式、每輪可自動同步的 safety rail
+
+### What Changed
+
+- 新增 perp 浮盈鎖利階梯：
+  - `PERP_PROFIT_LOCK_TRIGGER_PCT`
+  - `PERP_PROFIT_LOCK_BREAKEVEN_OFFSET_PCT`
+  - `PERP_PROFIT_LOCK_TRIGGER_2_PCT`
+  - `PERP_PROFIT_LOCK_STOP_2_PCT`
+- `main.py` 會根據目前倉位的浮盈百分比，動態重算保護目標：
+  - 第一階段達標後，把 stop loss 往 breakeven 附近推進
+  - 第二階段達標後，把 stop loss 推進到更明確的 in-profit 區域
+- 既有 perp 倉位不必等到重新下單才更新保護；每輪 candidate 掃描都會先同步一次交易所保護單
+- 保護同步現在具備 `unchanged` 快速路徑：若交易所上的 TP/SL 已經符合目標，就不重複送 API
+- `.env.example` 與 `README.md` 已補上 profit lock ladder 的設定說明
+
+---
+
 ## v0.11.1 - Perp safety rails and reporting correction
 
 ### Why

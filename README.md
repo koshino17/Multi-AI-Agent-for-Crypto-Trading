@@ -180,6 +180,11 @@ http://127.0.0.1:8765
   - `PERP_HARD_STOP_LOSS_PCT`
   - `PERP_TAKE_PROFIT_PCT`
   - `PERP_TRAILING_STOP_PCT`
+- 已有浮盈的 perp 倉位會在後續 cycle 自動同步保護單，支援簡單的 profit lock ladder：
+  - `PERP_PROFIT_LOCK_TRIGGER_PCT`
+  - `PERP_PROFIT_LOCK_BREAKEVEN_OFFSET_PCT`
+  - `PERP_PROFIT_LOCK_TRIGGER_2_PCT`
+  - `PERP_PROFIT_LOCK_STOP_2_PCT`
 
 ## 預設策略節奏
 
