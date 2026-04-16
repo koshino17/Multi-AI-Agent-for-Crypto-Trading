@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
+from uuid import uuid4
 
 from trading_agents.reporting import LOCAL_TZ, _format_stage_latency_breakdown
 
 
 NOTION_API_BASE = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
+NOTION_FILE_UPLOAD_VERSION = "2026-03-11"
 
 
 class NotionSyncClient:
@@ -246,11 +249,16 @@ class NotionSyncClient:
                 f"{daily_summary.get('llm_wake_enabled', 0)}/{daily_summary.get('llm_wake_candidates', 0)} candidates "
                 f"({float(daily_summary.get('llm_wake_rate_pct', 0.0)):.1f}%)"
             ),
-            _heading_2("Latest Decision"),
-            _bullet(f"Selected Symbol: {latest.get('selected_symbol', 'n/a')}"),
-            _bullet(f"Signal: {idea.get('action', 'n/a')} (score={float(idea.get('score', 0.0)):.2f})"),
-            _bullet(f"Risk Decision: {approval.get('reason', 'n/a')}"),
         ]
+
+        blocks.extend(
+            [
+                _heading_2("Latest Decision"),
+                _bullet(f"Selected Symbol: {latest.get('selected_symbol', 'n/a')}"),
+                _bullet(f"Signal: {idea.get('action', 'n/a')} (score={float(idea.get('score', 0.0)):.2f})"),
+                _bullet(f"Risk Decision: {approval.get('reason', 'n/a')}"),
+            ]
+        )
 
         if blocked_reasons:
             blocks.append(_heading_2("Why Blocked"))
@@ -264,16 +272,23 @@ class NotionSyncClient:
 
         return blocks
 
-    def _request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        notion_version: str = NOTION_VERSION,
+    ) -> dict[str, Any]:
         url = f"{NOTION_API_BASE}{path}"
         data = None
         headers = {
             "Authorization": f"Bearer {self.token}",
-            "Notion-Version": NOTION_VERSION,
-            "Content-Type": "application/json",
+            "Notion-Version": notion_version,
         }
         if payload is not None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            headers["Content-Type"] = "application/json"
         req = request.Request(url, data=data, headers=headers, method=method)
         try:
             with request.urlopen(req, timeout=20) as resp:
@@ -284,6 +299,81 @@ class NotionSyncClient:
         except error.URLError as exc:
             raise RuntimeError(f"Notion API unavailable: {exc.reason}") from exc
         return json.loads(body) if body else {}
+
+    def _multipart_request(self, url: str, file_path: Path, content_type: str) -> dict[str, Any]:
+        boundary = f"----CodexNotion{uuid4().hex}"
+        header = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{file_path.name}"\r\n'
+            f"Content-Type: {content_type}\r\n\r\n"
+        ).encode("utf-8")
+        footer = f"\r\n--{boundary}--\r\n".encode("utf-8")
+        body = header + file_path.read_bytes() + footer
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Notion-Version": NOTION_FILE_UPLOAD_VERSION,
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        }
+        req = request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with request.urlopen(req, timeout=30) as resp:
+                payload = resp.read().decode("utf-8")
+        except error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Notion file upload {exc.code}: {detail}") from exc
+        except error.URLError as exc:
+            raise RuntimeError(f"Notion file upload unavailable: {exc.reason}") from exc
+        return json.loads(payload) if payload else {}
+
+    def _prepare_equity_chart_upload(self, daily_summary: dict[str, Any]) -> str:
+        equity_curve = daily_summary.get("equity_curve", {})
+        chart_path_raw = str(equity_curve.get("chart_path", "")).strip()
+        if not chart_path_raw:
+            return ""
+        chart_path = Path(chart_path_raw)
+        if not chart_path.exists():
+            return ""
+
+        cache_path = chart_path.with_suffix(chart_path.suffix + ".notion-upload.json")
+        digest = hashlib.sha256(chart_path.read_bytes()).hexdigest()
+        if cache_path.exists():
+            try:
+                cache = json.loads(cache_path.read_text())
+                if cache.get("sha256") == digest and cache.get("file_upload_id"):
+                    return str(cache["file_upload_id"])
+            except Exception:
+                pass
+
+        created = self._request(
+            "POST",
+            "/file_uploads",
+            {
+                "mode": "single_part",
+                "filename": chart_path.name,
+                "content_type": "image/svg+xml",
+            },
+            notion_version=NOTION_FILE_UPLOAD_VERSION,
+        )
+        upload_url = str(created.get("upload_url", "")).strip()
+        upload_id = str(created.get("id", "")).strip()
+        if not upload_url or not upload_id:
+            raise RuntimeError("Notion file upload creation did not return upload_url/id")
+        uploaded = self._multipart_request(upload_url, chart_path, "image/svg+xml")
+        if str(uploaded.get("status", "")).lower() != "uploaded":
+            raise RuntimeError(f"Notion file upload did not reach uploaded status: {uploaded}")
+
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "sha256": digest,
+                    "file_upload_id": upload_id,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return upload_id
 
     def _update_page_title(self) -> None:
         self._update_page_title_for(self.page_id, self.page_title)
@@ -328,8 +418,20 @@ class NotionSyncClient:
                 raise
 
     def _append_children(self, block_id: str, blocks: list[dict[str, Any]]) -> None:
+        notion_version = NOTION_VERSION
+        if any(
+            block.get("type") == "image"
+            and block.get("image", {}).get("type") == "file_upload"
+            for block in blocks
+        ):
+            notion_version = NOTION_FILE_UPLOAD_VERSION
         for index in range(0, len(blocks), 100):
-            self._request("PATCH", f"/blocks/{block_id}/children", {"children": blocks[index:index + 100]})
+            self._request(
+                "PATCH",
+                f"/blocks/{block_id}/children",
+                {"children": blocks[index:index + 100]},
+                notion_version=notion_version,
+            )
 
     def _replace_children(self, block_id: str, blocks: list[dict[str, Any]]) -> None:
         existing_children = self._list_block_children(block_id)
@@ -363,7 +465,14 @@ class NotionSyncClient:
             },
             "children": blocks[:100],
         }
-        created = self._request("POST", "/pages", payload)
+        notion_version = NOTION_VERSION
+        if any(
+            block.get("type") == "image"
+            and block.get("image", {}).get("type") == "file_upload"
+            for block in blocks[:100]
+        ):
+            notion_version = NOTION_FILE_UPLOAD_VERSION
+        created = self._request("POST", "/pages", payload, notion_version=notion_version)
         page_id = str(created.get("id", ""))
         if not page_id:
             raise RuntimeError("Notion API did not return a page id for the daily review page")
@@ -456,7 +565,8 @@ def sync_notion_daily_review(
         return {"status": "busy", "reason": "another Notion sync is already running"}
     client = NotionSyncClient(token=token, page_id="")
     title = f"{page_title_prefix.strip() or 'Trading Agents Daily Review'} - {date_label}"
-    blocks = _build_daily_review_blocks(title, date_label, daily_review, daily_summary)
+    equity_chart_upload_id = client._prepare_equity_chart_upload(daily_summary)
+    blocks = _build_daily_review_blocks(title, date_label, daily_review, daily_summary, equity_chart_upload_id)
     state_file = Path(state_path)
     state_file.parent.mkdir(parents=True, exist_ok=True)
     page_id = ""
@@ -525,11 +635,25 @@ def _heading_2(content: str) -> dict[str, Any]:
     return {"object": "block", "type": "heading_2", "heading_2": {"rich_text": _rich_text(content)}}
 
 
+def _image_file_upload(file_upload_id: str, caption: str = "") -> dict[str, Any]:
+    block: dict[str, Any] = {
+        "object": "block",
+        "type": "image",
+        "image": {
+            "type": "file_upload",
+            "file_upload": {"id": file_upload_id},
+            "caption": _rich_text(caption) if caption else [],
+        },
+    }
+    return block
+
+
 def _build_daily_review_blocks(
     title: str,
     date_label: str,
     daily_review: dict[str, Any],
     daily_summary: dict[str, Any],
+    equity_chart_upload_id: str = "",
 ) -> list[dict[str, Any]]:
     blocked_reasons = daily_summary.get("blocked_reason_counts", {})
     rejection_reasons = daily_summary.get("rejection_reason_counts", {})
@@ -591,6 +715,13 @@ def _build_daily_review_blocks(
         _heading_2("Decision Summary"),
         _paragraph(str(daily_review.get("decision_summary", ""))),
     ]
+    if equity_chart_upload_id:
+        blocks.extend(
+            [
+                _heading_2("Equity Chart"),
+                _image_file_upload(equity_chart_upload_id, caption="Daily equity curve"),
+            ]
+        )
     holdings = financial.get("holdings", [])
     if holdings:
         for item in holdings:

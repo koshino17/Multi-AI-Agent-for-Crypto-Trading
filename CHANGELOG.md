@@ -16,6 +16,31 @@
 
 ---
 
+## v0.11.7 - Daily Review-only Notion equity chart
+
+### Why
+
+- 折線圖更適合作為日報級別的資產曲線，而不是跟著 `heartbeat` 持續重畫的即時卡片
+- 把圖表塞進 `Live Status` 會增加 Notion 同步成本，也更容易讓頁面更新與檔案上傳互相干擾
+- 最穩的做法是：
+  - `Live Status` 保持輕量、文字化
+  - `Daily Review` 才承載真正的 equity chart 圖片
+
+### What Changed
+
+- Notion 圖表策略調整成 `daily-only`
+- `Live Status` / heartbeat 頁面不再嘗試插入 equity chart 圖片
+- `Daily Review` 生成時會：
+  - 讀取本地 `equity-curve-latest.svg`
+  - 透過 Notion file upload API 上傳圖檔
+  - 把圖表插入 `Daily Review` 頁面內容
+- 同步程式改成：
+  - 一般頁面內容操作仍走舊版 Notion block API
+  - 圖檔上傳與 file-upload image block 走新版 API
+  - 降低整體相容性風險
+
+---
+
 ## v0.11.6 - Equity curve tracking and chart output
 
 ### Why
