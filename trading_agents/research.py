@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from statistics import fmean
 
-from trading_agents.backtest import build_backtest_snapshot
+from trading_agents.backtest import build_backtest_snapshot, _simulate_intraday_trade
 from trading_agents.llm import OllamaClient
 from trading_agents.models import (
     BacktestSnapshot,
@@ -25,7 +25,7 @@ class StrategyResearchAgent:
 
     def _load_library(self) -> dict:
         if not self.library_path.exists():
-            return {"base_strategy": "momentum_sentiment_v1", "strategies": []}
+            return {"base_strategy": "intraday_breakout_perp_v1", "strategies": []}
         return json.loads(self.library_path.read_text())
 
     def evaluate(self, snapshot: MarketSnapshot, sentiment: SentimentSnapshot) -> StrategyResearchSnapshot:
@@ -37,7 +37,7 @@ class StrategyResearchAgent:
         sentiment: SentimentSnapshot,
         strategy_memory: dict | None = None,
     ) -> StrategyResearchSnapshot:
-        base_id = self.library.get("base_strategy", "momentum_sentiment_v1")
+        base_id = self.library.get("base_strategy", "intraday_breakout_perp_v1")
         candidates: list[StrategyCandidate] = []
         for item in self.library.get("strategies", []):
             backtest = self._run_strategy(item["id"], snapshot, sentiment)
@@ -54,10 +54,10 @@ class StrategyResearchAgent:
         if not candidates:
             fallback = StrategyCandidate(
                 strategy_id=base_id,
-                name="Momentum + Sentiment",
-                source="local_baseline",
+                name="Intraday Breakout Perp",
+                source="local_intraday",
                 credibility="internal",
-                description="Fallback strategy library entry",
+                description="Fallback intraday strategy library entry",
                 backtest=BacktestSnapshot(0, 0, 0.0, 0.0, 0.0, "no strategy candidates loaded"),
             )
             candidates = [fallback]
@@ -136,7 +136,7 @@ class StrategyResearchAgent:
                     "You are the strategy researcher in a crypto trading system. "
                     "Choose the best strategy candidate for the current symbol. "
                     "Return JSON with keys selected_strategy_id and rationale. "
-                    "Prefer strategies with positive expectancy, acceptable profit factor, enough replay trades, "
+                    "Prefer intraday strategies with positive expectancy, acceptable profit factor, enough replay trades, "
                     "and a payoff profile that can still be attractive even if win rate is not dominant. "
                     "Do not pick a strategy with zero replay trades unless every candidate has zero trades. "
                     f"symbol={snapshot.symbol}; timeframe={snapshot.timeframe}; "
@@ -159,7 +159,7 @@ class StrategyResearchAgent:
         if chosen.backtest.trade_count == 0 and any(item.backtest.trade_count > 0 for item in candidates):
             return None
         if not rationale:
-            rationale = self._fallback_rationale(self.library.get("base_strategy", "momentum_sentiment_v1"), chosen)
+            rationale = self._fallback_rationale(self.library.get("base_strategy", "intraday_breakout_perp_v1"), chosen)
         return chosen, rationale
 
     def _run_strategy(
@@ -175,43 +175,85 @@ class StrategyResearchAgent:
 
         returns: list[float] = []
         sample_count = max(len(closes) - 21, 0)
-        for index in range(20, len(closes) - 1):
-            short_avg = fmean(closes[index - 4 : index + 1])
-            long_avg = fmean(closes[index - 19 : index + 1])
+        for index in range(20, len(closes) - 6):
+            short_avg = fmean(closes[index - 4:index + 1])
+            long_avg = fmean(closes[index - 19:index + 1])
             if not long_avg:
                 continue
             momentum = (short_avg - long_avg) / long_avg
-            next_return = (closes[index + 1] - closes[index]) / closes[index]
-            recent_volume = fmean(volumes[max(0, index - 4) : index + 1])
-            longer_volume = fmean(volumes[max(0, index - 19) : index + 1])
+            recent_volume = fmean(volumes[max(0, index - 2): index + 1])
+            longer_volume = fmean(volumes[max(0, index - 19): index + 1])
+            rolling_high = max(closes[index - 9:index + 1])
+            rolling_low = min(closes[index - 9:index + 1])
 
             triggered = False
             directional_return = 0.0
 
-            if strategy_id == "momentum_sentiment_v1":
-                if momentum > 0.002 and sentiment.sentiment_score >= -0.35:
+            if strategy_id == "intraday_breakout_perp_v1":
+                if closes[index] >= rolling_high and recent_volume > longer_volume * 1.08 and sentiment.sentiment_score >= -0.60:
                     triggered = True
-                    directional_return = next_return
-                elif momentum < -0.002 and sentiment.sentiment_score <= 0.45:
+                    directional_return = _simulate_intraday_trade(
+                        closes,
+                        entry_index=index,
+                        direction="long",
+                        max_hold_bars=4,
+                        take_profit_pct=0.009,
+                        stop_loss_pct=0.0045,
+                    )
+                elif closes[index] <= rolling_low and recent_volume > longer_volume * 1.08 and sentiment.sentiment_score <= 0.70:
                     triggered = True
-                    directional_return = -next_return
-            elif strategy_id == "trend_pullback_v1":
+                    directional_return = _simulate_intraday_trade(
+                        closes,
+                        entry_index=index,
+                        direction="short",
+                        max_hold_bars=4,
+                        take_profit_pct=0.009,
+                        stop_loss_pct=0.0045,
+                    )
+            elif strategy_id == "intraday_pullback_perp_v1":
                 pullback = (closes[index] - closes[index - 3]) / closes[index - 3]
-                if momentum > 0.0015 and -0.02 <= pullback <= -0.002:
+                if momentum > 0.0015 and -0.012 <= pullback <= -0.002:
                     triggered = True
-                    directional_return = next_return
-                elif momentum < -0.0015 and 0.002 <= pullback <= 0.02:
+                    directional_return = _simulate_intraday_trade(
+                        closes,
+                        entry_index=index,
+                        direction="long",
+                        max_hold_bars=5,
+                        take_profit_pct=0.008,
+                        stop_loss_pct=0.004,
+                    )
+                elif momentum < -0.0015 and 0.002 <= pullback <= 0.012:
                     triggered = True
-                    directional_return = -next_return
-            elif strategy_id == "breakout_volume_v1":
-                rolling_high = max(closes[index - 9 : index + 1])
-                rolling_low = min(closes[index - 9 : index + 1])
-                if closes[index] >= rolling_high and recent_volume > longer_volume * 1.1:
+                    directional_return = _simulate_intraday_trade(
+                        closes,
+                        entry_index=index,
+                        direction="short",
+                        max_hold_bars=5,
+                        take_profit_pct=0.008,
+                        stop_loss_pct=0.004,
+                    )
+            elif strategy_id == "intraday_reversal_scalp_v1":
+                deviation_pct = ((closes[index] - short_avg) / short_avg) if short_avg else 0.0
+                if deviation_pct <= -0.004 and momentum > -0.002:
                     triggered = True
-                    directional_return = next_return
-                elif closes[index] <= rolling_low and recent_volume > longer_volume * 1.1:
+                    directional_return = _simulate_intraday_trade(
+                        closes,
+                        entry_index=index,
+                        direction="long",
+                        max_hold_bars=3,
+                        take_profit_pct=0.006,
+                        stop_loss_pct=0.0035,
+                    )
+                elif deviation_pct >= 0.004 and momentum < 0.002:
                     triggered = True
-                    directional_return = -next_return
+                    directional_return = _simulate_intraday_trade(
+                        closes,
+                        entry_index=index,
+                        direction="short",
+                        max_hold_bars=3,
+                        take_profit_pct=0.006,
+                        stop_loss_pct=0.0035,
+                    )
 
             if triggered:
                 returns.append(directional_return)

@@ -1,26 +1,26 @@
 {
-  "base_strategy": "momentum_sentiment_v1",
+  "base_strategy": "intraday_breakout_perp_v1",
   "strategies": [
     {
-      "id": "momentum_sentiment_v1",
-      "name": "Momentum + Sentiment",
-      "source": "local_baseline",
+      "id": "intraday_breakout_perp_v1",
+      "name": "Intraday Breakout Perp",
+      "source": "local_intraday",
       "credibility": "internal",
-      "description": "Use short-vs-long momentum with sentiment confirmation to decide buy, sell, or hold."
+      "description": "Trade day-session breakouts with short holding windows, volume confirmation, and tight exit rules."
     },
     {
-      "id": "trend_pullback_v1",
-      "name": "Trend Pullback",
-      "source": "common_trading_pattern",
-      "credibility": "reference",
-      "description": "Trade in the direction of the broader trend after a short pullback stabilizes."
+      "id": "intraday_pullback_perp_v1",
+      "name": "Intraday Pullback Perp",
+      "source": "local_intraday",
+      "credibility": "internal",
+      "description": "Join the prevailing intraday direction after a shallow pullback stabilizes, then exit within a few candles."
     },
     {
-      "id": "breakout_volume_v1",
-      "name": "Breakout + Volume",
-      "source": "common_trading_pattern",
-      "credibility": "reference",
-      "description": "Favor breakouts when price expansion is supported by stronger recent volume."
+      "id": "intraday_reversal_scalp_v1",
+      "name": "Intraday Reversal Scalp",
+      "source": "local_intraday",
+      "credibility": "internal",
+      "description": "Fade short-lived intraday exhaustion moves with fast profit taking and strict time-stop discipline."
     }
   ]
 }

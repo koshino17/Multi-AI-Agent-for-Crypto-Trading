@@ -23,6 +23,7 @@ class StorageLayout:
     strategy_memory_state: Path
     trade_cooldown_state: Path
     sentiment_http_cache_state: Path
+    position_policy_state: Path
 
 
 def build_storage_layout(root: str) -> StorageLayout:
@@ -48,6 +49,7 @@ def build_storage_layout(root: str) -> StorageLayout:
         strategy_memory_state=base / "service" / "strategy_memory.json",
         trade_cooldown_state=base / "service" / "trade_cooldowns.json",
         sentiment_http_cache_state=base / "service" / "sentiment_http_cache.json",
+        position_policy_state=base / "service" / "position_policy.json",
     )
     for path in (
         layout.root,

@@ -9,6 +9,7 @@
 - `Bybit Demo` / `mock` 執行
 - Web 控制台、Notion status、Daily Review
 - 持續運作的 background runner
+- 目前策略方向已收斂為 `USDT perpetual intraday long/short` 優先，而不是中長線配置系統
 
 版本更新與里程碑請看 `CHANGELOG.md`，不再把歷史更新內容全部塞進 README。
 若要看 `Alpha Arena` 如何作為 benchmark / research 來源接進目前架構，請看 `ALPHA_ARENA_INTEGRATION_PLAN.md`。
@@ -186,6 +187,11 @@ http://127.0.0.1:8765
   - `PERP_PROFIT_LOCK_BREAKEVEN_OFFSET_PCT`
   - `PERP_PROFIT_LOCK_TRIGGER_2_PCT`
   - `PERP_PROFIT_LOCK_STOP_2_PCT`
+- intraday 政策預設偏日內，但不是一翻兩瞪眼硬平倉：
+  - 若部位久抱後沒有 follow-through，會走 stagnation exit
+  - 若持有超過 intraday 規劃窗口，且優勢已弱化，會走 policy exit
+  - 若趨勢仍健康、保護單已收緊，系統允許繼續持有
+  - 可選擇是否啟用接近日切時段的 de-risk / flatten
 
 ## 預設策略節奏
 

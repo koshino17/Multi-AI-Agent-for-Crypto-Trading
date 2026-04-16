@@ -99,6 +99,79 @@ def _mark_trade_cooldown(path: Path, mode: str, symbol: str, cooldown_seconds: f
     _save_trade_cooldowns(path, cooldowns)
 
 
+def _load_position_policy_state(path: Path) -> dict[str, dict]:
+    raw = _read_json_file(path)
+    return raw if isinstance(raw, dict) else {}
+
+
+def _save_position_policy_state(path: Path, state: dict[str, dict]) -> None:
+    path.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+
+
+def _timeframe_to_minutes(timeframe: str) -> float:
+    value = str(timeframe).strip().lower()
+    if not value:
+        return 0.0
+    if value.endswith("m"):
+        return float(value[:-1] or 0.0)
+    if value.endswith("h"):
+        return float(value[:-1] or 0.0) * 60.0
+    if value.endswith("d"):
+        return float(value[:-1] or 0.0) * 1440.0
+    return 0.0
+
+
+def _position_policy_key(mode: str, symbol: str) -> str:
+    return f"{mode}:{symbol}"
+
+
+def _sync_position_policy_state(
+    state: dict[str, dict],
+    *,
+    mode: str,
+    symbol: str,
+    account,
+    now_epoch: float,
+    timeframe: str,
+) -> dict[str, float | str | bool]:
+    key = _position_policy_key(mode, symbol)
+    position_side = str(getattr(account, "position_side", "flat"))
+    entry_price = round(float(getattr(account, "entry_price", 0.0) or 0.0), 6)
+    net_position = round(float(getattr(account, "net_position", 0.0) or 0.0), 8)
+    timeframe_minutes = _timeframe_to_minutes(timeframe)
+    if position_side not in {"long", "short"} or abs(net_position) <= 0:
+        state.pop(key, None)
+        return {
+            "is_open": False,
+            "position_side": "flat",
+            "hold_minutes": 0.0,
+            "hold_bars": 0.0,
+        }
+
+    entry = state.get(key, {})
+    same_position = (
+        str(entry.get("position_side", "")) == position_side
+        and abs(float(entry.get("entry_price", 0.0) or 0.0) - entry_price) <= 1e-4
+    )
+    opened_at = float(entry.get("opened_at_epoch", now_epoch) or now_epoch) if same_position else now_epoch
+    state[key] = {
+        "position_side": position_side,
+        "entry_price": entry_price,
+        "opened_at_epoch": opened_at,
+        "net_position": net_position,
+        "updated_at_epoch": now_epoch,
+    }
+    hold_minutes = max((now_epoch - opened_at) / 60.0, 0.0)
+    hold_bars = hold_minutes / timeframe_minutes if timeframe_minutes > 0 else 0.0
+    return {
+        "is_open": True,
+        "position_side": position_side,
+        "hold_minutes": round(hold_minutes, 2),
+        "hold_bars": round(hold_bars, 2),
+        "opened_at_epoch": opened_at,
+    }
+
+
 def _daily_review_already_published(state_path: Path, date_label: str) -> bool:
     state = _read_json_file(state_path)
     return str(state.get("date_label", "")) == date_label and bool(state.get("page_id"))
@@ -359,6 +432,84 @@ def _market_wake_gate(snapshot, effective_base_asset: float, settings) -> dict:
     }
 
 
+def _intraday_policy_exit(
+    *,
+    snapshot,
+    account,
+    position_context: dict[str, float | str | bool],
+    settings,
+) -> TradeIdea | None:
+    if getattr(account, "market_type", "spot") != "perp":
+        return None
+    position_side = str(getattr(account, "position_side", "flat"))
+    if position_side not in {"long", "short"}:
+        return None
+
+    closes = [float(item) for item in getattr(snapshot, "closes", []) if float(item) > 0]
+    if len(closes) < 20:
+        return None
+
+    hold_bars = float(position_context.get("hold_bars", 0.0) or 0.0)
+    hold_minutes = float(position_context.get("hold_minutes", 0.0) or 0.0)
+    pnl_pct = _perp_position_return_pct(account)
+    short_avg = fmean(closes[-5:])
+    long_avg = fmean(closes[-20:])
+    momentum_pct = ((short_avg - long_avg) / long_avg) * 100.0 if long_avg else 0.0
+    last_move_pct = _pct(abs((closes[-1] - closes[-2]) / closes[-2])) if len(closes) >= 2 and closes[-2] else 0.0
+
+    stale_trade = (
+        hold_bars >= float(settings.intraday_stagnation_bars)
+        and abs(pnl_pct) <= float(settings.intraday_stagnation_pnl_pct)
+        and last_move_pct < 0.35
+    )
+    trend_has_reversed = (
+        (position_side == "long" and momentum_pct <= -0.08)
+        or (position_side == "short" and momentum_pct >= 0.08)
+    )
+    overheld_without_edge = (
+        hold_bars >= float(settings.intraday_max_hold_bars)
+        and (pnl_pct <= 0.35 or trend_has_reversed)
+    )
+
+    now_local = datetime.now().astimezone()
+    flatten_due = (
+        bool(settings.intraday_force_flat_enabled)
+        and (now_local.hour > int(settings.intraday_force_flat_hour_local)
+             or (
+                 now_local.hour == int(settings.intraday_force_flat_hour_local)
+                 and now_local.minute >= int(settings.intraday_force_flat_minute_local)
+             ))
+        and (pnl_pct <= 0.6 or trend_has_reversed)
+    )
+
+    if not (stale_trade or overheld_without_edge or flatten_due):
+        return None
+
+    if stale_trade:
+        reason = (
+            f"intraday stagnation exit after {hold_bars:.1f} bars / {hold_minutes:.0f}m; "
+            f"pnl={pnl_pct:+.2f}% and price follow-through is weak"
+        )
+    elif flatten_due:
+        reason = (
+            f"intraday end-of-day de-risk after {hold_bars:.1f} bars; "
+            f"pnl={pnl_pct:+.2f}% and trend support is no longer strong enough"
+        )
+    else:
+        reason = (
+            f"intraday hold window exceeded ({hold_bars:.1f} bars / {hold_minutes:.0f}m); "
+            f"pnl={pnl_pct:+.2f}% and momentum no longer justifies extension"
+        )
+
+    return TradeIdea(
+        action="sell" if position_side == "long" else "buy",
+        score=0.91,
+        rationale=reason,
+        invalidation="policy-driven exit; reopen only on a fresh intraday setup",
+        holding_horizon="exit-now",
+    )
+
+
 def _finalize_reporting(
     *,
     report: dict,
@@ -545,6 +696,7 @@ def execute_cycle(
     storage = build_storage_layout(settings.data_root)
     now_epoch = datetime.now(timezone.utc).timestamp()
     cooldowns = _load_trade_cooldowns(storage.trade_cooldown_state)
+    position_policy_state = _load_position_policy_state(storage.position_policy_state)
     progress("setup", "running", "loading settings and models")
     llm_client = None
     if settings.model_backend == "ollama":
@@ -609,6 +761,14 @@ def execute_cycle(
         actual_base_asset = account.base_asset
         position_side = getattr(account, "position_side", "flat")
         market_type = getattr(account, "market_type", "spot")
+        position_context = _sync_position_policy_state(
+            position_policy_state,
+            mode=mode,
+            symbol=candidate_symbol,
+            account=account,
+            now_epoch=now_epoch,
+            timeframe=settings.timeframe,
+        )
         min_order_value_usdt = 0.0
         if hasattr(exchange, "minimum_order_value_usdt"):
             try:
@@ -669,6 +829,12 @@ def execute_cycle(
             lambda: candidate_strategy_researcher.evaluate_with_memory(snapshot, sentiment, strategy_memory),
         )
         progress("strategy_researcher", "done", strategy_research.summary)
+        policy_idea = _intraday_policy_exit(
+            snapshot=snapshot,
+            account=account,
+            position_context=position_context,
+            settings=settings,
+        )
         progress(
             "strategist",
             "running",
@@ -678,22 +844,26 @@ def execute_cycle(
                 else f"using fallback idea for quiet {candidate_symbol}"
             ),
         )
-        idea = timed_stage(
-            "strategist",
-            lambda: candidate_strategist.evaluate(
-                snapshot,
-                sentiment,
-                backtest,
-                strategy_research,
-                available_usdt=available_usdt,
-                available_base_asset=available_base_asset,
-                position_side=position_side,
-                min_order_value_usdt=min_order_value_usdt,
-                aggressive_mode=settings.demo_aggressive_mode,
-                trading_mode=mode,
-                strategy_memory=strategy_memory,
-            ),
-        )
+        if policy_idea is not None:
+            idea = policy_idea
+            _record_stage_metric(stage_metrics, "strategist", 0.0)
+        else:
+            idea = timed_stage(
+                "strategist",
+                lambda: candidate_strategist.evaluate(
+                    snapshot,
+                    sentiment,
+                    backtest,
+                    strategy_research,
+                    available_usdt=available_usdt,
+                    available_base_asset=available_base_asset,
+                    position_side=position_side,
+                    min_order_value_usdt=min_order_value_usdt,
+                    aggressive_mode=settings.demo_aggressive_mode,
+                    trading_mode=mode,
+                    strategy_memory=strategy_memory,
+                ),
+            )
         risk_feedback = ""
         progress("strategist", "done", f"{candidate_symbol}: {idea.action} ({idea.score:.2f})")
         progress("risk_supervisor", "running", f"reviewing {candidate_symbol}")
@@ -843,6 +1013,8 @@ def execute_cycle(
                     ),
                     "dust_position": bool(dust_info.get("is_dust")),
                     "dust_notional_usdt": round(float(dust_info.get("dust_notional_usdt", 0.0)), 4),
+                    "hold_minutes": round(float(position_context.get("hold_minutes", 0.0)), 2),
+                    "hold_bars": round(float(position_context.get("hold_bars", 0.0)), 2),
                 },
                 "execution_constraints": {
                     "min_order_value_usdt": round(min_order_value_usdt, 4),
@@ -855,8 +1027,11 @@ def execute_cycle(
                 "debate": {
                     "risk_feedback": risk_feedback,
                 },
+                "position_context": position_context,
+                "policy_exit": bool(policy_idea is not None),
             }
         )
+    _save_position_policy_state(storage.position_policy_state, position_policy_state)
 
     progress("selector", "running", "ranking symbol candidates")
     selected, selection_summary = timed_stage(
@@ -872,6 +1047,7 @@ def execute_cycle(
         and selected.get("llm_wake", {}).get("enabled", True)
         and selected.get("idea", {}).get("action") != "hold"
         and selected.get("approval", {}).get("approved")
+        and not bool(selected.get("policy_exit"))
     ):
         selected_idea = build_trade_idea(selected["idea"])
         selected_sentiment = build_sentiment_snapshot(selected["sentiment"])

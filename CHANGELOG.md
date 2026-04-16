@@ -16,6 +16,40 @@
 
 ---
 
+## v0.11.4 - Intraday-first strategy pool and adaptive hold policy
+
+### Why
+
+- 原始產品目標是「幣圈 USDT perpetual 的日內做多做空當沖」，但舊版策略池比較像短週期方向交易，沒有明確被約束成 intraday-first
+- 舊版 backtest 主要只看下一根 K 的報酬，較像驗證方向對錯，而不是驗證完整日內交易生命週期
+- 單純用「超過時間就強制平倉」也太死板，所以新的 intraday 政策需要同時滿足：
+  - 偏日內
+  - 避免卡單
+  - 但趨勢還在時允許延長持有
+
+### What Changed
+
+- 策略池改成明確的 intraday 版本：
+  - `intraday_breakout_perp_v1`
+  - `intraday_pullback_perp_v1`
+  - `intraday_reversal_scalp_v1`
+- `backtest.py` 不再只看下一根 K，改成用短持有窗 + TP/SL/time-stop 方式回放 intraday setup
+- `research.py` 的策略比較已對齊新的 intraday 策略池與 replay 邏輯
+- 新增本地 position policy state，追蹤：
+  - 持倉開始時間
+  - 持有分鐘數
+  - 持有 bars 數
+- `main.py` 新增 adaptive intraday exit policy：
+  - stagnation exit
+  - overheld-without-edge exit
+  - optional end-of-day de-risk / flatten
+- 這套 policy 不是硬性一翻兩瞪眼：
+  - 若趨勢仍延續且保護單已跟上，允許繼續抱
+  - 只有優勢鈍化、卡住、或接近日切又沒有足夠 edge，才會主動出場
+- `.env.example` 與 README 新增 intraday policy 相關設定
+
+---
+
 ## v0.11.3 - Alpha Arena integration plan
 
 ### Why

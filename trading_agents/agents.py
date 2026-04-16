@@ -223,9 +223,9 @@ class StrategistAgent:
             backtest.win_rate >= 0.45 and backtest.avg_return_pct >= -0.05
         )
         backtest_supports_short = backtest.trade_count == 0 or backtest.cumulative_return_pct >= -0.30
-        if not selected_is_base and strategy_research.selected_strategy_id == "trend_pullback_v1":
+        if not selected_is_base and strategy_research.selected_strategy_id == "intraday_pullback_perp_v1":
             backtest_supports_long = backtest_supports_long and backtest.win_rate >= 0.40
-        if not selected_is_base and strategy_research.selected_strategy_id == "breakout_volume_v1":
+        if not selected_is_base and strategy_research.selected_strategy_id == "intraday_breakout_perp_v1":
             backtest_supports_long = backtest_supports_long and backtest.trade_count >= 1
 
         sellable_notional = available_base_asset * last_price

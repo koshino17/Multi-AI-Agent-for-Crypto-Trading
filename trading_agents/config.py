@@ -96,6 +96,12 @@ class Settings:
     perp_profit_lock_breakeven_offset_pct: float = _float("PERP_PROFIT_LOCK_BREAKEVEN_OFFSET_PCT", 0.10)
     perp_profit_lock_trigger_2_pct: float = _float("PERP_PROFIT_LOCK_TRIGGER_2_PCT", 2.0)
     perp_profit_lock_stop_2_pct: float = _float("PERP_PROFIT_LOCK_STOP_2_PCT", 0.80)
+    intraday_max_hold_bars: float = _float("INTRADAY_MAX_HOLD_BARS", 12.0)
+    intraday_stagnation_bars: float = _float("INTRADAY_STAGNATION_BARS", 4.0)
+    intraday_stagnation_pnl_pct: float = _float("INTRADAY_STAGNATION_PNL_PCT", 0.35)
+    intraday_force_flat_enabled: bool = _bool("INTRADAY_FORCE_FLAT_ENABLED", False)
+    intraday_force_flat_hour_local: float = _float("INTRADAY_FORCE_FLAT_HOUR_LOCAL", 23.0)
+    intraday_force_flat_minute_local: float = _float("INTRADAY_FORCE_FLAT_MINUTE_LOCAL", 45.0)
 
 
 def load_settings() -> Settings:
