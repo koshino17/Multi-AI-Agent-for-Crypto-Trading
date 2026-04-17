@@ -142,13 +142,20 @@
 
 ### Alpha Arena
 
-目前仍然只是：
+目前不直接下單，但已經不只是規劃文件，現在會進入 research-only benchmark 管線：
 
 - benchmark
 - research source
 - evaluator/reference candidate
 
-不直接下單。
+目前會：
+
+- 載入 normalized public signals
+- 跑 Bybit public candle replay
+- 寫入 `external_benchmark_latest.json`
+- 進 daily report / Notion / 12h reflection
+
+但仍然不直接下單。
 
 來源：
 - [trading_agents/alpha_arena.py](/Users/koshino/Documents/Playground/trading_agents/alpha_arena.py)
@@ -156,11 +163,14 @@
 
 ### Grid
 
-目前仍未接進 live trading。
+目前仍未接進 live trading，但已經有 benchmark-only 候選：
+
+- `grid_range_reversion_v1`
 
 也就是說：
 
 - 現在不是 grid 在跑
+- 但 grid 已經會被離線 replay / benchmark
 - 也不是 regime router 在切換 grid / trend
 
 ---
@@ -170,6 +180,10 @@
 現在的 live trading，應該被理解成：
 
 **「以單一外部公開規則策略為主腦的 intraday-perp 系統，外圍再包一層 sentiment / strategist / risk / execution framework。」**
+
+而研究支線則是：
+
+**「用 external benchmark pipeline 持續比較 Donchian + ADX、grid、其他公開規則，以及 Alpha Arena normalized imports。」**
 
 這比之前更清楚，也更容易檢驗：
 

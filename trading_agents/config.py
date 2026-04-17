@@ -18,6 +18,11 @@ def _float(name: str, default: float) -> float:
     return float(value) if value else default
 
 
+def _int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    return int(value) if value else default
+
+
 def _bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -45,6 +50,10 @@ class Settings:
     data_root: str = os.getenv("DATA_ROOT", "./runtime")
     sentiment_config_path: str = os.getenv("SENTIMENT_CONFIG_PATH", "./config/sentiment_sources.json")
     strategy_library_path: str = os.getenv("STRATEGY_LIBRARY_PATH", "./config/strategy_library.json")
+    external_benchmark_library_path: str = os.getenv(
+        "EXTERNAL_BENCHMARK_LIBRARY_PATH",
+        "./config/external_benchmark_library.json",
+    )
     monitor_interval_seconds: float = _float("MONITOR_INTERVAL_SECONDS", 30.0)
     run_interval_seconds: float = _float("RUN_INTERVAL_SECONDS", 900.0)
     price_trigger_pct: float = _float("PRICE_TRIGGER_PCT", 0.0075)
@@ -64,6 +73,10 @@ class Settings:
     notion_daily_review_parent_page_id: str = os.getenv("NOTION_DAILY_REVIEW_PARENT_PAGE_ID", "")
     notion_daily_review_title_prefix: str = os.getenv("NOTION_DAILY_REVIEW_TITLE_PREFIX", "Trading Agents Daily Review")
     notion_daily_review_hour: float = _float("NOTION_DAILY_REVIEW_HOUR", 12.0)
+    external_benchmark_enabled: bool = _bool("EXTERNAL_BENCHMARK_ENABLED", True)
+    external_benchmark_refresh_hours: float = _float("EXTERNAL_BENCHMARK_REFRESH_HOURS", 4.0)
+    external_benchmark_limit: int = _int("EXTERNAL_BENCHMARK_LIMIT", 320)
+    external_benchmark_max_alpha_signals: int = _int("EXTERNAL_BENCHMARK_MAX_ALPHA_SIGNALS", 1000)
     llm_timeout_seconds: float = _float("LLM_TIMEOUT_SECONDS", 18.0)
     sentiment_request_timeout_seconds: float = _float("SENTIMENT_REQUEST_TIMEOUT_SECONDS", 6.0)
     sentiment_cache_ttl_seconds: float = _float("SENTIMENT_CACHE_TTL_SECONDS", 120.0)

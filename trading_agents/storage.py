@@ -11,10 +11,12 @@ class StorageLayout:
     sentiment_data: Path
     alpha_arena_raw: Path
     alpha_arena_normalized: Path
+    external_benchmark_normalized: Path
     trade_logs: Path
     evaluation_logs: Path
     reports: Path
     chart_reports: Path
+    benchmark_reports: Path
     daily_reports: Path
     service: Path
     runner_supervisor_pid: Path
@@ -29,6 +31,7 @@ class StorageLayout:
     position_policy_state: Path
     equity_curve_history_state: Path
     equity_curve_svg: Path
+    external_benchmark_state: Path
 
 
 def build_storage_layout(root: str) -> StorageLayout:
@@ -42,10 +45,12 @@ def build_storage_layout(root: str) -> StorageLayout:
         sentiment_data=base / "data" / "sentiment",
         alpha_arena_raw=base / "data" / "alpha_arena" / "raw",
         alpha_arena_normalized=base / "data" / "alpha_arena" / "normalized",
+        external_benchmark_normalized=base / "data" / "external_benchmarks" / "normalized",
         trade_logs=base / "logs" / "trades",
         evaluation_logs=base / "logs" / "evaluations",
         reports=base / "reports",
         chart_reports=base / "reports" / "charts",
+        benchmark_reports=base / "reports" / "benchmarks",
         daily_reports=base / "reports" / "daily",
         service=base / "service",
         runner_supervisor_pid=base / "service" / "runner_supervisor.pid",
@@ -60,6 +65,7 @@ def build_storage_layout(root: str) -> StorageLayout:
         position_policy_state=base / "service" / "position_policy.json",
         equity_curve_history_state=base / "service" / "equity_curve_history.jsonl",
         equity_curve_svg=base / "reports" / "charts" / "equity-curve-latest.svg",
+        external_benchmark_state=base / "service" / "external_benchmark_latest.json",
     )
     for path in (
         layout.root,
@@ -67,10 +73,12 @@ def build_storage_layout(root: str) -> StorageLayout:
         layout.sentiment_data,
         layout.alpha_arena_raw,
         layout.alpha_arena_normalized,
+        layout.external_benchmark_normalized,
         layout.trade_logs,
         layout.evaluation_logs,
         layout.reports,
         layout.chart_reports,
+        layout.benchmark_reports,
         layout.daily_reports,
         layout.service,
     ):

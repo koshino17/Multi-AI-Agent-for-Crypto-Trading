@@ -82,6 +82,9 @@ class NotionSyncClient:
         short_proposals = int(daily_summary.get("short_proposals", 0))
         long_accepted = int(daily_summary.get("long_accepted", 0))
         short_accepted = int(daily_summary.get("short_accepted", 0))
+        external_benchmarks = daily_summary.get("external_benchmarks", {})
+        top_benchmark = (external_benchmarks.get("top_candidates") or [{}])[0]
+        top_alpha = (external_benchmarks.get("top_alpha_arena_candidates") or [{}])[0]
 
         blocks: list[dict[str, Any]] = [
             _heading_1(self.page_title),
@@ -136,6 +139,25 @@ class NotionSyncClient:
             _bullet(f"Top Blocked Reason: {top_blocked_reason[0]} ({top_blocked_reason[1]})"),
             _bullet(f"Top Rejected Reason: {top_rejected_reason[0]} ({top_rejected_reason[1]})"),
         ]
+        if top_benchmark.get("candidate_id"):
+            blocks.extend(
+                [
+                    _heading_2("External Benchmark"),
+                    _bullet(
+                        f"Top benchmark: {top_benchmark.get('candidate_id')} on {top_benchmark.get('symbol', 'n/a')} "
+                        f"(expectancy={float(top_benchmark.get('expectancy_pct', 0.0)):+.2f}% | "
+                        f"profit_factor={float(top_benchmark.get('profit_factor', 0.0)):.2f})"
+                    ),
+                ]
+            )
+            if top_alpha.get("candidate_id"):
+                blocks.append(
+                    _bullet(
+                        f"Top Alpha Arena model: {top_alpha.get('candidate_id')} on {top_alpha.get('symbol', 'n/a')} "
+                        f"(expectancy={float(top_alpha.get('expectancy_pct', 0.0)):+.2f}% | "
+                        f"profit_factor={float(top_alpha.get('profit_factor', 0.0)):.2f})"
+                    )
+                )
 
         blocks.extend(
             [
@@ -664,6 +686,9 @@ def _build_daily_review_blocks(
     avg_scores = daily_summary.get("avg_scores", {})
     stage_latency_seconds = daily_summary.get("stage_latency_seconds", {})
     stage_latency_p95_seconds = daily_summary.get("stage_latency_p95_seconds", {})
+    external_benchmarks = daily_summary.get("external_benchmarks", {})
+    top_benchmark = (external_benchmarks.get("top_candidates") or [{}])[0]
+    top_alpha = (external_benchmarks.get("top_alpha_arena_candidates") or [{}])[0]
     blocks: list[dict[str, Any]] = [
         _heading_1(title),
         _paragraph(f"Published at: {datetime.now(LOCAL_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')}"),
@@ -722,6 +747,28 @@ def _build_daily_review_blocks(
                 _image_file_upload(equity_chart_upload_id, caption="Daily equity curve"),
             ]
         )
+    if top_benchmark.get("candidate_id"):
+        blocks.extend(
+            [
+                _heading_2("External Benchmarks"),
+                _bullet(f"Refreshed at: {external_benchmarks.get('generated_at', 'n/a')}"),
+                _bullet(f"Live baseline strategy: {external_benchmarks.get('baseline_strategy_id', 'n/a')}"),
+                _bullet(
+                    f"Top benchmark: {top_benchmark.get('candidate_id')} on {top_benchmark.get('symbol', 'n/a')} "
+                    f"(expectancy={float(top_benchmark.get('expectancy_pct', 0.0)):+.2f}% | "
+                    f"profit_factor={float(top_benchmark.get('profit_factor', 0.0)):.2f} | "
+                    f"trades={int(top_benchmark.get('trade_count', 0))})"
+                ),
+            ]
+        )
+        if top_alpha.get("candidate_id"):
+            blocks.append(
+                _bullet(
+                    f"Top Alpha Arena model: {top_alpha.get('candidate_id')} on {top_alpha.get('symbol', 'n/a')} "
+                    f"(expectancy={float(top_alpha.get('expectancy_pct', 0.0)):+.2f}% | "
+                    f"profit_factor={float(top_alpha.get('profit_factor', 0.0)):.2f})"
+                )
+            )
     holdings = financial.get("holdings", [])
     if holdings:
         for item in holdings:

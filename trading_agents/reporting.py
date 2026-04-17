@@ -337,6 +337,7 @@ def build_human_report(report: dict, mode: str, symbol: str) -> str:
     sentiment = report["sentiment"]
     backtest = report.get("backtest")
     strategy_research = report.get("strategy_research")
+    external_benchmarks = report.get("external_benchmarks") or {}
     idea = report["idea"]
     approval = report["approval"]
     summary_line = _summary_line(report)
@@ -443,6 +444,23 @@ def build_human_report(report: dict, mode: str, symbol: str) -> str:
                 lines.append(
                     f"- {item['symbol']} minimum order value: {float(constraints['min_order_value_usdt']):.2f} USDT"
                 )
+
+    top_candidate = (external_benchmarks.get("top_candidates") or [{}])[0]
+    if top_candidate and top_candidate.get("candidate_id"):
+        lines.extend(["", "## External Benchmarks", ""])
+        lines.append(
+            f"- Top benchmark: {top_candidate.get('candidate_id')} on {top_candidate.get('symbol', 'n/a')} "
+            f"(expectancy={float(top_candidate.get('expectancy_pct', 0.0)):+.2f}% | "
+            f"profit_factor={float(top_candidate.get('profit_factor', 0.0)):.2f} | "
+            f"trades={int(top_candidate.get('trade_count', 0))})"
+        )
+        top_alpha = (external_benchmarks.get("top_alpha_arena_candidates") or [{}])[0]
+        if top_alpha and top_alpha.get("candidate_id"):
+            lines.append(
+                f"- Top Alpha Arena benchmark: {top_alpha.get('candidate_id')} on {top_alpha.get('symbol', 'n/a')} "
+                f"(expectancy={float(top_alpha.get('expectancy_pct', 0.0)):+.2f}% | "
+                f"profit_factor={float(top_alpha.get('profit_factor', 0.0)):.2f})"
+            )
 
     result = report.get("result")
     if result:
@@ -1129,6 +1147,7 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
 
 def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_path: Path | None = None) -> dict[str, Any]:
     from trading_agents.config import load_settings
+    from trading_agents.external_benchmarks import load_external_benchmark_summary
     from trading_agents.storage import build_storage_layout
 
     settings = load_settings()
@@ -1147,6 +1166,7 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
         storage.equity_curve_history_state,
         storage.equity_curve_svg,
     )
+    summary["external_benchmarks"] = load_external_benchmark_summary(storage.external_benchmark_state)
     return summary
 
 
@@ -1180,6 +1200,9 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
     short_proposals = int(summary.get("short_proposals", 0))
     long_accepted = int(summary.get("long_accepted", 0))
     short_accepted = int(summary.get("short_accepted", 0))
+    external_benchmarks = summary.get("external_benchmarks", {})
+    top_benchmark = (external_benchmarks.get("top_candidates") or [{}])[0]
+    top_alpha_benchmark = (external_benchmarks.get("top_alpha_arena_candidates") or [{}])[0]
 
     lines = [
         f"# Daily Summary: {date_label}",
@@ -1320,6 +1343,34 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
         lines.extend(["", "## Why Rejected", ""])
         for reason, count in rejection_reason_counts.items():
             lines.append(f"- {reason}: {count}")
+
+    if top_benchmark.get("candidate_id"):
+        lines.extend(["", "## External Benchmarks", ""])
+        lines.append(f"- Refreshed at: {external_benchmarks.get('generated_at', 'n/a')}")
+        lines.append(f"- Live baseline strategy: {external_benchmarks.get('baseline_strategy_id', 'n/a')}")
+        lines.append(
+            f"- Top benchmark overall: {top_benchmark.get('candidate_id')} on {top_benchmark.get('symbol', 'n/a')} "
+            f"(expectancy={float(top_benchmark.get('expectancy_pct', 0.0)):+.2f}% | "
+            f"profit_factor={float(top_benchmark.get('profit_factor', 0.0)):.2f} | "
+            f"trades={int(top_benchmark.get('trade_count', 0))})"
+        )
+        if top_alpha_benchmark.get("candidate_id"):
+            lines.append(
+                f"- Top Alpha Arena model: {top_alpha_benchmark.get('candidate_id')} on {top_alpha_benchmark.get('symbol', 'n/a')} "
+                f"(expectancy={float(top_alpha_benchmark.get('expectancy_pct', 0.0)):+.2f}% | "
+                f"profit_factor={float(top_alpha_benchmark.get('profit_factor', 0.0)):.2f})"
+            )
+        top_by_symbol = external_benchmarks.get("top_by_symbol", {})
+        if isinstance(top_by_symbol, dict):
+            for symbol_key, payload in top_by_symbol.items():
+                if not isinstance(payload, dict):
+                    continue
+                lines.append(
+                    f"- {symbol_key}: {payload.get('candidate_id', 'n/a')} "
+                    f"(expectancy={float(payload.get('expectancy_pct', 0.0)):+.2f}% | "
+                    f"profit_factor={float(payload.get('profit_factor', 0.0)):.2f} | "
+                    f"trades={int(payload.get('trade_count', 0))})"
+                )
 
     if latest:
         lines.extend(

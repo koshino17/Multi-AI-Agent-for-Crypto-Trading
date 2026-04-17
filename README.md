@@ -11,10 +11,12 @@
 - 持續運作的 background runner
 - 目前策略方向已收斂為 `USDT perpetual intraday long/short` 優先，而不是中長線配置系統
 - 會持續累積資金曲線（equity curve），產生本地 SVG 折線圖，並同步摘要到 Notion
+- `Grid / Alpha Arena / 其他外部策略候選` 現在先走 research-only benchmark，不直接覆蓋 live trading
 
 版本更新與里程碑請看 `CHANGELOG.md`，不再把歷史更新內容全部塞進 README。
 若要看 `Alpha Arena` 如何作為 benchmark / research 來源接進目前架構，請看 `ALPHA_ARENA_INTEGRATION_PLAN.md`。
 若你已經有一份公開 Alpha Arena / 類 Alpha Arena 訊號 JSON 匯出，可以直接用 `scripts/alpha_arena_import_and_backtest.py` 做第一階段 research benchmark。
+若你要一次重跑目前所有外部 benchmark 候選，請用 `scripts/run_external_strategy_benchmarks.py`。
 
 ## Repo 目標
 
@@ -209,6 +211,47 @@ http://127.0.0.1:8765
 - 完整 decision cycle 主要由新 candle、帳戶變化或價格觸發
 - 不會每 30 秒都跑完整 LLM 重分析
 
+## 外部策略 Benchmark
+
+目前框架把外部策略分成兩層：
+
+- `live strategy`
+  - 目前收斂成單一主策略 `donchian_adx_perp_v1`
+- `research-only benchmarks`
+  - 目前統一 benchmark：
+    - `donchian_adx_perp_v1`
+    - `grid_range_reversion_v1`
+    - `bollinger_rsi_mean_reversion_v1`
+    - `alpha_arena_public_imports`
+
+相關檔案：
+
+- `config/external_benchmark_library.json`
+- `trading_agents/external_benchmarks.py`
+- `scripts/run_external_strategy_benchmarks.py`
+
+手動強制跑一輪 benchmark：
+
+```bash
+source .venv/bin/activate
+python scripts/run_external_strategy_benchmarks.py --force
+```
+
+輸出位置：
+
+- normalized benchmark signals:
+  - `./runtime/data/external_benchmarks/normalized`
+- latest benchmark snapshot:
+  - `./runtime/service/external_benchmark_latest.json`
+- historical benchmark reports:
+  - `./runtime/reports/benchmarks`
+
+這條 benchmark 管線目前不直接碰 executor，但會進入：
+
+- daily report
+- Notion live status / daily review 摘要
+- 12 小時 strategy reflection
+
 ## 目前架構
 
 角色包含：
@@ -296,6 +339,10 @@ PERP_HARD_STOP_LOSS_PCT=1.2
 PERP_TAKE_PROFIT_PCT=2.4
 PERP_TRAILING_STOP_PCT=0.0
 PERP_ENABLE_PROTECTION_ORDERS=true
+EXTERNAL_BENCHMARK_ENABLED=true
+EXTERNAL_BENCHMARK_REFRESH_HOURS=4
+EXTERNAL_BENCHMARK_LIMIT=320
+EXTERNAL_BENCHMARK_MAX_ALPHA_SIGNALS=1000
 ```
 
 其中：
@@ -307,6 +354,9 @@ PERP_ENABLE_PROTECTION_ORDERS=true
 - `PERP_MAX_LEVERAGE=2.0` 會在風控審批時限制有效槓桿，避免合約曝險擴得太快。
 - `PERP_MIN_LIQUIDATION_BUFFER_PCT=8.0` 會在現有倉位距離強平太近時擋下新的加碼。
 - `PERP_HARD_STOP_LOSS_PCT` / `PERP_TAKE_PROFIT_PCT` 會在新開倉後嘗試設定交易所 stop loss / take profit。
+- `EXTERNAL_BENCHMARK_ENABLED=true` 代表 runner 會低頻刷新 research-only benchmark 快照。
+- `EXTERNAL_BENCHMARK_REFRESH_HOURS=4` 代表 benchmark 預設每 4 小時重跑一次，不會每輪 cycle 都重算。
+- `EXTERNAL_BENCHMARK_MAX_ALPHA_SIGNALS=1000` 用來控制 Alpha Arena normalized dataset 每次最多讀多少筆訊號，避免 research 支線無限制膨脹。
 
 ## Alpha Arena 第一階段 Benchmark
 

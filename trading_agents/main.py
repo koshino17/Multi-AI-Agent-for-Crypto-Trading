@@ -26,6 +26,10 @@ from trading_agents.agents import (
 )
 from trading_agents.backtest import BacktestAgent
 from trading_agents.config import load_settings
+from trading_agents.external_benchmarks import (
+    load_external_benchmark_summary,
+    refresh_external_benchmark_suite,
+)
 from trading_agents.exchange import (
     BinanceTestnetExchangeClient,
     BybitDemoExchangeClient,
@@ -523,6 +527,18 @@ def _finalize_reporting(
     strategy_reflector: StrategyReflectionAgent,
 ) -> dict:
     progress("reporting", "running", report_label)
+    external_benchmark_sync = {"status": "disabled", "reason": "external benchmark disabled"}
+    if settings.external_benchmark_enabled:
+        try:
+            external_benchmark_sync = refresh_external_benchmark_suite(
+                storage=storage,
+                settings=settings,
+                symbols=list(settings.observation_pool),
+            )
+        except Exception as exc:
+            external_benchmark_sync = {"status": "error", "reason": str(exc)}
+    report["external_benchmark_sync"] = external_benchmark_sync
+    report["external_benchmarks"] = load_external_benchmark_summary(storage.external_benchmark_state)
     human_content = build_human_report(report, mode=mode, symbol=report["selected_symbol"])
     human_report_path = write_human_report(
         storage.reports,

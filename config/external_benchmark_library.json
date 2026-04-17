@@ -1,0 +1,78 @@
+{
+  "baseline_strategy_id": "donchian_adx_perp_v1",
+  "strategies": [
+    {
+      "id": "donchian_adx_perp_v1",
+      "name": "Donchian + ADX Breakout",
+      "kind": "rule_strategy",
+      "generator": "donchian_adx",
+      "source": "public_classic",
+      "description": "Public classic breakout trend-following benchmark using Donchian channel breaks filtered by Wilder ADX strength.",
+      "hold_bars": 6,
+      "take_profit_pct": 1.20,
+      "stop_loss_pct": 0.70,
+      "params": {
+        "channel_period": 20,
+        "adx_period": 14,
+        "adx_threshold": 20.0,
+        "volume_ratio_threshold": 1.05
+      }
+    },
+    {
+      "id": "grid_range_reversion_v1",
+      "name": "Grid Range Reversion",
+      "kind": "rule_strategy",
+      "generator": "grid_range_reversion",
+      "source": "public_grid_derived",
+      "description": "Grid-inspired oscillation benchmark that fades range extremes only when ADX stays low and Bollinger width confirms a contained range.",
+      "hold_bars": 5,
+      "take_profit_pct": 0.60,
+      "stop_loss_pct": 0.55,
+      "params": {
+        "bb_period": 20,
+        "bb_stddev": 2.0,
+        "adx_period": 14,
+        "adx_max": 18.0,
+        "bb_width_min_pct": 0.60,
+        "bb_width_max_pct": 4.50,
+        "entry_band_buffer_pct": 0.15,
+        "rsi_period": 14,
+        "rsi_buy_max": 43.0,
+        "rsi_sell_min": 57.0,
+        "signal_cooldown_bars": 2
+      }
+    },
+    {
+      "id": "bollinger_rsi_mean_reversion_v1",
+      "name": "Bollinger RSI Mean Reversion",
+      "kind": "rule_strategy",
+      "generator": "bollinger_rsi_mean_reversion",
+      "source": "public_classic",
+      "description": "Public mean-reversion benchmark using Bollinger Band extremes with RSI confirmation for intraday reversal entries.",
+      "hold_bars": 4,
+      "take_profit_pct": 0.75,
+      "stop_loss_pct": 0.50,
+      "params": {
+        "bb_period": 20,
+        "bb_stddev": 2.0,
+        "rsi_period": 14,
+        "rsi_buy_max": 35.0,
+        "rsi_sell_min": 65.0,
+        "signal_cooldown_bars": 2
+      }
+    },
+    {
+      "id": "alpha_arena_public_imports",
+      "name": "Alpha Arena Public Imports",
+      "kind": "alpha_arena_dataset",
+      "source": "alpha_arena_public",
+      "description": "Normalized public Alpha Arena-like signals imported into the local research dataset and replayed against Bybit public candles.",
+      "hold_bars": 4,
+      "take_profit_pct": 0.90,
+      "stop_loss_pct": 0.45,
+      "params": {
+        "max_signals": 1000
+      }
+    }
+  ]
+}

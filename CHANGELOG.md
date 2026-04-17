@@ -16,6 +16,48 @@
 
 ---
 
+## v0.11.9 - External benchmark pipeline for Grid / Alpha Arena / public candidates
+
+### Why
+
+- 雖然 live 主策略已經 reset 成單一公開規則策略，但 `Grid`、`Alpha Arena`、以及其他可信外部做法如果只停留在文件與討論層，仍然無法真正幫框架學習
+- 需要一條 research-only 的 benchmark 管線，把外部候選策略先做 replay / benchmark，再把結果餵回日報、Notion 與 12h reflection，而不是直接塞進 live trading
+- 這樣才能同時滿足兩件事：
+  - live 主線保持收斂
+  - 外部策略持續被回測、被比較、被累積成研究資料
+
+### What Changed
+
+- 新增 `config/external_benchmark_library.json`
+  - 明確定義目前 research-only 的外部 benchmark 候選：
+    - `donchian_adx_perp_v1`
+    - `grid_range_reversion_v1`
+    - `bollinger_rsi_mean_reversion_v1`
+    - `alpha_arena_public_imports`
+- 新增 `trading_agents/external_benchmarks.py`
+  - 統一處理外部 benchmark 候選的：
+    - signal generation
+    - replay / benchmark
+    - Alpha Arena normalized dataset 載入
+    - 最新 benchmark snapshot 持久化
+- 新增 `scripts/run_external_strategy_benchmarks.py`
+  - 可手動強制跑一輪外部 benchmark
+- `StorageLayout` 新增：
+  - `data/external_benchmarks/normalized`
+  - `reports/benchmarks`
+  - `service/external_benchmark_latest.json`
+- `main.py` 現在會低頻刷新外部 benchmark 快照（預設每 4 小時）
+  - 只進 research/reporting，不碰 live executor
+- `reporting.py` / `notion_sync.py` / `DailyReviewAgent`
+  - 日報、Notion、daily review 現在會顯示：
+    - top benchmark candidate
+    - top Alpha Arena candidate
+    - symbol-level benchmark leader
+  - 12h strategy reflection 也會把 benchmark leader 納入 bias / summary 參考
+- `README.md` 與策略真相文件補上目前 external benchmark 的定位與使用方式
+
+---
+
 ## v0.11.8 - External strategy reset to Donchian + ADX
 
 ### Why

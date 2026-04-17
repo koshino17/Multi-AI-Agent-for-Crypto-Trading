@@ -2,6 +2,14 @@
 
 這份文件用來定義：如何把 `Alpha Arena` 這類公開 AI 交易競賽 / leaderboard / reasoning / trade stream，安全地接進目前的 `Multi-AI-Agent-for-Crypto-Trading` 架構。
 
+目前狀態更新：
+
+- `Phase 1` 已落地：
+  - 可匯入 normalized Alpha Arena signals
+  - 可用統一 external benchmark pipeline 做 replay
+  - 結果會進 daily report / Notion / 12h reflection
+- 仍未進 live executor
+
 重點不是「直接抄單」，而是把它當成：
 
 - 外部 benchmark

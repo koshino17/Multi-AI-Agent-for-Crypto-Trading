@@ -833,10 +833,13 @@ class DailyReviewAgent:
         rejection_reason_counts = daily_summary.get("rejection_reason_counts", {})
         financial = daily_summary.get("financial_snapshot", {})
         latest = daily_summary.get("latest") or {}
+        external_benchmarks = daily_summary.get("external_benchmarks", {})
         action_line = ", ".join(f"{key}={value}" for key, value in action_counts.items()) or "no actions"
         symbol_line = ", ".join(f"{key}={value}" for key, value in selected_symbol_counts.items()) or "no symbol focus"
         top_block = next(iter(blocked_reason_counts.items()), ("none", 0))
         top_reject = next(iter(rejection_reason_counts.items()), ("none", 0))
+        top_benchmark = (external_benchmarks.get("top_candidates") or [{}])[0]
+        top_alpha = (external_benchmarks.get("top_alpha_arena_candidates") or [{}])[0]
 
         operations_summary = (
             f"目前總資產約 {float(financial.get('total_portfolio_value_usdt', 0.0)):.2f} USDT，"
@@ -858,6 +861,16 @@ class DailyReviewAgent:
             f"主要 blocked 原因是 {top_block[0]} ({top_block[1]})；"
             f"主要 rejected 原因是 {top_reject[0]} ({top_reject[1]})。"
         )
+        if top_benchmark.get("candidate_id"):
+            decision_summary += (
+                f" 最新外部 benchmark 目前以 {top_benchmark.get('candidate_id', 'n/a')} "
+                f"@ {top_benchmark.get('symbol', 'n/a')} 領先，"
+                f"expectancy {float(top_benchmark.get('expectancy_pct', 0.0)):+.2f}%。"
+            )
+        if top_alpha.get("candidate_id"):
+            decision_summary += (
+                f" Alpha Arena 對照組領先的是 {top_alpha.get('candidate_id', 'n/a')}。"
+            )
 
         improvements: list[str] = []
         if float(financial.get("daily_fees_usdt", 0.0)) > max(float(financial.get("daily_pnl_usdt", 0.0)), 0.0):
@@ -872,6 +885,14 @@ class DailyReviewAgent:
             improvements.append("盤中已有訊號但沒有實際成交時，優先檢查 sizing、最小單額與資金切分邏輯。")
         if float(financial.get("capital_utilization_pct", 0.0)) < 20:
             improvements.append("資金利用率偏低時，優先維持主策略門檻；若要增加 demo 訓練樣本，應額外設計獨立的 exploration budget，而不是直接降低整體進場標準。")
+        if top_benchmark.get("candidate_id") and top_benchmark.get("candidate_id") != "donchian_adx_perp_v1":
+            improvements.append(
+                f"外部 benchmark 顯示 `{top_benchmark.get('candidate_id')}` 在 {top_benchmark.get('symbol', 'n/a')} 暫時更強，先做 attribution 再決定是否升級成 live 候選。"
+            )
+        if top_alpha.get("candidate_id"):
+            improvements.append(
+                "將 Alpha Arena 領先模型的持倉節奏與我們的 exit timing 對照，優先檢查出場是否過慢。"
+            )
         if not improvements:
             improvements.append("持續追蹤各策略的 expectancy 與實際填單結果，讓 selector 更偏向真正可成交且報酬風險比佳的候選。")
 
@@ -927,6 +948,8 @@ class StrategyReflectionAgent:
         selected = daily_summary.get("selected_symbol_counts", {})
         top_block = next(iter(blocked.items()), ("none", 0))
         top_reject = next(iter(rejected.items()), ("none", 0))
+        external_benchmarks = daily_summary.get("external_benchmarks", {})
+        top_benchmark = (external_benchmarks.get("top_candidates") or [{}])[0]
         focus_symbols = [key for key, _ in list(selected.items())[:3]]
         biases: list[str] = []
         risk_adjustments: list[str] = []
@@ -935,13 +958,18 @@ class StrategyReflectionAgent:
             risk_adjustments.append(f"treat `{top_reject[0]}` as a first-class constraint in the next 12h window")
         if top_block[1] > 0:
             biases.append(f"reduce candidates that repeatedly hit `{top_block[0]}`")
+        if top_benchmark.get("candidate_id"):
+            biases.append(
+                f"keep live strategy honest against external benchmark leader `{top_benchmark.get('candidate_id')}`"
+            )
         if not biases:
             biases.append("keep favoring positive expectancy and strong payoff asymmetry")
         if not risk_adjustments:
             risk_adjustments.append("avoid changing thresholds again until the next 12h reflection window")
         summary = (
             f"12h reflection for {slot}: focus on executable positive-expectancy setups; "
-            f"top blocked={top_block[0]} ({top_block[1]}); top rejected={top_reject[0]} ({top_reject[1]})."
+            f"top blocked={top_block[0]} ({top_block[1]}); top rejected={top_reject[0]} ({top_reject[1]}); "
+            f"external benchmark leader={top_benchmark.get('candidate_id', 'n/a')}."
         )
         return StrategyReflectionSnapshot(
             slot=slot,
