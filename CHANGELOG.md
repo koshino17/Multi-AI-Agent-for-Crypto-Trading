@@ -16,6 +16,39 @@
 
 ---
 
+## v0.11.8 - External strategy reset to Donchian + ADX
+
+### Why
+
+- 過去的 live trading 核心仍然建立在內部 hand-crafted 策略池上，與「採用更有公信力、可審計策略來源」這個目標沒有真正對齊
+- 雖然基礎設施、風控、Notion、報表與 perp 執行層已經成熟，但核心 alpha 來源仍不夠可信
+- 需要把 live 主策略收斂成一條公開、經典、可回測、適合多空 perp 的規則策略，避免系統繼續停留在四不像的混合狀態
+
+### What Changed
+
+- 移除原本作為 live 主策略池的內部 intraday 三策略：
+  - `intraday_breakout_perp_v1`
+  - `intraday_pullback_perp_v1`
+  - `intraday_reversal_scalp_v1`
+- `strategy_library.json` 改為單一主策略：
+  - `donchian_adx_perp_v1`
+- `MarketSnapshot` 新增：
+  - `opens`
+  - `highs`
+  - `lows`
+- `exchange.py` 現在會把 Bybit / mock / Binance 的 OHLC 一起帶入 snapshot
+- `backtest.py` 重寫為：
+  - Donchian breakout + Wilder ADX 過濾
+  - ATR 風格動態 TP / SL replay
+- `research.py` 重寫為：
+  - 單一外部主策略模式
+  - 不再讓內部策略池互相競爭
+  - 研究摘要會明確輸出 `current_signal`
+- 新增當前策略真相文件：
+  - `CURRENT_LIVE_STRATEGY_TRUTH_TABLE.md`
+
+---
+
 ## v0.11.7 - Daily Review-only Notion equity chart
 
 ### Why

@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from statistics import fmean
 
-from trading_agents.backtest import build_backtest_snapshot, _simulate_intraday_trade
+from trading_agents.backtest import build_backtest_snapshot, compute_adx, donchian_adx_signal, _simulate_intraday_trade
 from trading_agents.llm import OllamaClient
 from trading_agents.models import (
     BacktestSnapshot,
@@ -25,7 +24,7 @@ class StrategyResearchAgent:
 
     def _load_library(self) -> dict:
         if not self.library_path.exists():
-            return {"base_strategy": "intraday_breakout_perp_v1", "strategies": []}
+            return {"base_strategy": "donchian_adx_perp_v1", "strategies": []}
         return json.loads(self.library_path.read_text())
 
     def evaluate(self, snapshot: MarketSnapshot, sentiment: SentimentSnapshot) -> StrategyResearchSnapshot:
@@ -37,7 +36,7 @@ class StrategyResearchAgent:
         sentiment: SentimentSnapshot,
         strategy_memory: dict | None = None,
     ) -> StrategyResearchSnapshot:
-        base_id = self.library.get("base_strategy", "intraday_breakout_perp_v1")
+        base_id = self.library.get("base_strategy", "donchian_adx_perp_v1")
         candidates: list[StrategyCandidate] = []
         for item in self.library.get("strategies", []):
             backtest = self._run_strategy(item["id"], snapshot, sentiment)
@@ -54,32 +53,24 @@ class StrategyResearchAgent:
         if not candidates:
             fallback = StrategyCandidate(
                 strategy_id=base_id,
-                name="Intraday Breakout Perp",
-                source="local_intraday",
-                credibility="internal",
-                description="Fallback intraday strategy library entry",
+                name="Donchian ADX Perp",
+                source="public_classic",
+                credibility="external_public",
+                description="Fallback external Donchian/ADX strategy entry",
                 backtest=BacktestSnapshot(0, 0, 0.0, 0.0, 0.0, "no strategy candidates loaded"),
             )
             candidates = [fallback]
-        fallback_selected = max(
-            candidates,
-            key=lambda item: (
-                item.backtest.trade_count > 0,
-                item.backtest.expectancy_pct,
-                item.backtest.profit_factor,
-                item.backtest.cumulative_return_pct,
-                item.backtest.trade_count,
-            ),
-        )
-        selected = fallback_selected
-        rationale = self._fallback_rationale(base_id, selected)
-        llm_choice = self._llm_select(snapshot, sentiment, candidates, fallback_selected, strategy_memory)
-        if llm_choice is not None:
-            selected = llm_choice[0]
-            rationale = llm_choice[1]
+
+        # Strategy reset: use a single external strategy as the live source of truth.
+        selected = candidates[0]
+        current_signal, current_metrics = self._current_signal(snapshot)
+        rationale = self._fallback_rationale(base_id, selected, snapshot, current_signal)
         summary = (
             f"selected strategy {selected.strategy_id}; "
             f"base={base_id}; {selected.backtest.summary}; "
+            f"current_signal={current_signal}; "
+            f"current_adx={current_metrics.get('adx', 0.0):.2f}; "
+            f"current_volume_ratio={current_metrics.get('volume_ratio', 0.0):.2f}; "
             f"rationale={rationale}"
         )
         return StrategyResearchSnapshot(
@@ -91,76 +82,39 @@ class StrategyResearchAgent:
             selected_strategy_rationale=rationale,
         )
 
-    def _fallback_rationale(self, base_id: str, selected: StrategyCandidate) -> str:
-        if selected.strategy_id == base_id:
-            return "base strategy remained the most reliable candidate on current replay statistics"
+    def _fallback_rationale(self, base_id: str, selected: StrategyCandidate, snapshot: MarketSnapshot, current_signal: str) -> str:
+        highs = snapshot.highs or snapshot.closes
+        lows = snapshot.lows or snapshot.closes
+        closes = snapshot.closes
+        adx_state = compute_adx(highs, lows, closes, period=14)
+        latest_adx = adx_state["adx"][-1] if adx_state["adx"] else 0.0
         return (
-            f"{selected.strategy_id} had the strongest replay edge by expectancy/profit factor "
-            f"among loaded strategies"
+            "single external strategy mode is active; "
+            f"base_strategy={base_id}; "
+            f"selected={selected.strategy_id}; "
+            f"live_signal={current_signal}; "
+            f"latest_adx={latest_adx:.2f}; "
+            "this strategy is based on public Donchian breakout rules with Wilder ADX trend filtering"
         )
 
-    def _llm_select(
-        self,
-        snapshot: MarketSnapshot,
-        sentiment: SentimentSnapshot,
-        candidates: list[StrategyCandidate],
-        fallback_selected: StrategyCandidate,
-        strategy_memory: dict | None,
-    ) -> tuple[StrategyCandidate, str] | None:
-        if self.llm_client is None:
-            return None
-        candidate_payload = []
-        for item in candidates:
-            candidate_payload.append(
-                {
-                    "strategy_id": item.strategy_id,
-                    "name": item.name,
-                    "description": item.description,
-                    "source": item.source,
-                    "credibility": item.credibility,
-                    "trade_count": item.backtest.trade_count,
-                    "win_rate": round(item.backtest.win_rate, 4),
-                    "avg_return_pct": round(item.backtest.avg_return_pct, 4),
-                    "avg_win_pct": round(item.backtest.avg_win_pct, 4),
-                    "avg_loss_pct": round(item.backtest.avg_loss_pct, 4),
-                    "expectancy_pct": round(item.backtest.expectancy_pct, 4),
-                    "profit_factor": round(item.backtest.profit_factor, 4),
-                    "cumulative_return_pct": round(item.backtest.cumulative_return_pct, 4),
-                    "summary": item.backtest.summary,
-                }
-            )
-        strategy_memory = strategy_memory or {}
-        try:
-            response = self.llm_client.generate_json(
-                (
-                    "You are the strategy researcher in a crypto trading system. "
-                    "Choose the best strategy candidate for the current symbol. "
-                    "Return JSON with keys selected_strategy_id and rationale. "
-                    "Prefer intraday strategies with positive expectancy, acceptable profit factor, enough replay trades, "
-                    "and a payoff profile that can still be attractive even if win rate is not dominant. "
-                    "Do not pick a strategy with zero replay trades unless every candidate has zero trades. "
-                    f"symbol={snapshot.symbol}; timeframe={snapshot.timeframe}; "
-                    f"last_price={snapshot.last_price:.4f}; sentiment_score={sentiment.sentiment_score:+.2f}; "
-                    f"sentiment_summary={sentiment.summary}; "
-                    f"strategy_memory_summary={strategy_memory.get('summary', '')}; "
-                    f"strategy_memory_biases={json.dumps(strategy_memory.get('biases', []), ensure_ascii=False)}; "
-                    f"strategy_memory_focus_symbols={json.dumps(strategy_memory.get('focus_symbols', []), ensure_ascii=False)}; "
-                    f"fallback_selected={fallback_selected.strategy_id}; "
-                    f"candidates={json.dumps(candidate_payload, ensure_ascii=False)}"
-                )
-            )
-        except Exception:
-            return None
-        selected_id = str(response.get("selected_strategy_id", fallback_selected.strategy_id))
-        rationale = str(response.get("rationale", "")).strip()
-        chosen = next((item for item in candidates if item.strategy_id == selected_id), None)
-        if chosen is None:
-            return None
-        if chosen.backtest.trade_count == 0 and any(item.backtest.trade_count > 0 for item in candidates):
-            return None
-        if not rationale:
-            rationale = self._fallback_rationale(self.library.get("base_strategy", "intraday_breakout_perp_v1"), chosen)
-        return chosen, rationale
+    def _current_signal(self, snapshot: MarketSnapshot) -> tuple[str, dict[str, float]]:
+        closes = snapshot.closes
+        highs = snapshot.highs or closes
+        lows = snapshot.lows or closes
+        volumes = snapshot.volumes
+        if len(closes) < 35:
+            return "hold", {}
+        return donchian_adx_signal(
+            highs=highs,
+            lows=lows,
+            closes=closes,
+            volumes=volumes,
+            index=len(closes) - 1,
+            channel_period=20,
+            adx_period=14,
+            adx_threshold=20.0,
+            volume_ratio_threshold=1.10,
+        )
 
     def _run_strategy(
         self,
@@ -169,95 +123,50 @@ class StrategyResearchAgent:
         sentiment: SentimentSnapshot,
     ) -> BacktestSnapshot:
         closes = snapshot.closes
+        highs = snapshot.highs or closes
+        lows = snapshot.lows or closes
         volumes = snapshot.volumes
-        if len(closes) < 26:
+        if len(closes) < 35:
             return BacktestSnapshot(0, 0, 0.0, 0.0, 0.0, f"{strategy_id}: not enough candles")
 
         returns: list[float] = []
-        sample_count = max(len(closes) - 21, 0)
-        for index in range(20, len(closes) - 6):
-            short_avg = fmean(closes[index - 4:index + 1])
-            long_avg = fmean(closes[index - 19:index + 1])
-            if not long_avg:
+        start_index = 28
+        for index in range(start_index, len(closes) - 6):
+            direction, metrics = donchian_adx_signal(
+                highs=highs,
+                lows=lows,
+                closes=closes,
+                volumes=volumes,
+                index=index,
+                channel_period=20,
+                adx_period=14,
+                adx_threshold=20.0,
+                volume_ratio_threshold=1.10,
+            )
+            if direction == "hold":
                 continue
-            momentum = (short_avg - long_avg) / long_avg
-            recent_volume = fmean(volumes[max(0, index - 2): index + 1])
-            longer_volume = fmean(volumes[max(0, index - 19): index + 1])
-            rolling_high = max(closes[index - 9:index + 1])
-            rolling_low = min(closes[index - 9:index + 1])
+            # Keep a light sentiment veto so the external rule remains dominant,
+            # while still avoiding obvious sentiment shocks.
+            if direction == "long" and sentiment.sentiment_score < -0.85:
+                continue
+            if direction == "short" and sentiment.sentiment_score > 0.85:
+                continue
 
-            triggered = False
-            directional_return = 0.0
+            atr_pct = (metrics.get("atr", 0.0) / closes[index]) if closes[index] > 0 else 0.0
+            stop_loss_pct = max(atr_pct * 1.0, 0.0045)
+            take_profit_pct = max(atr_pct * 1.8, stop_loss_pct * 1.6)
+            returns.append(
+                _simulate_intraday_trade(
+                    closes,
+                    entry_index=index,
+                    direction=direction,
+                    max_hold_bars=6,
+                    take_profit_pct=take_profit_pct,
+                    stop_loss_pct=stop_loss_pct,
+                )
+            )
 
-            if strategy_id == "intraday_breakout_perp_v1":
-                if closes[index] >= rolling_high and recent_volume > longer_volume * 1.08 and sentiment.sentiment_score >= -0.60:
-                    triggered = True
-                    directional_return = _simulate_intraday_trade(
-                        closes,
-                        entry_index=index,
-                        direction="long",
-                        max_hold_bars=4,
-                        take_profit_pct=0.009,
-                        stop_loss_pct=0.0045,
-                    )
-                elif closes[index] <= rolling_low and recent_volume > longer_volume * 1.08 and sentiment.sentiment_score <= 0.70:
-                    triggered = True
-                    directional_return = _simulate_intraday_trade(
-                        closes,
-                        entry_index=index,
-                        direction="short",
-                        max_hold_bars=4,
-                        take_profit_pct=0.009,
-                        stop_loss_pct=0.0045,
-                    )
-            elif strategy_id == "intraday_pullback_perp_v1":
-                pullback = (closes[index] - closes[index - 3]) / closes[index - 3]
-                if momentum > 0.0015 and -0.012 <= pullback <= -0.002:
-                    triggered = True
-                    directional_return = _simulate_intraday_trade(
-                        closes,
-                        entry_index=index,
-                        direction="long",
-                        max_hold_bars=5,
-                        take_profit_pct=0.008,
-                        stop_loss_pct=0.004,
-                    )
-                elif momentum < -0.0015 and 0.002 <= pullback <= 0.012:
-                    triggered = True
-                    directional_return = _simulate_intraday_trade(
-                        closes,
-                        entry_index=index,
-                        direction="short",
-                        max_hold_bars=5,
-                        take_profit_pct=0.008,
-                        stop_loss_pct=0.004,
-                    )
-            elif strategy_id == "intraday_reversal_scalp_v1":
-                deviation_pct = ((closes[index] - short_avg) / short_avg) if short_avg else 0.0
-                if deviation_pct <= -0.004 and momentum > -0.002:
-                    triggered = True
-                    directional_return = _simulate_intraday_trade(
-                        closes,
-                        entry_index=index,
-                        direction="long",
-                        max_hold_bars=3,
-                        take_profit_pct=0.006,
-                        stop_loss_pct=0.0035,
-                    )
-                elif deviation_pct >= 0.004 and momentum < 0.002:
-                    triggered = True
-                    directional_return = _simulate_intraday_trade(
-                        closes,
-                        entry_index=index,
-                        direction="short",
-                        max_hold_bars=3,
-                        take_profit_pct=0.006,
-                        stop_loss_pct=0.0035,
-                    )
-
-            if triggered:
-                returns.append(directional_return)
-
+        sample_count = max(len(closes) - start_index, 0)
         return build_backtest_snapshot(
             sample_count=sample_count,
             returns=returns,

@@ -5,6 +5,127 @@ from statistics import fmean
 from trading_agents.models import BacktestSnapshot, MarketSnapshot, SentimentSnapshot
 
 
+def _wilder_smooth(values: list[float], period: int) -> list[float]:
+    if period <= 0 or len(values) < period:
+        return []
+    smoothed: list[float] = [sum(values[:period])]
+    for value in values[period:]:
+        smoothed.append(smoothed[-1] - (smoothed[-1] / period) + value)
+    return smoothed
+
+
+def compute_adx(highs: list[float], lows: list[float], closes: list[float], period: int = 14) -> dict[str, list[float]]:
+    length = min(len(highs), len(lows), len(closes))
+    if period <= 0 or length < (period * 2):
+        return {"adx": [], "plus_di": [], "minus_di": [], "atr": []}
+
+    tr_values: list[float] = []
+    plus_dm_values: list[float] = []
+    minus_dm_values: list[float] = []
+    for index in range(1, length):
+        high = float(highs[index])
+        low = float(lows[index])
+        prev_high = float(highs[index - 1])
+        prev_low = float(lows[index - 1])
+        prev_close = float(closes[index - 1])
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        up_move = high - prev_high
+        down_move = prev_low - low
+        plus_dm = up_move if up_move > down_move and up_move > 0 else 0.0
+        minus_dm = down_move if down_move > up_move and down_move > 0 else 0.0
+        tr_values.append(tr)
+        plus_dm_values.append(plus_dm)
+        minus_dm_values.append(minus_dm)
+
+    atr_smoothed = _wilder_smooth(tr_values, period)
+    plus_smoothed = _wilder_smooth(plus_dm_values, period)
+    minus_smoothed = _wilder_smooth(minus_dm_values, period)
+    if not atr_smoothed or not plus_smoothed or not minus_smoothed:
+        return {"adx": [], "plus_di": [], "minus_di": [], "atr": []}
+
+    plus_di: list[float] = []
+    minus_di: list[float] = []
+    dx_values: list[float] = []
+    for atr_value, plus_value, minus_value in zip(atr_smoothed, plus_smoothed, minus_smoothed):
+        if atr_value <= 0:
+            plus_di.append(0.0)
+            minus_di.append(0.0)
+            dx_values.append(0.0)
+            continue
+        plus_di_value = (plus_value / atr_value) * 100.0
+        minus_di_value = (minus_value / atr_value) * 100.0
+        plus_di.append(plus_di_value)
+        minus_di.append(minus_di_value)
+        denominator = plus_di_value + minus_di_value
+        dx_values.append((abs(plus_di_value - minus_di_value) / denominator) * 100.0 if denominator > 0 else 0.0)
+
+    if len(dx_values) < period:
+        return {"adx": [], "plus_di": plus_di, "minus_di": minus_di, "atr": [value / period for value in atr_smoothed]}
+
+    adx: list[float] = [sum(dx_values[:period]) / period]
+    for dx_value in dx_values[period:]:
+        adx.append(((adx[-1] * (period - 1)) + dx_value) / period)
+
+    atr = [value / period for value in atr_smoothed]
+    return {
+        "adx": adx,
+        "plus_di": plus_di,
+        "minus_di": minus_di,
+        "atr": atr,
+    }
+
+
+def donchian_adx_signal(
+    *,
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    volumes: list[float],
+    index: int,
+    channel_period: int = 20,
+    adx_period: int = 14,
+    adx_threshold: float = 20.0,
+    volume_ratio_threshold: float = 1.15,
+) -> tuple[str, dict[str, float]]:
+    if index < max(channel_period, adx_period * 2):
+        return "hold", {}
+    prior_highs = highs[index - channel_period:index]
+    prior_lows = lows[index - channel_period:index]
+    if not prior_highs or not prior_lows:
+        return "hold", {}
+
+    adx_state = compute_adx(highs[: index + 1], lows[: index + 1], closes[: index + 1], period=adx_period)
+    if not adx_state["adx"]:
+        return "hold", {}
+    latest_adx = adx_state["adx"][-1]
+    latest_plus = adx_state["plus_di"][-1] if adx_state["plus_di"] else 0.0
+    latest_minus = adx_state["minus_di"][-1] if adx_state["minus_di"] else 0.0
+    latest_atr = adx_state["atr"][-1] if adx_state["atr"] else 0.0
+    recent_volume = fmean(volumes[max(0, index - 2): index + 1]) if volumes else 0.0
+    baseline_volume = fmean(volumes[max(0, index - 19): index + 1]) if volumes else 0.0
+    volume_ratio = recent_volume / baseline_volume if baseline_volume > 0 else 0.0
+    upper_breakout = max(prior_highs)
+    lower_breakdown = min(prior_lows)
+    close = closes[index]
+
+    metrics = {
+        "adx": latest_adx,
+        "plus_di": latest_plus,
+        "minus_di": latest_minus,
+        "atr": latest_atr,
+        "volume_ratio": volume_ratio,
+        "upper_breakout": upper_breakout,
+        "lower_breakdown": lower_breakdown,
+    }
+    if latest_adx < adx_threshold or volume_ratio < volume_ratio_threshold:
+        return "hold", metrics
+    if close > upper_breakout and latest_plus >= latest_minus:
+        return "long", metrics
+    if close < lower_breakdown and latest_minus >= latest_plus:
+        return "short", metrics
+    return "hold", metrics
+
+
 def _simulate_intraday_trade(
     closes: list[float],
     *,
@@ -91,69 +212,53 @@ class BacktestAgent:
 
     def evaluate(self, snapshot: MarketSnapshot, sentiment: SentimentSnapshot) -> BacktestSnapshot:
         closes = snapshot.closes
-        if len(closes) < 26:
+        highs = snapshot.highs or closes
+        lows = snapshot.lows or closes
+        volumes = snapshot.volumes
+        if len(closes) < 35:
             return BacktestSnapshot(
                 sample_count=0,
                 trade_count=0,
                 win_rate=0.0,
                 avg_return_pct=0.0,
                 cumulative_return_pct=0.0,
-                summary="not enough candles for replay test",
+                summary="not enough candles for Donchian/ADX replay",
             )
 
         returns: list[float] = []
-        # Replay a compact intraday breakout rule with time-limited exits.
-        for index in range(20, len(closes) - 4):
-            short_avg = fmean(closes[index - 4:index + 1])
-            long_avg = fmean(closes[index - 19:index + 1])
-            if not long_avg:
+        start_index = 28
+        for index in range(start_index, len(closes) - 6):
+            direction, metrics = donchian_adx_signal(
+                highs=highs,
+                lows=lows,
+                closes=closes,
+                volumes=volumes,
+                index=index,
+                channel_period=20,
+                adx_period=14,
+                adx_threshold=20.0,
+                volume_ratio_threshold=1.10,
+            )
+            if direction == "hold":
                 continue
-            momentum = (short_avg - long_avg) / long_avg
-            recent_volume = fmean(snapshot.volumes[max(0, index - 2): index + 1]) if snapshot.volumes else 0.0
-            baseline_volume = fmean(snapshot.volumes[max(0, index - 19): index + 1]) if snapshot.volumes else 0.0
-            volume_ratio = recent_volume / baseline_volume if baseline_volume > 0 else 0.0
-            rolling_high = max(closes[index - 9:index + 1])
-            rolling_low = min(closes[index - 9:index + 1])
+            atr_pct = (metrics.get("atr", 0.0) / closes[index]) if closes[index] > 0 else 0.0
+            stop_loss_pct = max(atr_pct * 1.0, 0.0045)
+            take_profit_pct = max(atr_pct * 1.8, stop_loss_pct * 1.6)
+            returns.append(
+                _simulate_intraday_trade(
+                    closes,
+                    entry_index=index,
+                    direction=direction,
+                    max_hold_bars=6,
+                    take_profit_pct=take_profit_pct,
+                    stop_loss_pct=stop_loss_pct,
+                )
+            )
 
-            if closes[index] >= rolling_high and volume_ratio >= 1.05 and sentiment.sentiment_score >= -0.55:
-                returns.append(
-                    _simulate_intraday_trade(
-                        closes,
-                        entry_index=index,
-                        direction="long",
-                        max_hold_bars=4,
-                        take_profit_pct=0.009,
-                        stop_loss_pct=0.0045,
-                    )
-                )
-            elif closes[index] <= rolling_low and volume_ratio >= 1.05 and sentiment.sentiment_score <= 0.65:
-                returns.append(
-                    _simulate_intraday_trade(
-                        closes,
-                        entry_index=index,
-                        direction="short",
-                        max_hold_bars=4,
-                        take_profit_pct=0.009,
-                        stop_loss_pct=0.0045,
-                    )
-                )
-            elif abs(momentum) >= 0.0028 and abs((closes[index] - short_avg) / short_avg) >= 0.0035:
-                direction = "short" if closes[index] > short_avg else "long"
-                returns.append(
-                    _simulate_intraday_trade(
-                        closes,
-                        entry_index=index,
-                        direction=direction,
-                        max_hold_bars=3,
-                        take_profit_pct=0.006,
-                        stop_loss_pct=0.0035,
-                    )
-                )
-
-        sample_count = max(len(closes) - 21, 0)
+        sample_count = max(len(closes) - start_index, 0)
         return build_backtest_snapshot(
             sample_count=sample_count,
             returns=returns,
-            summary_prefix="intraday_replay",
-            empty_summary="intraday replay found no valid setups in recent candles",
+            summary_prefix="donchian_adx_replay",
+            empty_summary="donchian/adx replay found no valid setups in recent candles",
         )

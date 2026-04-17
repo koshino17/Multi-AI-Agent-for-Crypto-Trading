@@ -7,6 +7,9 @@ from dataclasses import dataclass
 class MarketSnapshot:
     symbol: str
     timeframe: str
+    opens: list[float]
+    highs: list[float]
+    lows: list[float]
     closes: list[float]
     volumes: list[float]
     last_price: float

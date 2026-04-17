@@ -65,6 +65,9 @@ class MockExchangeClient:
         return MarketSnapshot(
             symbol=symbol,
             timeframe=timeframe,
+            opens=closes[:],
+            highs=closes[:],
+            lows=closes[:],
             closes=closes,
             volumes=volumes,
             last_price=closes[-1],
@@ -126,11 +129,17 @@ class BinanceTestnetExchangeClient:
 
     def fetch_snapshot(self, symbol: str, timeframe: str) -> MarketSnapshot:
         ohlcv = self.client.fetch_ohlcv(symbol, timeframe=timeframe, limit=48)
+        opens = [row[1] for row in ohlcv]
+        highs = [row[2] for row in ohlcv]
+        lows = [row[3] for row in ohlcv]
         closes = [row[4] for row in ohlcv]
         volumes = [row[5] for row in ohlcv]
         return MarketSnapshot(
             symbol=symbol,
             timeframe=timeframe,
+            opens=opens,
+            highs=highs,
+            lows=lows,
             closes=closes,
             volumes=volumes,
             last_price=closes[-1],
@@ -252,11 +261,17 @@ class BybitDemoExchangeClient:
         )
         raw_rows = response["result"]["list"]
         rows = list(reversed(raw_rows))
+        opens = [float(row[1]) for row in rows]
+        highs = [float(row[2]) for row in rows]
+        lows = [float(row[3]) for row in rows]
         closes = [float(row[4]) for row in rows]
         volumes = [float(row[5]) for row in rows]
         return MarketSnapshot(
             symbol=symbol,
             timeframe=timeframe,
+            opens=opens,
+            highs=highs,
+            lows=lows,
             closes=closes,
             volumes=volumes,
             last_price=closes[-1],
@@ -405,11 +420,17 @@ class BybitDemoPerpExchangeClient(BybitDemoExchangeClient):
         )
         raw_rows = response["result"]["list"]
         rows = list(reversed(raw_rows))
+        opens = [float(row[1]) for row in rows]
+        highs = [float(row[2]) for row in rows]
+        lows = [float(row[3]) for row in rows]
         closes = [float(row[4]) for row in rows]
         volumes = [float(row[5]) for row in rows]
         return MarketSnapshot(
             symbol=symbol,
             timeframe=timeframe,
+            opens=opens,
+            highs=highs,
+            lows=lows,
             closes=closes,
             volumes=volumes,
             last_price=closes[-1],
