@@ -19,6 +19,60 @@ from trading_agents.models import (
 from trading_agents.sentiment import SentimentDataProvider
 
 
+def _order_flow_bias(snapshot: MarketSnapshot) -> float:
+    return (
+        float(getattr(snapshot, "top_book_imbalance", 0.0) or 0.0) * 0.25
+        + float(getattr(snapshot, "depth_imbalance", 0.0) or 0.0) * 0.40
+        + float(getattr(snapshot, "trade_delta_ratio", 0.0) or 0.0) * 0.35
+    )
+
+
+def _order_flow_summary(snapshot: MarketSnapshot) -> str:
+    spread_bps = float(getattr(snapshot, "spread_bps", 0.0) or 0.0)
+    depth_imbalance = float(getattr(snapshot, "depth_imbalance", 0.0) or 0.0)
+    trade_delta_ratio = float(getattr(snapshot, "trade_delta_ratio", 0.0) or 0.0)
+    large_buy_count = int(getattr(snapshot, "large_buy_count", 0) or 0)
+    large_sell_count = int(getattr(snapshot, "large_sell_count", 0) or 0)
+    bid_wall_notional = float(getattr(snapshot, "bid_wall_notional", 0.0) or 0.0)
+    ask_wall_notional = float(getattr(snapshot, "ask_wall_notional", 0.0) or 0.0)
+    bid_wall_distance = float(getattr(snapshot, "bid_wall_distance_bps", 0.0) or 0.0)
+    ask_wall_distance = float(getattr(snapshot, "ask_wall_distance_bps", 0.0) or 0.0)
+    levels = int(getattr(snapshot, "orderbook_levels", 0) or 0)
+    trade_count = int(getattr(snapshot, "recent_trade_count", 0) or 0)
+    if spread_bps <= 0 and levels <= 0 and trade_count <= 0:
+        return "order flow unavailable"
+
+    if depth_imbalance >= 0.18:
+        book_bias = "bid-side depth dominates"
+    elif depth_imbalance <= -0.18:
+        book_bias = "ask-side depth dominates"
+    else:
+        book_bias = "depth fairly balanced"
+
+    if trade_delta_ratio >= 0.18:
+        tape_bias = "aggressive buyers in control"
+    elif trade_delta_ratio <= -0.18:
+        tape_bias = "aggressive sellers in control"
+    else:
+        tape_bias = "tape roughly two-way"
+
+    if bid_wall_notional > ask_wall_notional * 1.2 and bid_wall_notional > 0:
+        wall_bias = f"bid wall {bid_wall_distance:.1f}bps below"
+    elif ask_wall_notional > bid_wall_notional * 1.2 and ask_wall_notional > 0:
+        wall_bias = f"ask wall {ask_wall_distance:.1f}bps above"
+    else:
+        wall_bias = "no dominant wall"
+
+    large_prints = ""
+    if large_buy_count or large_sell_count:
+        large_prints = f"; large prints buy={large_buy_count} sell={large_sell_count}"
+
+    return (
+        f"spread={spread_bps:.2f}bps; {book_bias}; "
+        f"trade_delta={trade_delta_ratio:+.2f}; {tape_bias}; {wall_bias}{large_prints}"
+    )
+
+
 class MarketCollectorAgent:
     name = "market_collector"
 
@@ -30,6 +84,16 @@ class MarketCollectorAgent:
             f"avg_volume={avg_volume:.2f} "
             f"candles={len(snapshot.closes)}"
         )
+
+
+class OrderFlowCollectorAgent:
+    name = "order_flow_collector"
+
+    def summarize(self, snapshot: MarketSnapshot) -> str:
+        return _order_flow_summary(snapshot)
+
+    def bias_score(self, snapshot: MarketSnapshot) -> float:
+        return _order_flow_bias(snapshot)
 
 
 class SentimentCollectorAgent:
@@ -54,6 +118,7 @@ class StrategistAgent:
         sentiment: SentimentSnapshot,
         backtest: BacktestSnapshot,
         strategy_research: StrategyResearchSnapshot,
+        market_summary: str,
         available_usdt: float,
         available_base_asset: float,
         position_side: str,
@@ -68,12 +133,16 @@ class StrategistAgent:
         short_avg = fmean(short_window)
         long_avg = fmean(long_window)
         momentum = (short_avg - long_avg) / long_avg if long_avg else 0.0
+        order_flow_summary = _order_flow_summary(snapshot)
+        order_flow_bias = _order_flow_bias(snapshot)
 
         fallback = self._fallback_idea(
             momentum,
             sentiment,
             backtest,
             strategy_research,
+            order_flow_bias,
+            order_flow_summary,
             available_usdt,
             available_base_asset,
             position_side,
@@ -94,7 +163,15 @@ class StrategistAgent:
                     "Allowed action values: buy, sell, hold. "
                     "Score must be a decimal between 0 and 1. "
                     f"Symbol={snapshot.symbol}; timeframe={snapshot.timeframe}; "
+                    f"market_summary={market_summary}; "
                     f"last_price={snapshot.last_price:.4f}; momentum={momentum:.6f}; "
+                    f"order_flow_summary={order_flow_summary}; "
+                    f"spread_bps={float(getattr(snapshot, 'spread_bps', 0.0) or 0.0):.2f}; "
+                    f"top_book_imbalance={float(getattr(snapshot, 'top_book_imbalance', 0.0) or 0.0):+.4f}; "
+                    f"depth_imbalance={float(getattr(snapshot, 'depth_imbalance', 0.0) or 0.0):+.4f}; "
+                    f"trade_delta_ratio={float(getattr(snapshot, 'trade_delta_ratio', 0.0) or 0.0):+.4f}; "
+                    f"large_buy_count={int(getattr(snapshot, 'large_buy_count', 0) or 0)}; "
+                    f"large_sell_count={int(getattr(snapshot, 'large_sell_count', 0) or 0)}; "
                     f"sentiment_score={sentiment.sentiment_score:.2f}; "
                     f"sentiment_summary={sentiment.summary}; "
                     f"backtest_summary={backtest.summary}; "
@@ -208,6 +285,8 @@ class StrategistAgent:
         sentiment: SentimentSnapshot,
         backtest: BacktestSnapshot,
         strategy_research: StrategyResearchSnapshot,
+        order_flow_bias: float,
+        order_flow_summary: str,
         available_usdt: float,
         available_base_asset: float,
         position_side: str,
@@ -260,15 +339,19 @@ class StrategistAgent:
         sell_sentiment_ok = sentiment.sentiment_score <= 0.60 or (
             aggressive_mode and selected_backtest.expectancy_pct >= -0.02
         )
+        buy_flow_ok = order_flow_bias >= (-0.15 if aggressive_mode else -0.08)
+        sell_flow_ok = order_flow_bias <= (0.15 if aggressive_mode else 0.08)
+        flow_score_boost = min(max(abs(order_flow_bias), 0.0), 0.35) * 0.18
 
-        if momentum > (0.0010 if aggressive_mode else 0.0020) and buy_sentiment_ok and (
+        if momentum > (0.0010 if aggressive_mode else 0.0020) and buy_sentiment_ok and buy_flow_ok and (
             backtest_supports_long or selected_edge_positive
         ) and can_buy:
             return TradeIdea(
                 action="buy",
-                score=min((0.54 if aggressive_mode else 0.50) + momentum * 28, 0.99),
+                score=min((0.54 if aggressive_mode else 0.50) + momentum * 28 + flow_score_boost, 0.99),
                 rationale=(
                     f"short MA above long MA by {momentum:.4%}; "
+                    f"order_flow={order_flow_summary}; "
                     f"sentiment={sentiment.sentiment_score:+.2f}; "
                     f"backtest={backtest.summary}; "
                     f"strategy={strategy_research.selected_strategy_id}; "
@@ -278,14 +361,15 @@ class StrategistAgent:
                 invalidation="exit if momentum weakens or sentiment flips sharply negative",
                 holding_horizon="intraday",
             )
-        if momentum < (-0.0010 if aggressive_mode else -0.0020) and sell_sentiment_ok and (
+        if momentum < (-0.0010 if aggressive_mode else -0.0020) and sell_sentiment_ok and sell_flow_ok and (
             backtest_supports_short or selected_backtest.expectancy_pct >= -0.02
         ) and can_sell:
             return TradeIdea(
                 action="sell",
-                score=min((0.53 if aggressive_mode else 0.50) + abs(momentum) * 28, 0.99),
+                score=min((0.53 if aggressive_mode else 0.50) + abs(momentum) * 28 + flow_score_boost, 0.99),
                 rationale=(
                     f"short MA below long MA by {abs(momentum):.4%}; "
+                    f"order_flow={order_flow_summary}; "
                     f"sentiment={sentiment.sentiment_score:+.2f}; "
                     f"backtest={backtest.summary}; "
                     f"strategy={strategy_research.selected_strategy_id}; "
@@ -302,11 +386,13 @@ class StrategistAgent:
             and selected_backtest.expectancy_pct >= (-0.02 if aggressive_mode else 0.02)
             and selected_backtest.profit_factor >= (0.95 if aggressive_mode else 1.10)
             and momentum > (-0.002 if aggressive_mode else -0.001)
+            and order_flow_bias > (-0.10 if aggressive_mode else -0.04)
             and sentiment.sentiment_score >= -0.95
         ):
             confidence = min(
                 0.59
                 + max(momentum, 0.0) * 18
+                + max(order_flow_bias, 0.0) * 0.16
                 + min(max(selected_backtest.expectancy_pct, 0.0), 0.60) * 0.10
                 + min(selected_backtest.cumulative_return_pct, 2.0) * 0.02,
                 0.79,
@@ -317,6 +403,7 @@ class StrategistAgent:
                 rationale=(
                     "cash-heavy account prefers executable long setup; "
                     f"momentum={momentum:+.4%}; "
+                    f"order_flow={order_flow_summary}; "
                     f"selected_strategy={strategy_research.selected_strategy_id}; "
                     f"selected_replay={selected_backtest.summary}; "
                     f"sentiment={sentiment.sentiment_score:+.2f}"
@@ -345,6 +432,7 @@ class StrategistAgent:
                 rationale=(
                     "cash-heavy account prefers a starter long when research replay is clearly stronger "
                     f"than staying idle; selected_strategy={strategy_research.selected_strategy_id}; "
+                    f"order_flow={order_flow_summary}; "
                     f"selected_replay={selected_backtest.summary}; "
                     f"baseline_replay={backtest.summary}; "
                     f"sentiment={sentiment.sentiment_score:+.2f}"

@@ -13,6 +13,31 @@ class MarketSnapshot:
     closes: list[float]
     volumes: list[float]
     last_price: float
+    best_bid_price: float = 0.0
+    best_ask_price: float = 0.0
+    spread_bps: float = 0.0
+    top_bid_size: float = 0.0
+    top_ask_size: float = 0.0
+    top_book_imbalance: float = 0.0
+    depth_bid_notional: float = 0.0
+    depth_ask_notional: float = 0.0
+    depth_imbalance: float = 0.0
+    bid_wall_price: float = 0.0
+    ask_wall_price: float = 0.0
+    bid_wall_notional: float = 0.0
+    ask_wall_notional: float = 0.0
+    bid_wall_distance_bps: float = 0.0
+    ask_wall_distance_bps: float = 0.0
+    trade_buy_notional: float = 0.0
+    trade_sell_notional: float = 0.0
+    trade_delta_notional: float = 0.0
+    trade_delta_ratio: float = 0.0
+    aggressive_buy_ratio: float = 0.0
+    aggressive_sell_ratio: float = 0.0
+    recent_trade_count: int = 0
+    large_buy_count: int = 0
+    large_sell_count: int = 0
+    orderbook_levels: int = 0
 
 
 @dataclass(frozen=True)

@@ -44,16 +44,121 @@ class AccountState:
     is_reduce_only: bool = False
 
 
+def _build_microstructure_features(
+    *,
+    bids: list,
+    asks: list,
+    trades: list[dict],
+    last_price: float,
+) -> dict:
+    normalized_bids = [(float(item[0]), float(item[1])) for item in bids if len(item) >= 2]
+    normalized_asks = [(float(item[0]), float(item[1])) for item in asks if len(item) >= 2]
+    best_bid = normalized_bids[0][0] if normalized_bids else 0.0
+    best_ask = normalized_asks[0][0] if normalized_asks else 0.0
+    mid_price = ((best_bid + best_ask) / 2.0) if (best_bid > 0 and best_ask > 0) else max(float(last_price), 0.0)
+    spread_bps = ((best_ask - best_bid) / mid_price) * 10000.0 if best_bid > 0 and best_ask > 0 and mid_price > 0 else 0.0
+
+    top_bid_size = normalized_bids[0][1] if normalized_bids else 0.0
+    top_ask_size = normalized_asks[0][1] if normalized_asks else 0.0
+    top_bid_notional = best_bid * top_bid_size
+    top_ask_notional = best_ask * top_ask_size
+    top_book_imbalance = (
+        (top_bid_notional - top_ask_notional) / (top_bid_notional + top_ask_notional)
+        if (top_bid_notional + top_ask_notional) > 0
+        else 0.0
+    )
+
+    depth_bid_notional = sum(price * size for price, size in normalized_bids)
+    depth_ask_notional = sum(price * size for price, size in normalized_asks)
+    depth_imbalance = (
+        (depth_bid_notional - depth_ask_notional) / (depth_bid_notional + depth_ask_notional)
+        if (depth_bid_notional + depth_ask_notional) > 0
+        else 0.0
+    )
+
+    bid_wall_price = 0.0
+    bid_wall_notional = 0.0
+    if normalized_bids:
+        bid_wall_price, bid_wall_size = max(normalized_bids, key=lambda item: item[0] * item[1])
+        bid_wall_notional = bid_wall_price * bid_wall_size
+    ask_wall_price = 0.0
+    ask_wall_notional = 0.0
+    if normalized_asks:
+        ask_wall_price, ask_wall_size = max(normalized_asks, key=lambda item: item[0] * item[1])
+        ask_wall_notional = ask_wall_price * ask_wall_size
+
+    bid_wall_distance_bps = ((mid_price - bid_wall_price) / mid_price) * 10000.0 if bid_wall_price > 0 and mid_price > 0 else 0.0
+    ask_wall_distance_bps = ((ask_wall_price - mid_price) / mid_price) * 10000.0 if ask_wall_price > 0 and mid_price > 0 else 0.0
+
+    trade_buy_notional = 0.0
+    trade_sell_notional = 0.0
+    trade_notionals: list[tuple[str, float]] = []
+    for item in trades:
+        price = float(item.get("price", 0.0) or 0.0)
+        size = float(item.get("size", 0.0) or 0.0)
+        if price <= 0 or size <= 0:
+            continue
+        side = str(item.get("side", "") or "")
+        notional = price * size
+        trade_notionals.append((side, notional))
+        if side == "Buy":
+            trade_buy_notional += notional
+        elif side == "Sell":
+            trade_sell_notional += notional
+    trade_delta_notional = trade_buy_notional - trade_sell_notional
+    total_trade_notional = trade_buy_notional + trade_sell_notional
+    trade_delta_ratio = trade_delta_notional / total_trade_notional if total_trade_notional > 0 else 0.0
+    avg_trade_notional = total_trade_notional / len(trade_notionals) if trade_notionals else 0.0
+    large_threshold = avg_trade_notional * 2.5 if avg_trade_notional > 0 else float("inf")
+    large_buy_count = sum(1 for side, notional in trade_notionals if side == "Buy" and notional >= large_threshold)
+    large_sell_count = sum(1 for side, notional in trade_notionals if side == "Sell" and notional >= large_threshold)
+
+    return {
+        "best_bid_price": round(best_bid, 6),
+        "best_ask_price": round(best_ask, 6),
+        "spread_bps": round(max(spread_bps, 0.0), 4),
+        "top_bid_size": round(top_bid_size, 6),
+        "top_ask_size": round(top_ask_size, 6),
+        "top_book_imbalance": round(top_book_imbalance, 4),
+        "depth_bid_notional": round(depth_bid_notional, 4),
+        "depth_ask_notional": round(depth_ask_notional, 4),
+        "depth_imbalance": round(depth_imbalance, 4),
+        "bid_wall_price": round(bid_wall_price, 6),
+        "ask_wall_price": round(ask_wall_price, 6),
+        "bid_wall_notional": round(bid_wall_notional, 4),
+        "ask_wall_notional": round(ask_wall_notional, 4),
+        "bid_wall_distance_bps": round(max(bid_wall_distance_bps, 0.0), 4),
+        "ask_wall_distance_bps": round(max(ask_wall_distance_bps, 0.0), 4),
+        "trade_buy_notional": round(trade_buy_notional, 4),
+        "trade_sell_notional": round(trade_sell_notional, 4),
+        "trade_delta_notional": round(trade_delta_notional, 4),
+        "trade_delta_ratio": round(trade_delta_ratio, 4),
+        "aggressive_buy_ratio": round(trade_buy_notional / total_trade_notional if total_trade_notional > 0 else 0.0, 4),
+        "aggressive_sell_ratio": round(trade_sell_notional / total_trade_notional if total_trade_notional > 0 else 0.0, 4),
+        "recent_trade_count": len(trade_notionals),
+        "large_buy_count": large_buy_count,
+        "large_sell_count": large_sell_count,
+        "orderbook_levels": min(len(normalized_bids), len(normalized_asks)),
+    }
+
+
 class MockExchangeClient:
-    def __init__(self, initial_balance_usdt: float, seed: int = 7) -> None:
+    def __init__(
+        self,
+        initial_balance_usdt: float,
+        seed: int = 7,
+        *,
+        microstructure_enabled: bool = True,
+    ) -> None:
         self.account = AccountState(
             free_usdt=initial_balance_usdt,
             total_equity_usdt=initial_balance_usdt,
             available_balance_usdt=initial_balance_usdt,
         )
         self._rng = Random(seed)
+        self.microstructure_enabled = microstructure_enabled
 
-    def fetch_snapshot(self, symbol: str, timeframe: str) -> MarketSnapshot:
+    def fetch_snapshot(self, symbol: str, timeframe: str, include_microstructure: bool = True) -> MarketSnapshot:
         base_price = 87000.0
         closes: list[float] = []
         volumes: list[float] = []
@@ -62,6 +167,7 @@ class MockExchangeClient:
             price += self._rng.uniform(-220, 220)
             closes.append(price)
             volumes.append(self._rng.uniform(10, 80))
+        microstructure = self._mock_microstructure(closes[-1], volumes[-1]) if (include_microstructure and self.microstructure_enabled) else {}
         return MarketSnapshot(
             symbol=symbol,
             timeframe=timeframe,
@@ -71,7 +177,62 @@ class MockExchangeClient:
             closes=closes,
             volumes=volumes,
             last_price=closes[-1],
+            **microstructure,
         )
+
+    def _mock_microstructure(self, last_price: float, last_volume: float) -> dict:
+        spread_bps = 4.0 + self._rng.uniform(-1.5, 1.5)
+        spread = last_price * (spread_bps / 10000.0)
+        best_bid = max(last_price - spread / 2.0, 0.0)
+        best_ask = last_price + spread / 2.0
+        top_bid_size = max(last_volume * self._rng.uniform(0.08, 0.16), 0.01)
+        top_ask_size = max(last_volume * self._rng.uniform(0.08, 0.16), 0.01)
+        top_bid_notional = best_bid * top_bid_size
+        top_ask_notional = best_ask * top_ask_size
+        top_imbalance = (
+            (top_bid_notional - top_ask_notional) / (top_bid_notional + top_ask_notional)
+            if (top_bid_notional + top_ask_notional) > 0
+            else 0.0
+        )
+        depth_bid_notional = top_bid_notional * self._rng.uniform(5.0, 9.0)
+        depth_ask_notional = top_ask_notional * self._rng.uniform(5.0, 9.0)
+        depth_imbalance = (
+            (depth_bid_notional - depth_ask_notional) / (depth_bid_notional + depth_ask_notional)
+            if (depth_bid_notional + depth_ask_notional) > 0
+            else 0.0
+        )
+        trade_buy_notional = last_price * max(last_volume * self._rng.uniform(0.8, 1.3), 0.01)
+        trade_sell_notional = last_price * max(last_volume * self._rng.uniform(0.8, 1.3), 0.01)
+        trade_delta_notional = trade_buy_notional - trade_sell_notional
+        total_trade_notional = trade_buy_notional + trade_sell_notional
+        trade_delta_ratio = trade_delta_notional / total_trade_notional if total_trade_notional > 0 else 0.0
+        return {
+            "best_bid_price": round(best_bid, 6),
+            "best_ask_price": round(best_ask, 6),
+            "spread_bps": round(max(spread_bps, 0.0), 4),
+            "top_bid_size": round(top_bid_size, 6),
+            "top_ask_size": round(top_ask_size, 6),
+            "top_book_imbalance": round(top_imbalance, 4),
+            "depth_bid_notional": round(depth_bid_notional, 4),
+            "depth_ask_notional": round(depth_ask_notional, 4),
+            "depth_imbalance": round(depth_imbalance, 4),
+            "bid_wall_price": round(best_bid * (1.0 - self._rng.uniform(0.0005, 0.0030)), 6),
+            "ask_wall_price": round(best_ask * (1.0 + self._rng.uniform(0.0005, 0.0030)), 6),
+            "bid_wall_notional": round(depth_bid_notional * self._rng.uniform(0.12, 0.20), 4),
+            "ask_wall_notional": round(depth_ask_notional * self._rng.uniform(0.12, 0.20), 4),
+            "bid_wall_distance_bps": round(self._rng.uniform(3.0, 18.0), 4),
+            "ask_wall_distance_bps": round(self._rng.uniform(3.0, 18.0), 4),
+            "trade_buy_notional": round(trade_buy_notional, 4),
+            "trade_sell_notional": round(trade_sell_notional, 4),
+            "trade_delta_notional": round(trade_delta_notional, 4),
+            "trade_delta_ratio": round(trade_delta_ratio, 4),
+            "aggressive_buy_ratio": round(trade_buy_notional / total_trade_notional if total_trade_notional > 0 else 0.0, 4),
+            "aggressive_sell_ratio": round(trade_sell_notional / total_trade_notional if total_trade_notional > 0 else 0.0, 4),
+            "recent_trade_count": 24,
+            "large_buy_count": 1 if trade_buy_notional > trade_sell_notional * 1.2 else 0,
+            "large_sell_count": 1 if trade_sell_notional > trade_buy_notional * 1.2 else 0,
+            "orderbook_levels": 10,
+        }
 
     def execute_order(self, order: dict) -> dict:
         if order["side"] == "buy":
@@ -111,7 +272,15 @@ class MockExchangeClient:
 
 
 class BinanceTestnetExchangeClient:
-    def __init__(self, api_key: str, secret: str) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        secret: str,
+        *,
+        microstructure_enabled: bool = True,
+        orderbook_depth_limit: int = 25,
+        recent_trade_limit: int = 60,
+    ) -> None:
         if not api_key or not secret:
             raise ValueError("Missing Binance Testnet API credentials.")
         if ccxt is None:
@@ -126,14 +295,37 @@ class BinanceTestnetExchangeClient:
             }
         )
         self.client.set_sandbox_mode(True)
+        self.microstructure_enabled = microstructure_enabled
+        self.orderbook_depth_limit = max(orderbook_depth_limit, 1)
+        self.recent_trade_limit = max(recent_trade_limit, 1)
 
-    def fetch_snapshot(self, symbol: str, timeframe: str) -> MarketSnapshot:
+    def fetch_snapshot(self, symbol: str, timeframe: str, include_microstructure: bool = True) -> MarketSnapshot:
         ohlcv = self.client.fetch_ohlcv(symbol, timeframe=timeframe, limit=48)
         opens = [row[1] for row in ohlcv]
         highs = [row[2] for row in ohlcv]
         lows = [row[3] for row in ohlcv]
         closes = [row[4] for row in ohlcv]
         volumes = [row[5] for row in ohlcv]
+        microstructure = {}
+        if include_microstructure and self.microstructure_enabled:
+            try:
+                orderbook = self.client.fetch_order_book(symbol, limit=self.orderbook_depth_limit)
+                trades = self.client.fetch_trades(symbol, limit=min(self.recent_trade_limit, 100))
+                microstructure = _build_microstructure_features(
+                    bids=orderbook.get("bids", []),
+                    asks=orderbook.get("asks", []),
+                    trades=[
+                        {
+                            "price": item.get("price", 0.0),
+                            "size": item.get("amount", 0.0),
+                            "side": "Buy" if str(item.get("side", "")).lower() == "buy" else "Sell",
+                        }
+                        for item in trades
+                    ],
+                    last_price=closes[-1],
+                )
+            except Exception:
+                microstructure = {}
         return MarketSnapshot(
             symbol=symbol,
             timeframe=timeframe,
@@ -143,6 +335,7 @@ class BinanceTestnetExchangeClient:
             closes=closes,
             volumes=volumes,
             last_price=closes[-1],
+            **microstructure,
         )
 
     def fetch_free_usdt(self) -> float:
@@ -198,12 +391,26 @@ class BybitDemoExchangeClient:
         "1d": "D",
     }
 
-    def __init__(self, api_key: str, secret: str) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        secret: str,
+        *,
+        microstructure_enabled: bool = True,
+        orderbook_depth_limit: int = 25,
+        recent_trade_limit: int = 60,
+        microstructure_cache_ttl_seconds: float = 5.0,
+    ) -> None:
         if not api_key or not secret:
             raise ValueError("Missing Bybit Demo API credentials.")
         self.api_key = api_key
         self.secret = secret
         self._instrument_cache: dict[str, dict] = {}
+        self.microstructure_enabled = microstructure_enabled
+        self.orderbook_depth_limit = max(orderbook_depth_limit, 1)
+        self.recent_trade_limit = max(recent_trade_limit, 1)
+        self.microstructure_cache_ttl_seconds = max(microstructure_cache_ttl_seconds, 0.0)
+        self._microstructure_cache: dict[tuple[str, str], tuple[float, dict]] = {}
 
     def _symbol(self, unified_symbol: str) -> str:
         return unified_symbol.replace("/", "")
@@ -247,7 +454,7 @@ class BybitDemoExchangeClient:
             raise RuntimeError(f"Bybit API error: {payload.get('retMsg', 'unknown error')}")
         return payload
 
-    def fetch_snapshot(self, symbol: str, timeframe: str) -> MarketSnapshot:
+    def fetch_snapshot(self, symbol: str, timeframe: str, include_microstructure: bool = True) -> MarketSnapshot:
         interval = self.interval_map.get(timeframe, "5")
         response = self._request(
             "GET",
@@ -266,6 +473,7 @@ class BybitDemoExchangeClient:
         lows = [float(row[3]) for row in rows]
         closes = [float(row[4]) for row in rows]
         volumes = [float(row[5]) for row in rows]
+        microstructure = self._market_microstructure(symbol, "spot", closes[-1]) if include_microstructure else {}
         return MarketSnapshot(
             symbol=symbol,
             timeframe=timeframe,
@@ -275,7 +483,64 @@ class BybitDemoExchangeClient:
             closes=closes,
             volumes=volumes,
             last_price=closes[-1],
+            **microstructure,
         )
+
+    def _market_microstructure(self, symbol: str, category: str, last_price: float) -> dict:
+        if not self.microstructure_enabled:
+            return {}
+        cache_key = (category, self._symbol(symbol))
+        now = time.time()
+        cached = self._microstructure_cache.get(cache_key)
+        if cached and now - cached[0] <= self.microstructure_cache_ttl_seconds:
+            return cached[1]
+
+        orderbook_limit = self.orderbook_depth_limit
+        if category == "spot":
+            orderbook_limit = min(orderbook_limit, 200)
+        else:
+            orderbook_limit = min(orderbook_limit, 500)
+        trade_limit = min(self.recent_trade_limit, 60 if category == "spot" else 1000)
+
+        try:
+            orderbook_response = self._request(
+                "GET",
+                "/v5/market/orderbook",
+                {
+                    "category": category,
+                    "symbol": self._symbol(symbol),
+                    "limit": orderbook_limit,
+                },
+            )
+            orderbook_result = orderbook_response.get("result", {})
+            bids = orderbook_result.get("b", [])
+            asks = orderbook_result.get("a", [])
+        except Exception:
+            bids = []
+            asks = []
+
+        try:
+            trades_response = self._request(
+                "GET",
+                "/v5/market/recent-trade",
+                {
+                    "category": category,
+                    "symbol": self._symbol(symbol),
+                    "limit": trade_limit,
+                },
+            )
+            trades = trades_response.get("result", {}).get("list", [])
+        except Exception:
+            trades = []
+
+        features = _build_microstructure_features(
+            bids=bids,
+            asks=asks,
+            trades=trades,
+            last_price=last_price,
+        )
+        self._microstructure_cache[cache_key] = (now, features)
+        return features
 
     def fetch_free_usdt(self) -> float:
         return self.fetch_account_state("BTC/USDT").free_usdt
@@ -406,7 +671,7 @@ class BybitDemoExchangeClient:
 
 
 class BybitDemoPerpExchangeClient(BybitDemoExchangeClient):
-    def fetch_snapshot(self, symbol: str, timeframe: str) -> MarketSnapshot:
+    def fetch_snapshot(self, symbol: str, timeframe: str, include_microstructure: bool = True) -> MarketSnapshot:
         interval = self.interval_map.get(timeframe, "5")
         response = self._request(
             "GET",
@@ -425,6 +690,7 @@ class BybitDemoPerpExchangeClient(BybitDemoExchangeClient):
         lows = [float(row[3]) for row in rows]
         closes = [float(row[4]) for row in rows]
         volumes = [float(row[5]) for row in rows]
+        microstructure = self._market_microstructure(symbol, "linear", closes[-1]) if include_microstructure else {}
         return MarketSnapshot(
             symbol=symbol,
             timeframe=timeframe,
@@ -434,6 +700,7 @@ class BybitDemoPerpExchangeClient(BybitDemoExchangeClient):
             closes=closes,
             volumes=volumes,
             last_price=closes[-1],
+            **microstructure,
         )
 
     def fetch_account_state(self, symbol: str) -> AccountState:
@@ -619,12 +886,24 @@ class BybitDemoPerpExchangeClient(BybitDemoExchangeClient):
             payload["trailingStop"] = format(Decimal(str(trailing_stop)).normalize(), "f")
         if len(payload) == 6:
             return {"status": "skipped", "reason": "no protection prices provided"}
-        response = self._request(
-            "POST",
-            "/v5/position/trading-stop",
-            payload,
-            private=True,
-        )
+        try:
+            response = self._request(
+                "POST",
+                "/v5/position/trading-stop",
+                payload,
+                private=True,
+            )
+        except RuntimeError as exc:
+            if "not modified" in str(exc).lower():
+                return {
+                    "status": "unchanged",
+                    "symbol": symbol,
+                    "take_profit": take_profit,
+                    "stop_loss": stop_loss,
+                    "trailing_stop": trailing_stop,
+                    "reason": str(exc),
+                }
+            raise
         return {
             "status": "ok",
             "symbol": symbol,

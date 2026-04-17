@@ -12,6 +12,7 @@
 - 目前策略方向已收斂為 `USDT perpetual intraday long/short` 優先，而不是中長線配置系統
 - 會持續累積資金曲線（equity curve），產生本地 SVG 折線圖，並同步摘要到 Notion
 - `Grid / Alpha Arena / 其他外部策略候選` 現在先走 research-only benchmark，不直接覆蓋 live trading
+- full cycle 會額外接入基礎 `order flow / market microstructure` 特徵，而不再只看 15m K 線與 sentiment
 
 版本更新與里程碑請看 `CHANGELOG.md`，不再把歷史更新內容全部塞進 README。
 若要看 `Alpha Arena` 如何作為 benchmark / research 來源接進目前架構，請看 `ALPHA_ARENA_INTEGRATION_PLAN.md`。
@@ -210,6 +211,30 @@ http://127.0.0.1:8765
 - 每 `30` 秒監控一次市場 / 帳戶
 - 完整 decision cycle 主要由新 candle、帳戶變化或價格觸發
 - 不會每 30 秒都跑完整 LLM 重分析
+- 高頻 monitor 只抓輕量價格快照；較重的 order book / recent trades 盤面特徵只在完整 decision cycle 載入
+
+## Order Flow / Market Microstructure
+
+目前在 full cycle 內，Bybit 公開市場資料會被轉成可用的盤面特徵，接到：
+
+- `MarketSnapshot`
+- `market summary`
+- `LLM wake gate`
+- `StrategistAgent` prompt
+- fallback decision bias
+
+目前接入的特徵包含：
+
+- `spread_bps`
+- `top_book_imbalance`
+- `depth_imbalance`
+- `bid/ask wall notional`
+- `trade_buy_notional`
+- `trade_sell_notional`
+- `trade_delta_ratio`
+- `large_buy_count / large_sell_count`
+
+這一層不是把整本 order book 原樣丟給 LLM，而是先用 deterministic 特徵把盤面壓縮成可決策語意，讓系統真正具備一點基本的 microstructure awareness。
 
 ## 外部策略 Benchmark
 
@@ -332,6 +357,13 @@ LLM_WAKE_MOMENTUM_PCT=0.12
 LLM_WAKE_VOLUME_RATIO=1.15
 LLM_WAKE_BREAKOUT_PROXIMITY_PCT=0.20
 LLM_WAKE_POSITION_MOVE_PCT=0.20
+LLM_WAKE_DEPTH_IMBALANCE=0.18
+LLM_WAKE_TRADE_DELTA_RATIO=0.18
+LLM_WAKE_LARGE_TRADE_COUNT=2
+MARKET_MICROSTRUCTURE_ENABLED=true
+ORDERBOOK_DEPTH_LIMIT=25
+RECENT_PUBLIC_TRADE_LIMIT=60
+MICROSTRUCTURE_CACHE_TTL_SECONDS=5
 DUST_POSITION_MULTIPLIER=1.0
 PERP_MAX_LEVERAGE=2.0
 PERP_MIN_LIQUIDATION_BUFFER_PCT=8.0
@@ -348,7 +380,10 @@ EXTERNAL_BENCHMARK_MAX_ALPHA_SIGNALS=1000
 其中：
 
 - `LLM_SELECTED_CANDIDATE_ONLY=true` 代表 full cycle 先用規則與摘要跑完整個觀察池，再只對 selector 最後挑中的候選做 LLM 風控辯論，避免每輪每個標的都重跑重型辯論。
-- `LLM_WAKE_GATE_ENABLED=true` 代表每個候選標的會先用 volatility、momentum、volume expansion、breakout proximity 和持倉價格變化計算 `wake_score`，沒達標就不喚醒重型 LLM。
+- `LLM_WAKE_GATE_ENABLED=true` 代表每個候選標的會先用 volatility、momentum、volume expansion、breakout proximity、depth imbalance、trade delta 和 large prints 計算 `wake_score`，沒達標就不喚醒重型 LLM。
+- `MARKET_MICROSTRUCTURE_ENABLED=true` 代表 full cycle 會額外抓公開 `orderbook` 與 `recent public trades`，轉成盤面特徵再餵進主決策管線。
+- `ORDERBOOK_DEPTH_LIMIT` / `RECENT_PUBLIC_TRADE_LIMIT` 用來控制每輪 order flow 特徵抽取的資料量。
+- `MICROSTRUCTURE_CACHE_TTL_SECONDS=5` 會讓同一個 exchange client 在短時間內重用最近一次盤面特徵，避免高頻監控被重型市場資料拖慢。
 - `DUST_POSITION_MULTIPLIER=1.0` 代表低於交易所最小下單額的殘餘倉位會被視為 dust，保留在帳戶中，但不再拿來當成可賣持倉參與決策。
 - `SENTIMENT_REQUEST_TIMEOUT_SECONDS=6` 與 `SENTIMENT_CACHE_TTL_SECONDS=120` 用來壓低情緒資料抓取延遲；像 Fear & Greed、CoinGecko trending、共用 RSS 這些來源，會在短時間內重用快取而不是每個標的都重抓一次。
 - `PERP_MAX_LEVERAGE=2.0` 會在風控審批時限制有效槓桿，避免合約曝險擴得太快。

@@ -17,6 +17,7 @@ from trading_agents.agents import (
     DailyReviewAgent,
     ExecutorAgent,
     MarketCollectorAgent,
+    OrderFlowCollectorAgent,
     PostTradeEvaluatorAgent,
     RiskSupervisorAgent,
     SelectorAgent,
@@ -398,6 +399,11 @@ def _market_wake_gate(snapshot, effective_base_asset: float, settings) -> dict:
     low_distance_pct = _pct((closes[-1] - rolling_low) / rolling_low) if rolling_low else 999.0
     breakout_proximity_pct = min(high_distance_pct, low_distance_pct)
     last_move_pct = _pct(abs((closes[-1] - closes[-2]) / closes[-2])) if len(closes) >= 2 and closes[-2] else 0.0
+    depth_imbalance = abs(float(getattr(snapshot, "depth_imbalance", 0.0) or 0.0))
+    trade_delta_ratio = abs(float(getattr(snapshot, "trade_delta_ratio", 0.0) or 0.0))
+    large_trade_count = int(getattr(snapshot, "large_buy_count", 0) or 0) + int(
+        getattr(snapshot, "large_sell_count", 0) or 0
+    )
 
     score = 0
     reasons: list[str] = []
@@ -413,6 +419,15 @@ def _market_wake_gate(snapshot, effective_base_asset: float, settings) -> dict:
     if breakout_proximity_pct <= settings.llm_wake_breakout_proximity_pct:
         score += 1
         reasons.append(f"near range edge {breakout_proximity_pct:.2f}%")
+    if depth_imbalance >= settings.llm_wake_depth_imbalance:
+        score += 1
+        reasons.append(f"depth imbalance {depth_imbalance:.2f}")
+    if trade_delta_ratio >= settings.llm_wake_trade_delta_ratio:
+        score += 1
+        reasons.append(f"trade delta {trade_delta_ratio:.2f}")
+    if large_trade_count >= settings.llm_wake_large_trade_count:
+        score += 1
+        reasons.append(f"large prints {large_trade_count}")
     if effective_base_asset > 0 and last_move_pct >= settings.llm_wake_position_move_pct:
         score += 1
         reasons.append(f"held position moved {last_move_pct:.2f}%")
@@ -432,6 +447,9 @@ def _market_wake_gate(snapshot, effective_base_asset: float, settings) -> dict:
             "volume_ratio": round(volume_ratio, 4),
             "breakout_proximity_pct": round(breakout_proximity_pct, 4),
             "last_move_pct": round(last_move_pct, 4),
+            "depth_imbalance": round(float(getattr(snapshot, "depth_imbalance", 0.0) or 0.0), 4),
+            "trade_delta_ratio": round(float(getattr(snapshot, "trade_delta_ratio", 0.0) or 0.0), 4),
+            "large_trade_count": large_trade_count,
             "has_position": bool(effective_base_asset > 0),
         },
     }
@@ -653,18 +671,32 @@ def _build_exchange(mode: str, settings):
         return BinanceTestnetExchangeClient(
             api_key=settings.binance_testnet_api_key,
             secret=settings.binance_testnet_secret,
+            microstructure_enabled=settings.market_microstructure_enabled,
+            orderbook_depth_limit=settings.orderbook_depth_limit,
+            recent_trade_limit=settings.recent_public_trade_limit,
         )
     if mode == "bybit-demo":
         return BybitDemoExchangeClient(
             api_key=settings.bybit_demo_api_key,
             secret=settings.bybit_demo_secret,
+            microstructure_enabled=settings.market_microstructure_enabled,
+            orderbook_depth_limit=settings.orderbook_depth_limit,
+            recent_trade_limit=settings.recent_public_trade_limit,
+            microstructure_cache_ttl_seconds=settings.microstructure_cache_ttl_seconds,
         )
     if mode == "bybit-demo-perp":
         return BybitDemoPerpExchangeClient(
             api_key=settings.bybit_demo_api_key,
             secret=settings.bybit_demo_secret,
+            microstructure_enabled=settings.market_microstructure_enabled,
+            orderbook_depth_limit=settings.orderbook_depth_limit,
+            recent_trade_limit=settings.recent_public_trade_limit,
+            microstructure_cache_ttl_seconds=settings.microstructure_cache_ttl_seconds,
         )
-    return MockExchangeClient(initial_balance_usdt=settings.initial_balance_usdt)
+    return MockExchangeClient(
+        initial_balance_usdt=settings.initial_balance_usdt,
+        microstructure_enabled=settings.market_microstructure_enabled,
+    )
 
 
 def execute_cycle(
@@ -733,6 +765,7 @@ def execute_cycle(
     if cycle_mode != "full" and settings.llm_full_cycle_only:
         analysis_llm_client = None
     market_collector = MarketCollectorAgent()
+    order_flow_collector = OrderFlowCollectorAgent()
     sentiment_provider = SentimentDataProvider(
         config_path=settings.sentiment_config_path,
         timeout_seconds=settings.sentiment_request_timeout_seconds,
@@ -819,7 +852,7 @@ def execute_cycle(
         candidate_strategist = strategist if candidate_llm_client is not None else rule_strategist
         candidate_supervisor = supervisor if candidate_llm_client is not None else rule_supervisor
 
-        market_summary = market_collector.summarize(snapshot)
+        market_summary = f"{market_collector.summarize(snapshot)}; {order_flow_collector.summarize(snapshot)}"
         if dust_info.get("is_dust"):
             market_summary = (
                 f"{market_summary}; dust position ignored for execution "
@@ -879,6 +912,7 @@ def execute_cycle(
                     sentiment,
                     backtest,
                     strategy_research,
+                    market_summary=market_summary,
                     available_usdt=available_usdt,
                     available_base_asset=available_base_asset,
                     position_side=position_side,

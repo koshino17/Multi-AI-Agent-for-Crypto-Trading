@@ -16,6 +16,59 @@
 
 ---
 
+## v0.11.11 - Order-flow / microstructure features in live decision path
+
+### Why
+
+- 先前的 live decision 幾乎只看 15m K 線、volume、sentiment、replay/backtest，還不是真正會「看盤面」的短線系統
+- 雖然專案目標是 `USDT perpetual intraday long/short`，但缺少 `spread / depth / trade delta / large prints` 這層資訊，會讓 strategist 對短線進出場的判斷過於鈍化
+- 需要把 order book 與 recent public trades 轉成 deterministic 特徵，接到主資料模型，而不是只停留在抽象討論
+
+### What Changed
+
+- `models.py`
+  - `MarketSnapshot` 新增 microstructure 欄位，例如：
+    - `spread_bps`
+    - `top_book_imbalance`
+    - `depth_imbalance`
+    - `bid/ask wall notional`
+    - `trade_delta_ratio`
+    - `large_buy_count / large_sell_count`
+- `exchange.py`
+  - `BybitDemoExchangeClient` / `BybitDemoPerpExchangeClient` 現在在 full snapshot 會額外抓：
+    - `/v5/market/orderbook`
+    - `/v5/market/recent-trade`
+  - 並把原始資料壓成可決策的 microstructure 特徵
+  - `set_position_protection()` 現在會把 Bybit 的 `not modified` 視為 `unchanged`，避免 protection sync 把整輪 cycle 打成 error
+  - `MockExchangeClient` 也補上合成盤面特徵，方便本地 smoke test
+- `agents.py`
+  - 新增 `OrderFlowCollectorAgent`
+  - `StrategistAgent` prompt 與 fallback decision 現在會吃：
+    - order flow summary
+    - depth imbalance
+    - trade delta
+    - large prints
+- `main.py`
+  - `market summary` 現在會附帶 order-flow 摘要
+  - `LLM wake gate` 新增：
+    - `depth imbalance`
+    - `trade delta`
+    - `large prints`
+- `runner.py`
+  - monitor loop 仍維持輕量價格監控
+  - `include_microstructure=False`，避免把 order book / trades 每 30 秒無腦重抓，讓高頻監控延遲失控
+- `config.py` / `.env.example`
+  - 新增 microstructure 相關設定：
+    - `MARKET_MICROSTRUCTURE_ENABLED`
+    - `ORDERBOOK_DEPTH_LIMIT`
+    - `RECENT_PUBLIC_TRADE_LIMIT`
+    - `MICROSTRUCTURE_CACHE_TTL_SECONDS`
+    - `LLM_WAKE_DEPTH_IMBALANCE`
+    - `LLM_WAKE_TRADE_DELTA_RATIO`
+    - `LLM_WAKE_LARGE_TRADE_COUNT`
+
+---
+
 ## v0.11.10 - Mode-scoped daily reporting and equity curve isolation
 
 ### Why

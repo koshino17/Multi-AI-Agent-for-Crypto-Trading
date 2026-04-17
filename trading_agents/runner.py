@@ -93,7 +93,7 @@ def _monitor_snapshot(exchange, symbol_pool: list[str], timeframe: str) -> dict:
     prices: dict[str, float] = {}
     accounts: dict[str, tuple[float, float]] = {}
     for candidate_symbol in symbol_pool:
-        market = exchange.fetch_snapshot(candidate_symbol, timeframe)
+        market = exchange.fetch_snapshot(candidate_symbol, timeframe, include_microstructure=False)
         account = exchange.fetch_account_state(candidate_symbol)
         prices[candidate_symbol] = float(market.last_price)
         accounts[candidate_symbol] = (round(account.free_usdt, 6), round(account.base_asset, 8))
