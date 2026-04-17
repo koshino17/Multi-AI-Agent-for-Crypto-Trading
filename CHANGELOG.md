@@ -16,6 +16,31 @@
 
 ---
 
+## v0.11.10 - Mode-scoped daily reporting and equity curve isolation
+
+### Why
+
+- `2026-04-17` 的日報曾出現不合理的超大資產數字，根因不是交易真的異常，而是 daily summary 把不同 `TRADING_MODE` 的 log 混在一起統計
+- 同樣的問題也污染了 equity curve，讓 `bybit-demo-perp` 的資金曲線被 `mock` 測試資料拉歪
+- 既然框架同時支援 `mock`、`bybit-demo`、`bybit-demo-perp`，報表與資產曲線就必須明確按 mode 隔離，否則 Daily Review 會失去可信度
+
+### What Changed
+
+- `reporting.py`
+  - `load_daily_summary_data(...)` 現在會依照 `settings.trading_mode` 過濾 daily records 與 all records
+  - Daily Summary 會明確顯示 `Mode`
+- `storage.py`
+  - 新增 `mode_scoped_path(...)`
+  - 讓 equity curve history / chart 依 mode 生成獨立檔名
+- `main.py`
+  - reporting finalize 階段改用 mode-scoped equity history 與 chart 路徑
+- Daily report 與 equity curve 現在會分開維護，例如：
+  - `equity_curve_history-bybit-demo-perp.jsonl`
+  - `equity-curve-latest-bybit-demo-perp.svg`
+- 修正後，`bybit-demo-perp` 的日報資產快照已回到正常區間，不再被 `mock` 價格資料污染
+
+---
+
 ## v0.11.9 - External benchmark pipeline for Grid / Alpha Arena / public candidates
 
 ### Why

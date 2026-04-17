@@ -559,6 +559,14 @@ def _load_all_records(trade_logs_dir: Path) -> list[dict[str, Any]]:
     return records
 
 
+def _filter_records_by_mode(records: list[dict[str, Any]], mode: str | None) -> list[dict[str, Any]]:
+    normalized_mode = str(mode or "").strip().lower()
+    if not normalized_mode:
+        return records
+    filtered = [item for item in records if str(item.get("mode", "")).strip().lower() == normalized_mode]
+    return filtered if filtered else records
+
+
 def _portfolio_from_record(record: dict[str, Any]) -> dict[str, Any]:
     candidates = record.get("candidates")
     positions: list[dict[str, Any]] = []
@@ -1148,14 +1156,15 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
 def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_path: Path | None = None) -> dict[str, Any]:
     from trading_agents.config import load_settings
     from trading_agents.external_benchmarks import load_external_benchmark_summary
-    from trading_agents.storage import build_storage_layout
+    from trading_agents.storage import build_storage_layout, mode_scoped_path
 
     settings = load_settings()
     storage = build_storage_layout(settings.data_root)
-    records = _load_daily_records(trade_logs_dir, date_label)
-    all_records = _load_all_records(trade_logs_dir)
+    records = _filter_records_by_mode(_load_daily_records(trade_logs_dir, date_label), settings.trading_mode)
+    all_records = _filter_records_by_mode(_load_all_records(trade_logs_dir), settings.trading_mode)
     runner_event_counts = _load_runner_event_counts(runner_log_path, date_label)
     summary = summarize_daily_records(records, runner_event_counts)
+    summary["mode"] = settings.trading_mode
     summary["financial_snapshot"] = _build_financial_snapshot(
         records,
         all_records,
@@ -1163,8 +1172,8 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
         taker_fee_pct=settings.taker_fee_pct,
     )
     summary["equity_curve"] = load_equity_curve_summary(
-        storage.equity_curve_history_state,
-        storage.equity_curve_svg,
+        mode_scoped_path(storage.equity_curve_history_state, settings.trading_mode),
+        mode_scoped_path(storage.equity_curve_svg, settings.trading_mode),
     )
     summary["external_benchmarks"] = load_external_benchmark_summary(storage.external_benchmark_state)
     return summary
@@ -1172,6 +1181,7 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
 
 def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: Path | None = None) -> str:
     summary = load_daily_summary_data(trade_logs_dir, date_label, runner_log_path)
+    summary_mode = str(summary.get("mode", ""))
     total = summary["total"]
     proposals = summary["proposals"]
     approved = summary["approved"]
@@ -1204,37 +1214,40 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
     top_benchmark = (external_benchmarks.get("top_candidates") or [{}])[0]
     top_alpha_benchmark = (external_benchmarks.get("top_alpha_arena_candidates") or [{}])[0]
 
-    lines = [
-        f"# Daily Summary: {date_label}",
-        "",
-        "## Financial Snapshot",
-        "",
-        (
-            f"- Total Portfolio Value: {float(financial.get('total_portfolio_value_usdt', 0.0)):.2f} USDT "
-            f"(Initial: {float(financial.get('initial_capital_usdt', 0.0)):.2f} USDT)"
-        ),
-        (
-            f"- Daily PnL: {float(financial.get('daily_pnl_usdt', 0.0)):+.2f} USDT "
-            f"({float(financial.get('daily_pnl_pct', 0.0)):+.2f}%)"
-        ),
-        f"- Realized PnL: {float(financial.get('realized_pnl_usdt', 0.0)):+.2f} USDT",
-        (
-            f"- Realized PnL Split: "
-            f"long={float(financial.get('realized_long_pnl_usdt', 0.0)):+.2f} USDT | "
-            f"short={float(financial.get('realized_short_pnl_usdt', 0.0)):+.2f} USDT"
-        ),
-        f"- Unrealized PnL: {float(financial.get('unrealized_pnl_usdt', 0.0)):+.2f} USDT",
-        f"- Daily Fees Paid: {float(financial.get('daily_fees_usdt', 0.0)):.2f} USDT",
-        f"- Cumulative Fees Paid: {float(financial.get('cumulative_fees_usdt', 0.0)):.2f} USDT",
-        (
-            f"- Equity Curve: {equity_curve.get('sparkline', 'n/a')} "
-            f"(range {float(equity_curve.get('min_value_usdt', 0.0)):.2f} - {float(equity_curve.get('max_value_usdt', 0.0)):.2f} USDT)"
-        ),
-        f"- Equity Chart: {equity_curve.get('chart_path', 'n/a')}",
-        "",
-        "## Current Portfolio",
-        "",
-    ]
+    lines = [f"# Daily Summary: {date_label}", ""]
+    if summary_mode:
+        lines.extend([f"- Mode: {summary_mode}", ""])
+    lines.extend(
+        [
+            "## Financial Snapshot",
+            "",
+            (
+                f"- Total Portfolio Value: {float(financial.get('total_portfolio_value_usdt', 0.0)):.2f} USDT "
+                f"(Initial: {float(financial.get('initial_capital_usdt', 0.0)):.2f} USDT)"
+            ),
+            (
+                f"- Daily PnL: {float(financial.get('daily_pnl_usdt', 0.0)):+.2f} USDT "
+                f"({float(financial.get('daily_pnl_pct', 0.0)):+.2f}%)"
+            ),
+            f"- Realized PnL: {float(financial.get('realized_pnl_usdt', 0.0)):+.2f} USDT",
+            (
+                f"- Realized PnL Split: "
+                f"long={float(financial.get('realized_long_pnl_usdt', 0.0)):+.2f} USDT | "
+                f"short={float(financial.get('realized_short_pnl_usdt', 0.0)):+.2f} USDT"
+            ),
+            f"- Unrealized PnL: {float(financial.get('unrealized_pnl_usdt', 0.0)):+.2f} USDT",
+            f"- Daily Fees Paid: {float(financial.get('daily_fees_usdt', 0.0)):.2f} USDT",
+            f"- Cumulative Fees Paid: {float(financial.get('cumulative_fees_usdt', 0.0)):.2f} USDT",
+            (
+                f"- Equity Curve: {equity_curve.get('sparkline', 'n/a')} "
+                f"(range {float(equity_curve.get('min_value_usdt', 0.0)):.2f} - {float(equity_curve.get('max_value_usdt', 0.0)):.2f} USDT)"
+            ),
+            f"- Equity Chart: {equity_curve.get('chart_path', 'n/a')}",
+            "",
+            "## Current Portfolio",
+            "",
+        ]
+    )
 
     is_perp_summary = any(item.get("market_type") == "perp" for item in financial.get("holdings", []))
     if is_perp_summary:

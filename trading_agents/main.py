@@ -57,7 +57,7 @@ from trading_agents.reporting import (
 )
 from trading_agents.research import StrategyResearchAgent
 from trading_agents.sentiment import SentimentDataProvider, write_sentiment_record
-from trading_agents.storage import build_storage_layout
+from trading_agents.storage import build_storage_layout, mode_scoped_path
 from trading_agents.strategy_memory import current_strategy_slot, load_strategy_memory, save_strategy_memory
 
 
@@ -552,9 +552,11 @@ def _finalize_reporting(
     daily_report_path = write_daily_summary(storage.daily_reports, date_label, daily_content)
     report["daily_report"] = str(daily_report_path)
     daily_summary = load_daily_summary_data(storage.trade_logs, date_label, storage.runner_log)
+    equity_history_path = mode_scoped_path(storage.equity_curve_history_state, mode)
+    equity_chart_path = mode_scoped_path(storage.equity_curve_svg, mode)
     equity_curve = update_equity_curve(
-        history_path=storage.equity_curve_history_state,
-        chart_path=storage.equity_curve_svg,
+        history_path=equity_history_path,
+        chart_path=equity_chart_path,
         financial_snapshot=daily_summary.get("financial_snapshot", {}),
     )
     daily_summary["equity_curve"] = equity_curve

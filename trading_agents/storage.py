@@ -34,6 +34,14 @@ class StorageLayout:
     external_benchmark_state: Path
 
 
+def mode_scoped_path(path: Path, mode: str) -> Path:
+    safe_mode = "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in str(mode).strip().lower())
+    safe_mode = safe_mode.strip("-_") or "default"
+    suffix = "".join(path.suffixes)
+    stem = path.name[: -len(suffix)] if suffix else path.name
+    return path.with_name(f"{stem}-{safe_mode}{suffix}")
+
+
 def build_storage_layout(root: str) -> StorageLayout:
     base = Path(root).expanduser()
     if not base.is_absolute():
