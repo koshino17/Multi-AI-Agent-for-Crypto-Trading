@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,12 +35,34 @@ STAGE_LABELS = {
 
 
 def _normalize_blocked_reason(reason: str) -> str:
-    lowered = reason.lower()
+    normalized = (reason or "").strip()
+    lowered = normalized.lower()
     if lowered.startswith("position value below exchange minimum"):
         return "position value below exchange minimum"
     if lowered.startswith("max position below exchange minimum"):
         return "max position below exchange minimum"
-    return reason
+    if lowered.startswith("symbol cooldown active"):
+        return "symbol cooldown active"
+    if lowered.startswith("expected edge below fee hurdle"):
+        return "expected edge below fee hurdle"
+    if lowered.startswith("fast-cycle confidence too low"):
+        return "fast-cycle confidence too low"
+    if lowered.startswith("score below minimum threshold"):
+        return "score below minimum threshold"
+    if lowered.startswith("position too close to liquidation"):
+        return "position too close to liquidation"
+    if lowered.startswith("leverage would exceed cap"):
+        return "leverage would exceed cap"
+    if lowered.startswith("insufficient usdt balance"):
+        return "insufficient usdt balance"
+    if lowered.startswith("no base asset available to sell"):
+        return "no base asset available to sell"
+
+    normalized = re.sub(r"\s+", " ", normalized)
+    normalized = re.sub(r":\s*[-+]?\d+(?:\.\d+)?%?\s*(?:<|>|<=|>=)\s*[-+]?\d+(?:\.\d+)?%?", "", normalized)
+    normalized = re.sub(r":\s*\d+(?:\.\d+)?s remaining", "", normalized)
+    normalized = re.sub(r":\s*[-+]?\d+(?:\.\d+)?", "", normalized)
+    return normalized or "unknown reason"
 
 
 def _normalize_result_reason(reason: str) -> str:

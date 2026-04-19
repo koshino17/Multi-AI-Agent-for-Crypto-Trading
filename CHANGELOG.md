@@ -69,6 +69,26 @@
 
 ---
 
+## v0.11.12 - Normalize repeated Why Blocked reasons
+
+### Why
+
+- Daily Summary 的 `Why Blocked` 原本會把帶有動態數字的原因逐條列出，例如不同秒數的 `symbol cooldown active: XXs remaining`
+- 這會讓同一種阻擋原因在日報裡重複很多次，降低可讀性，也讓 Notion / UI 的 top blocked reason 比較不準
+
+### What Changed
+
+- `reporting.py`
+  - `_normalize_blocked_reason(...)` 現在會把常見動態原因折疊成固定類別，例如：
+    - `symbol cooldown active`
+    - `expected edge below fee hurdle`
+    - `fast-cycle confidence too low`
+    - `no base asset available to sell`
+  - Daily Summary / Notion / UI 會共用這份整理後的 blocked reason counts
+- 這讓 `Why Blocked` 變成真正的聚合計數，而不是同樣原因被不同數字拆成很多列
+
+---
+
 ## v0.11.10 - Mode-scoped daily reporting and equity curve isolation
 
 ### Why
