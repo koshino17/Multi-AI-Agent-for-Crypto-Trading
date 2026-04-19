@@ -827,7 +827,12 @@ def execute_cycle(
             timeframe=settings.timeframe,
         )
         min_order_value_usdt = 0.0
-        if hasattr(exchange, "minimum_order_value_usdt"):
+        if hasattr(exchange, "executable_min_order_value_usdt"):
+            try:
+                min_order_value_usdt = float(exchange.executable_min_order_value_usdt(candidate_symbol, float(snapshot.last_price)))
+            except Exception:
+                min_order_value_usdt = 0.0
+        elif hasattr(exchange, "minimum_order_value_usdt"):
             try:
                 min_order_value_usdt = float(exchange.minimum_order_value_usdt(candidate_symbol))
             except Exception:

@@ -342,6 +342,7 @@ class StrategistAgent:
         buy_flow_ok = order_flow_bias >= (-0.15 if aggressive_mode else -0.08)
         sell_flow_ok = order_flow_bias <= (0.15 if aggressive_mode else 0.08)
         flow_score_boost = min(max(abs(order_flow_bias), 0.0), 0.35) * 0.18
+        current_signal = str(getattr(strategy_research, "current_signal", "hold") or "hold").lower()
 
         if momentum > (0.0010 if aggressive_mode else 0.0020) and buy_sentiment_ok and buy_flow_ok and (
             backtest_supports_long or selected_edge_positive
@@ -378,6 +379,45 @@ class StrategistAgent:
                     f"position_side={position_side}"
                 ),
                 invalidation="exit if downward momentum fades",
+                holding_horizon="intraday",
+            )
+        if current_signal == "short" and can_sell and sell_sentiment_ok and (
+            selected_backtest.expectancy_pct >= (-0.02 if aggressive_mode else 0.0)
+            or backtest_supports_short
+        ):
+            return TradeIdea(
+                action="sell",
+                score=min(0.61 + max(abs(momentum), 0.0) * 16 + flow_score_boost, 0.93),
+                rationale=(
+                    "external trend-following strategy still sees active bearish continuation; "
+                    f"order_flow={order_flow_summary}; "
+                    f"momentum={momentum:+.4%}; "
+                    f"strategy={strategy_research.selected_strategy_id}; "
+                    f"current_signal={current_signal}; "
+                    f"expectancy={selected_backtest.expectancy_pct:+.2f}%; "
+                    f"profit_factor={selected_backtest.profit_factor:.2f}; "
+                    f"position_side={position_side}"
+                ),
+                invalidation="exit if continuation signal collapses or downward momentum fades",
+                holding_horizon="intraday",
+            )
+        if current_signal == "long" and can_buy and buy_sentiment_ok and (
+            selected_backtest.expectancy_pct >= (-0.02 if aggressive_mode else 0.0)
+            or backtest_supports_long
+        ):
+            return TradeIdea(
+                action="buy",
+                score=min(0.61 + max(momentum, 0.0) * 16 + flow_score_boost, 0.93),
+                rationale=(
+                    "external trend-following strategy still sees active bullish continuation; "
+                    f"order_flow={order_flow_summary}; "
+                    f"momentum={momentum:+.4%}; "
+                    f"strategy={strategy_research.selected_strategy_id}; "
+                    f"current_signal={current_signal}; "
+                    f"expectancy={selected_backtest.expectancy_pct:+.2f}%; "
+                    f"profit_factor={selected_backtest.profit_factor:.2f}"
+                ),
+                invalidation="exit if continuation signal collapses or upside momentum fades",
                 holding_horizon="intraday",
             )
         if (
@@ -557,6 +597,12 @@ class RiskSupervisorAgent:
         demo_mode = trading_mode.startswith("bybit-demo")
         selected_backtest = self._selected_strategy_backtest(strategy_research)
         buffered_available_usdt = max(available_usdt * buy_balance_buffer_pct, 0.0)
+        opening_long = idea.action == "buy" and (not perp_mode or position_side != "short")
+        opening_short = idea.action == "sell" and perp_mode and position_side != "long"
+        closing_position = perp_mode and (
+            (idea.action == "buy" and position_side == "short")
+            or (idea.action == "sell" and position_side == "long")
+        )
         effective_max_position_pct = max_position_pct
         if aggressive_mode and demo_mode:
             effective_max_position_pct = max(max_position_pct, 0.20)
@@ -564,7 +610,7 @@ class RiskSupervisorAgent:
         if (
             aggressive_mode
             and demo_mode
-            and idea.action == "buy"
+            and (idea.action == "buy" or opening_short)
             and min_order_value_usdt > 0
             and buffered_available_usdt >= min_order_value_usdt * 1.15
         ):
@@ -624,12 +670,6 @@ class RiskSupervisorAgent:
             and not any(item.backtest.trade_count > 0 for item in strategy_research.candidates)
         ):
             warnings.append("research strategy pool has too few recent replay samples")
-        opening_long = idea.action == "buy" and (not perp_mode or position_side != "short")
-        opening_short = idea.action == "sell" and perp_mode and position_side != "long"
-        closing_position = perp_mode and (
-            (idea.action == "buy" and position_side == "short")
-            or (idea.action == "sell" and position_side == "long")
-        )
         current_equity = max(total_equity_usdt, available_usdt, 0.0)
         current_exposure = abs(current_position_notional_usdt)
         if opening_long and buffered_available_usdt <= 5:

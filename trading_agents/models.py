@@ -89,6 +89,7 @@ class StrategyResearchSnapshot:
     summary: str
     candidates: list[StrategyCandidate]
     selected_strategy_rationale: str = ""
+    current_signal: str = "hold"
 
 
 @dataclass(frozen=True)

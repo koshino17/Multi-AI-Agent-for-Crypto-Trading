@@ -592,9 +592,9 @@ class BybitDemoExchangeClient:
 
     def _normalize_quantity(self, symbol: str, quantity: float) -> str:
         info = self._instrument_info(symbol)
-        lot = info.get("lotSizeFilter", {}) if isinstance(info, dict) else {}
-        step = str(lot.get("qtyStep") or lot.get("basePrecision") or lot.get("minOrderQty") or "0.000001")
-        min_qty = Decimal(str(lot.get("minOrderQty") or "0"))
+        constraints = self._lot_constraints(symbol)
+        step = format(constraints["step"], "f")
+        min_qty = constraints["min_qty"]
         qty_decimal = Decimal(str(quantity))
         step_decimal = Decimal(step)
         if step_decimal <= 0:
@@ -612,7 +612,7 @@ class BybitDemoExchangeClient:
         return format(normalized, "f")
 
     def _validate_order_value(self, symbol: str, quantity: str, price: float) -> None:
-        min_order_amt = Decimal(str(self.minimum_order_value_usdt(symbol)))
+        min_order_amt = Decimal(str(self.executable_min_order_value_usdt(symbol, price)))
         if min_order_amt <= 0:
             return
         notional = Decimal(quantity) * Decimal(str(price))
@@ -622,13 +622,42 @@ class BybitDemoExchangeClient:
                 f"{min_order_amt.normalize()} for {symbol}."
             )
 
-    def minimum_order_value_usdt(self, symbol: str) -> float:
+    def _lot_constraints(self, symbol: str) -> dict[str, Decimal]:
         info = self._instrument_info(symbol)
         lot = info.get("lotSizeFilter", {}) if isinstance(info, dict) else {}
+        step = Decimal(str(lot.get("qtyStep") or lot.get("basePrecision") or lot.get("minOrderQty") or "0.000001"))
+        if step <= 0:
+            step = Decimal("0.000001")
+        min_qty = Decimal(str(lot.get("minOrderQty") or "0"))
+        min_notional = Decimal(
+            str(
+                lot.get("minOrderAmt")
+                or lot.get("minNotionalValue")
+                or 0
+            )
+        )
+        return {
+            "step": step,
+            "min_qty": min_qty,
+            "min_notional": min_notional,
+        }
+
+    def minimum_order_value_usdt(self, symbol: str) -> float:
         try:
-            return float(lot.get("minOrderAmt") or 0.0)
+            return float(self._lot_constraints(symbol)["min_notional"])
         except (TypeError, ValueError):
             return 0.0
+
+    def executable_min_order_value_usdt(self, symbol: str, price: float) -> float:
+        constraints = self._lot_constraints(symbol)
+        min_notional = constraints["min_notional"]
+        min_qty = constraints["min_qty"]
+        step = constraints["step"]
+        executable_qty = max(min_qty, step)
+        price_decimal = Decimal(str(price if price > 0 else 0.0))
+        qty_floor_notional = executable_qty * price_decimal if price_decimal > 0 else Decimal("0")
+        executable_min = max(min_notional, qty_floor_notional)
+        return float(executable_min)
 
     def execute_order(self, order: dict) -> dict:
         qty = self._normalize_quantity(order["symbol"], float(order["quantity"]))
@@ -797,10 +826,8 @@ class BybitDemoPerpExchangeClient(BybitDemoExchangeClient):
         return info
 
     def minimum_order_value_usdt(self, symbol: str) -> float:
-        info = self._instrument_info(symbol)
-        lot = info.get("lotSizeFilter", {}) if isinstance(info, dict) else {}
         try:
-            return float(lot.get("minNotionalValue") or 0.0)
+            return float(self._lot_constraints(symbol)["min_notional"])
         except (TypeError, ValueError):
             return 0.0
 

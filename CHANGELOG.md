@@ -16,6 +16,37 @@
 
 ---
 
+## v0.11.13 - Continuation entries and executable minimum order sizing
+
+### Why
+
+- `SOL/USDT` 這類高單價 perp 在目前資金規模下，經常出現「risk 通過，但 quantity rounds to zero」的拒單，代表風控看到的最小單額仍停留在理論值，沒有反映交易所真正的 `qtyStep + minQty`
+- live 主策略原本比較偏第一個 breakout 進場，對「已經走出趨勢、但仍在延續」的盤勢參與度不夠，容易在明顯弱勢日中後段變成長時間 `hold`
+
+### What Changed
+
+- `exchange.py`
+  - 新增 lot-size 約束抽象，統一解析：
+    - `qtyStep`
+    - `minOrderQty`
+    - `minOrderAmt / minNotionalValue`
+  - 新增 `executable_min_order_value_usdt(...)`
+  - 風控與下單驗證不再只看理論 `5 USDT`，而會用「以當前價格換算後，真正能下得出去的最小 notional」
+- `main.py`
+  - 候選標的的 `min_order_value_usdt` 改為使用 executable minimum
+- `agents.py`
+  - `RiskSupervisorAgent` 會用 executable minimum 做 sizing 判斷
+  - demo aggressive starter-size 現在同時支援開多與開空，不再只偏向 `buy`
+  - `StrategistAgent` fallback 現在會認 `current_signal`，讓趨勢延續訊號能更容易轉成實際 `buy/sell`
+- `backtest.py`
+  - `donchian_adx_signal(...)` 新增 continuation long/short 條件
+  - 不再只認第一個 breakout，ADX 強且均線/DI 結構仍延續時，可以再次給出方向訊號
+- `research.py` / `models.py`
+  - `StrategyResearchSnapshot` 新增 `current_signal`
+  - 讓 strategist 能直接吃到外部主策略當下是 `long / short / hold`
+
+---
+
 ## v0.11.11 - Order-flow / microstructure features in live decision path
 
 ### Why

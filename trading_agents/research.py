@@ -80,6 +80,7 @@ class StrategyResearchAgent:
             summary=summary,
             candidates=candidates,
             selected_strategy_rationale=rationale,
+            current_signal=current_signal,
         )
 
     def _fallback_rationale(self, base_id: str, selected: StrategyCandidate, snapshot: MarketSnapshot, current_signal: str) -> str:

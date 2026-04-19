@@ -107,6 +107,11 @@ def donchian_adx_signal(
     upper_breakout = max(prior_highs)
     lower_breakdown = min(prior_lows)
     close = closes[index]
+    short_avg = fmean(closes[max(0, index - 4): index + 1]) if closes else close
+    medium_avg = fmean(closes[max(0, index - 9): index + 1]) if closes else close
+    long_avg = fmean(closes[max(0, index - 19): index + 1]) if closes else close
+    lookback_index = max(0, index - 3)
+    recent_return = ((close - closes[lookback_index]) / closes[lookback_index]) if closes[lookback_index] > 0 else 0.0
 
     metrics = {
         "adx": latest_adx,
@@ -116,13 +121,60 @@ def donchian_adx_signal(
         "volume_ratio": volume_ratio,
         "upper_breakout": upper_breakout,
         "lower_breakdown": lower_breakdown,
+        "short_avg": short_avg,
+        "medium_avg": medium_avg,
+        "long_avg": long_avg,
+        "recent_return": recent_return,
+        "signal_type": "hold",
     }
     if latest_adx < adx_threshold or volume_ratio < volume_ratio_threshold:
+        # Continuation entries keep trend-following alive after the first breakout.
+        # They deliberately use a lighter volume requirement than the initial breakout.
+        continuation_ready = latest_adx >= (adx_threshold + 3.0) and volume_ratio >= 1.0
+        short_trend = (
+            short_avg < medium_avg < long_avg
+            and latest_minus >= latest_plus * 1.08
+            and recent_return <= -0.0010
+            and close <= short_avg
+        )
+        long_trend = (
+            short_avg > medium_avg > long_avg
+            and latest_plus >= latest_minus * 1.08
+            and recent_return >= 0.0010
+            and close >= short_avg
+        )
+        if continuation_ready and short_trend:
+            metrics["signal_type"] = "continuation_short"
+            return "short", metrics
+        if continuation_ready and long_trend:
+            metrics["signal_type"] = "continuation_long"
+            return "long", metrics
         return "hold", metrics
     if close > upper_breakout and latest_plus >= latest_minus:
+        metrics["signal_type"] = "breakout_long"
         return "long", metrics
     if close < lower_breakdown and latest_minus >= latest_plus:
+        metrics["signal_type"] = "breakout_short"
         return "short", metrics
+    continuation_ready = latest_adx >= (adx_threshold + 3.0) and volume_ratio >= 1.0
+    short_trend = (
+        short_avg < medium_avg < long_avg
+        and latest_minus >= latest_plus * 1.08
+        and recent_return <= -0.0010
+        and close <= short_avg
+    )
+    long_trend = (
+        short_avg > medium_avg > long_avg
+        and latest_plus >= latest_minus * 1.08
+        and recent_return >= 0.0010
+        and close >= short_avg
+    )
+    if continuation_ready and short_trend:
+        metrics["signal_type"] = "continuation_short"
+        return "short", metrics
+    if continuation_ready and long_trend:
+        metrics["signal_type"] = "continuation_long"
+        return "long", metrics
     return "hold", metrics
 
 
