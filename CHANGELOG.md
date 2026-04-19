@@ -16,6 +16,29 @@
 
 ---
 
+## v0.11.14 - Raise demo position budget to 40%
+
+### Why
+
+- 目前帳戶資金規模下，`MAX_POSITION_PCT=0.20` 雖然安全，但對 `SOL` 這類較高單價 perp 太保守，常讓有效訊號在 sizing 後落到交易所最小可執行單以下
+- 使用者希望系統更接近「以可用資金積極參與」的訓練模式，而不是每筆單都只拿很小一部分去試單
+- 直接改成 `100%` 會太接近常態 all-in，不符合我們目前仍需保留風險緩衝、手續費空間與多標的彈性的設計
+
+### What Changed
+
+- `.env`
+  - 將執行中的 `MAX_POSITION_PCT` 從 `0.20` 提高到 `0.40`
+- `.env.example` / `config.py` / `README.md`
+  - 將預設與文件同步更新為 `0.40`
+- `scripts/run_trading_supervisor.sh`
+  - 修正 supervisor 不再因為 runner 的非零退出碼一起退出
+  - 讓新版倉位設定能穩定套用到背景服務，而不是只改到檔案
+- 新版 runner 重啟後，單筆風險預算會改為更接近：
+  - `available balance × BUY_BALANCE_BUFFER_PCT × 0.40`
+  - 在目前 `BUY_BALANCE_BUFFER_PCT=0.95` 下，等於大約使用可用資金的 `38%`
+
+---
+
 ## v0.11.13 - Continuation entries and executable minimum order sizing
 
 ### Why

@@ -70,8 +70,11 @@ while true; do
   echo "$(date '+%F %T %Z') supervisor starting runner"
   python3 -m trading_agents.runner --mode "$MODE" --symbol "$SYMBOLS" --interval "$MONITOR_INTERVAL" >> "$RUNNER_LOG" 2>&1 &
   child_pid=$!
-  wait "$child_pid"
-  exit_code=$?
+  if wait "$child_pid"; then
+    exit_code=0
+  else
+    exit_code=$?
+  fi
   child_pid=""
 
   if [ "$stop_requested" -eq 1 ]; then

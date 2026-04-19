@@ -58,7 +58,7 @@ class Settings:
     run_interval_seconds: float = _float("RUN_INTERVAL_SECONDS", 900.0)
     price_trigger_pct: float = _float("PRICE_TRIGGER_PCT", 0.0075)
     initial_balance_usdt: float = _float("INITIAL_BALANCE_USDT", 150.0)
-    max_position_pct: float = _float("MAX_POSITION_PCT", 0.20)
+    max_position_pct: float = _float("MAX_POSITION_PCT", 0.40)
     max_daily_loss_pct: float = _float("MAX_DAILY_LOSS_PCT", 0.03)
     min_signal_score: float = _float("MIN_SIGNAL_SCORE", 0.55)
     taker_fee_pct: float = _float("TAKER_FEE_PCT", 0.001)
