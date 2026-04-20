@@ -105,6 +105,54 @@ def _mark_trade_cooldown(path: Path, mode: str, symbol: str, cooldown_seconds: f
     _save_trade_cooldowns(path, cooldowns)
 
 
+def _adaptive_trade_cooldown_seconds(report: dict, settings) -> float:
+    base_cooldown = max(float(settings.trade_cooldown_seconds or 0.0), 0.0)
+    if base_cooldown <= 0:
+        return 0.0
+
+    symbol_pool = report.get("symbol_pool")
+    if isinstance(symbol_pool, list) and len(symbol_pool) == 1:
+        single_symbol_cap = max(float(settings.trade_cooldown_single_symbol_cap_seconds or 0.0), 0.0)
+        if single_symbol_cap > 0:
+            base_cooldown = min(base_cooldown, single_symbol_cap)
+
+    order = report.get("order") or {}
+    if bool(order.get("reduce_only")):
+        return min(base_cooldown, max(float(settings.trade_cooldown_min_seconds or 0.0), 0.0))
+
+    idea = report.get("idea") or {}
+    strategy_research = report.get("strategy_research") or {}
+    llm_wake = report.get("llm_wake") or {}
+    metrics = llm_wake.get("metrics") or {}
+
+    action = str(idea.get("action", "") or "").lower()
+    current_signal = str(strategy_research.get("current_signal", "hold") or "hold").lower()
+    momentum_pct = abs(float(metrics.get("momentum_pct", 0.0) or 0.0))
+    trade_delta_ratio = float(metrics.get("trade_delta_ratio", 0.0) or 0.0)
+    volume_ratio = float(metrics.get("volume_ratio", 0.0) or 0.0)
+
+    strong_long_follow_through = (
+        action == "buy"
+        and current_signal == "long"
+        and momentum_pct >= float(settings.trade_cooldown_reentry_momentum_pct or 0.0)
+        and trade_delta_ratio >= float(settings.trade_cooldown_reentry_trade_delta_ratio or 0.0)
+        and volume_ratio >= float(settings.trade_cooldown_reentry_volume_ratio or 0.0)
+    )
+    strong_short_follow_through = (
+        action == "sell"
+        and current_signal == "short"
+        and momentum_pct >= float(settings.trade_cooldown_reentry_momentum_pct or 0.0)
+        and trade_delta_ratio <= -float(settings.trade_cooldown_reentry_trade_delta_ratio or 0.0)
+        and volume_ratio >= float(settings.trade_cooldown_reentry_volume_ratio or 0.0)
+    )
+    if strong_long_follow_through or strong_short_follow_through:
+        return max(
+            max(float(settings.trade_cooldown_min_seconds or 0.0), 0.0),
+            base_cooldown * max(float(settings.trade_cooldown_trend_multiplier or 0.0), 0.0),
+        )
+    return base_cooldown
+
+
 def _load_position_policy_state(path: Path) -> dict[str, dict]:
     raw = _read_json_file(path)
     return raw if isinstance(raw, dict) else {}
@@ -1311,7 +1359,7 @@ def execute_cycle(
             storage.trade_cooldown_state,
             mode,
             report["selected_symbol"],
-            settings.trade_cooldown_seconds,
+            _adaptive_trade_cooldown_seconds(report, settings),
         )
     trade_log_path = write_json_log(storage.trade_logs, "trade", report)
     evaluation_log_path = write_json_log(

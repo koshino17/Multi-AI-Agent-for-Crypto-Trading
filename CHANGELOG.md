@@ -16,6 +16,40 @@
 
 ---
 
+## v0.11.17 - Adaptive cooldown for single-symbol continuation re-entry
+
+### Why
+
+- `TradePulse` 在單一標的模式下，常常不是完全沒看到機會，而是剛做完一筆就被固定 `900s` cooldown 鎖在場外
+- 對 `SOL/USDT` 這種日內有明顯續漲 / 續跌段的盤勢來說，固定長 cooldown 會讓系統錯過後續 continuation 與 re-entry 機會
+- 需要把 cooldown 從「固定時間」改成更貼近 intraday 實戰的動態版本：單一幣模式先縮短，強趨勢續抱/續攻時再更短
+
+### What Changed
+
+- `main.py`
+  - 新增 `_adaptive_trade_cooldown_seconds(...)`
+  - accepted trade 後不再一律套用固定 `TRADE_COOLDOWN_SECONDS`
+  - 單一標的模式會先套用較短上限
+  - 若同時滿足：
+    - `current_signal` 與方向一致
+    - momentum 足夠強
+    - trade delta 站在同一邊
+    - volume ratio 足夠高
+    則 cooldown 會進一步縮短，讓續漲 / 續跌段更容易 re-entry
+  - `reduce_only` 的平倉單也會採用更短 cooldown，避免剛出場就被長時間鎖死
+- `config.py` / `.env.example`
+  - 新增 adaptive cooldown 相關設定：
+    - `TRADE_COOLDOWN_SINGLE_SYMBOL_CAP_SECONDS`
+    - `TRADE_COOLDOWN_TREND_MULTIPLIER`
+    - `TRADE_COOLDOWN_MIN_SECONDS`
+    - `TRADE_COOLDOWN_REENTRY_MOMENTUM_PCT`
+    - `TRADE_COOLDOWN_REENTRY_TRADE_DELTA_RATIO`
+    - `TRADE_COOLDOWN_REENTRY_VOLUME_RATIO`
+- `README.md`
+  - 文件同步新增這組設定，方便單一幣種 focus mode 調校
+
+---
+
 ## v0.11.16 - Relax continuation sentiment gate for strong trend follow-through
 
 ### Why
