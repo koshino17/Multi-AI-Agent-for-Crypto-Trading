@@ -689,6 +689,7 @@ def _build_daily_review_blocks(
     external_benchmarks = daily_summary.get("external_benchmarks", {})
     top_benchmark = (external_benchmarks.get("top_candidates") or [{}])[0]
     top_alpha = (external_benchmarks.get("top_alpha_arena_candidates") or [{}])[0]
+    symbol_postmortem = daily_summary.get("symbol_postmortem") or {}
     blocks: list[dict[str, Any]] = [
         _heading_1(title),
         _paragraph(f"Published at: {datetime.now(LOCAL_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')}"),
@@ -767,8 +768,18 @@ def _build_daily_review_blocks(
                     f"Top Alpha Arena model: {top_alpha.get('candidate_id')} on {top_alpha.get('symbol', 'n/a')} "
                     f"(expectancy={float(top_alpha.get('expectancy_pct', 0.0)):+.2f}% | "
                     f"profit_factor={float(top_alpha.get('profit_factor', 0.0)):.2f})"
-                )
             )
+        )
+    if symbol_postmortem:
+        blocks.extend(
+            [
+                _heading_2("Symbol Postmortem"),
+                _bullet(f"Focus Symbol: {symbol_postmortem.get('symbol', 'n/a')}"),
+                _paragraph(str(symbol_postmortem.get("summary", ""))),
+            ]
+        )
+        for item in symbol_postmortem.get("improvement_directions", [])[:4]:
+            blocks.append(_bullet(f"Improvement: {item}"))
     holdings = financial.get("holdings", [])
     if holdings:
         for item in holdings:

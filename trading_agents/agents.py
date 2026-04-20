@@ -962,6 +962,7 @@ class DailyReviewAgent:
         financial = daily_summary.get("financial_snapshot", {})
         latest = daily_summary.get("latest") or {}
         external_benchmarks = daily_summary.get("external_benchmarks", {})
+        symbol_postmortem = daily_summary.get("symbol_postmortem") or {}
         action_line = ", ".join(f"{key}={value}" for key, value in action_counts.items()) or "no actions"
         symbol_line = ", ".join(f"{key}={value}" for key, value in selected_symbol_counts.items()) or "no symbol focus"
         top_block = next(iter(blocked_reason_counts.items()), ("none", 0))
@@ -989,6 +990,8 @@ class DailyReviewAgent:
             f"主要 blocked 原因是 {top_block[0]} ({top_block[1]})；"
             f"主要 rejected 原因是 {top_reject[0]} ({top_reject[1]})。"
         )
+        if symbol_postmortem.get("summary"):
+            decision_summary += f" 單一標的檢討：{symbol_postmortem.get('summary')}"
         if top_benchmark.get("candidate_id"):
             decision_summary += (
                 f" 最新外部 benchmark 目前以 {top_benchmark.get('candidate_id', 'n/a')} "
@@ -1021,6 +1024,9 @@ class DailyReviewAgent:
             improvements.append(
                 "將 Alpha Arena 領先模型的持倉節奏與我們的 exit timing 對照，優先檢查出場是否過慢。"
             )
+        for item in symbol_postmortem.get("improvement_directions", [])[:2]:
+            if item not in improvements:
+                improvements.append(str(item))
         if not improvements:
             improvements.append("持續追蹤各策略的 expectancy 與實際填單結果，讓 selector 更偏向真正可成交且報酬風險比佳的候選。")
 

@@ -67,6 +67,10 @@ def _normalize_blocked_reason(reason: str) -> str:
 
 def _normalize_result_reason(reason: str) -> str:
     lowered = reason.lower()
+    if "rounds to zero" in lowered:
+        return "Rejected due to minimum executable size"
+    if "below bybit minimum" in lowered:
+        return "Rejected due to minimum executable size"
     if "below bybit minimum" in lowered or "below exchange minimum" in lowered:
         return "exchange rejected below minimum"
     if "insufficient" in lowered:
@@ -118,6 +122,13 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -133,6 +144,123 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
         if isinstance(payload, dict):
             rows.append(payload)
     return rows
+
+
+def _build_symbol_postmortem(
+    records: list[dict[str, Any]],
+    *,
+    focus_symbol: str = "",
+    external_benchmarks: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    symbol_counts = Counter(str(item.get("selected_symbol", "")).strip() for item in records if item.get("selected_symbol"))
+    symbol_counts = Counter({symbol: count for symbol, count in symbol_counts.items() if symbol})
+    chosen_symbol = focus_symbol.strip() or (symbol_counts.most_common(1)[0][0] if symbol_counts else "")
+    if not chosen_symbol:
+        return {}
+
+    symbol_records = [item for item in records if str(item.get("selected_symbol", "")).strip() == chosen_symbol]
+    if not symbol_records:
+        return {}
+
+    prices = [_safe_float(item.get("last_price")) for item in symbol_records if _safe_float(item.get("last_price")) > 0]
+    first_price = prices[0] if prices else 0.0
+    last_price = prices[-1] if prices else 0.0
+    low_price = min(prices) if prices else 0.0
+    high_price = max(prices) if prices else 0.0
+    net_move_pct = (((last_price - first_price) / first_price) * 100.0) if first_price > 0 else 0.0
+    intraday_range_pct = (((high_price - low_price) / first_price) * 100.0) if first_price > 0 else 0.0
+
+    action_counts = Counter(str(item.get("idea", {}).get("action", "hold")).strip().lower() for item in symbol_records)
+    holds = action_counts.get("hold", 0)
+    sells = action_counts.get("sell", 0)
+    buys = action_counts.get("buy", 0)
+    proposals = buys + sells
+    approved = sum(1 for item in symbol_records if bool(item.get("approval", {}).get("approved")))
+    accepted = sum(1 for item in symbol_records if _result_status(item) == "accepted")
+    rejected = sum(1 for item in symbol_records if _result_status(item) == "rejected")
+
+    symbol_blocked = Counter(
+        _normalize_blocked_reason(str(item.get("approval", {}).get("reason", "")))
+        for item in symbol_records
+        if str(item.get("idea", {}).get("action", "")).strip().lower() != "hold"
+        and not bool(item.get("approval", {}).get("approved"))
+    )
+    symbol_blocked = Counter({reason: count for reason, count in symbol_blocked.items() if reason and reason != "unknown reason"})
+
+    symbol_rejected = Counter(
+        _result_reason(item)
+        for item in symbol_records
+        if _result_status(item) == "rejected"
+    )
+    symbol_rejected = Counter({reason: count for reason, count in symbol_rejected.items() if reason})
+
+    top_block = next(iter(symbol_blocked.items()), ("none", 0))
+    top_reject = next(iter(symbol_rejected.items()), ("none", 0))
+    benchmark_payload = ((external_benchmarks or {}).get("top_by_symbol") or {}).get(chosen_symbol, {})
+    benchmark_summary = ""
+    if isinstance(benchmark_payload, dict) and benchmark_payload.get("candidate_id"):
+        benchmark_summary = (
+            f" 外部 benchmark 同標的目前以 {benchmark_payload.get('candidate_id')} 領先，"
+            f"expectancy {float(benchmark_payload.get('expectancy_pct', 0.0)):+.2f}%。"
+        )
+
+    regime_hint = "directional down day" if net_move_pct <= -1.0 else "directional up day" if net_move_pct >= 1.0 else "range / mixed day"
+    if net_move_pct <= -1.0 and sells <= max(1, holds // 4):
+        takeaway = "價格明顯走弱，但系統大部分時間停在 hold，代表 continuation short 參與度仍不足。"
+    elif net_move_pct >= 1.0 and buys <= max(1, holds // 4):
+        takeaway = "價格明顯走強，但系統大部分時間停在 hold，代表 continuation long 參與度仍不足。"
+    elif top_reject[0] == "Rejected due to minimum executable size" and top_reject[1] > 0:
+        takeaway = "有有效訊號，但執行層仍被最小可執行單位卡掉，應持續檢查 sizing 與資金規模。"
+    elif top_block[0] != "none" and top_block[1] > max(3, proposals // 3):
+        takeaway = f"主要不是沒有訊號，而是大量卡在 `{top_block[0]}`。"
+    else:
+        takeaway = "決策與執行節奏大致一致，接下來應看進場品質與 exit timing。"
+
+    summary = (
+        f"{chosen_symbol} 今日屬於 {regime_hint}；價格由 {first_price:.4f} 走到 {last_price:.4f} "
+        f"({net_move_pct:+.2f}%)，日內區間約 {intraday_range_pct:.2f}%。"
+        f" 系統共聚焦此標的 {len(symbol_records)} 次，"
+        f"buy={buys} / sell={sells} / hold={holds}，"
+        f"approved={approved}，accepted={accepted}，rejected={rejected}。"
+        f" 主要 blocked 原因是 {top_block[0]} ({top_block[1]})；"
+        f"主要 rejected 原因是 {top_reject[0]} ({top_reject[1]})。"
+        f" {takeaway}{benchmark_summary}"
+    )
+
+    improvements: list[str] = []
+    if net_move_pct <= -1.0 and holds > sells:
+        improvements.append("在明顯下行日加強 continuation short 條件，避免整段趨勢中後段只剩 hold。")
+    if net_move_pct >= 1.0 and holds > buys:
+        improvements.append("在明顯上行日加強 continuation long 條件，避免整段趨勢中後段只剩 hold。")
+    if top_block[0] == "symbol cooldown active":
+        improvements.append("檢查單一標的模式下 cooldown 是否過長，避免同一日內趨勢段被過度冷卻。")
+    if top_reject[0] == "Rejected due to minimum executable size":
+        improvements.append("持續觀察最小可執行單位拒單；若仍頻繁出現，可再調整資金或單筆風險預算。")
+    if benchmark_payload and benchmark_payload.get("candidate_id") and benchmark_payload.get("candidate_id") != "donchian_adx_perp_v1":
+        improvements.append(
+            f"外部 benchmark 顯示 `{benchmark_payload.get('candidate_id')}` 在 {chosen_symbol} 更強，應做同標的 attribution 對照。"
+        )
+    if not improvements:
+        improvements.append("繼續追蹤這個單一標的的進場品質、持倉延續性與 policy exit 是否一致。")
+
+    return {
+        "symbol": chosen_symbol,
+        "records": len(symbol_records),
+        "first_price": round(first_price, 6),
+        "last_price": round(last_price, 6),
+        "high_price": round(high_price, 6),
+        "low_price": round(low_price, 6),
+        "net_move_pct": round(net_move_pct, 4),
+        "intraday_range_pct": round(intraday_range_pct, 4),
+        "action_counts": dict(action_counts),
+        "approved": approved,
+        "accepted": accepted,
+        "rejected": rejected,
+        "blocked_reason_counts": dict(symbol_blocked.most_common()),
+        "rejection_reason_counts": dict(symbol_rejected.most_common()),
+        "summary": summary,
+        "improvement_directions": improvements[:4],
+    }
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -1199,6 +1327,12 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
         mode_scoped_path(storage.equity_curve_svg, settings.trading_mode),
     )
     summary["external_benchmarks"] = load_external_benchmark_summary(storage.external_benchmark_state)
+    focus_symbol = settings.observation_pool[0] if len(settings.observation_pool) == 1 else ""
+    summary["symbol_postmortem"] = _build_symbol_postmortem(
+        records,
+        focus_symbol=focus_symbol,
+        external_benchmarks=summary["external_benchmarks"],
+    )
     return summary
 
 
@@ -1236,6 +1370,7 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
     external_benchmarks = summary.get("external_benchmarks", {})
     top_benchmark = (external_benchmarks.get("top_candidates") or [{}])[0]
     top_alpha_benchmark = (external_benchmarks.get("top_alpha_arena_candidates") or [{}])[0]
+    symbol_postmortem = summary.get("symbol_postmortem") or {}
 
     lines = [f"# Daily Summary: {date_label}", ""]
     if summary_mode:
@@ -1407,6 +1542,13 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
                     f"profit_factor={float(payload.get('profit_factor', 0.0)):.2f} | "
                     f"trades={int(payload.get('trade_count', 0))})"
                 )
+
+    if symbol_postmortem:
+        lines.extend(["", "## Symbol Postmortem", ""])
+        lines.append(f"- Focus Symbol: {symbol_postmortem.get('symbol', 'n/a')}")
+        lines.append(f"- Summary: {symbol_postmortem.get('summary', '')}")
+        for item in symbol_postmortem.get("improvement_directions", [])[:4]:
+            lines.append(f"- Improvement: {item}")
 
     if latest:
         lines.extend(

@@ -39,6 +39,34 @@
 
 ---
 
+## v0.11.15 - SOL-first focus mode and daily symbol postmortem
+
+### Why
+
+- 使用者希望先把 live 注意力集中在單一幣種，避免多標的同時觀察造成資金與檢討焦點分散
+- 現有 daily review 雖然有總結，但還缺少「像人工回顧 SOL 一整天走勢那樣」的單一標的 postmortem
+- 需要讓框架每天自動指出：某個幣今天到底是趨勢日、震盪日，系統是因為 `hold` 太多、cooldown 太長，還是 sizing / fee hurdle 卡住
+
+### What Changed
+
+- `reporting.py`
+  - 新增 `symbol_postmortem`
+  - 會自動為單一重點標的整理：
+    - 價格由開頭到結尾的漲跌
+    - 日內區間
+    - `buy / sell / hold`
+    - approved / accepted / rejected
+    - 該標的自己的 blocked / rejected 主因
+    - 對應的改善方向
+- `agents.py`
+  - `DailyReviewAgent` fallback 現在會把 symbol postmortem 摘要與改善方向納入每日結論
+- `notion_sync.py`
+  - `Daily Review` 新增 `Symbol Postmortem` 區塊
+- 本機執行環境
+  - 目前先收斂成 `SOL/USDT` 單一 observation pool，方便做日內 attribution 與策略檢討
+
+---
+
 ## v0.11.13 - Continuation entries and executable minimum order sizing
 
 ### Why

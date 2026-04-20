@@ -13,6 +13,7 @@
 - 會持續累積資金曲線（equity curve），產生本地 SVG 折線圖，並同步摘要到 Notion
 - `Grid / Alpha Arena / 其他外部策略候選` 現在先走 research-only benchmark，不直接覆蓋 live trading
 - full cycle 會額外接入基礎 `order flow / market microstructure` 特徵，而不再只看 15m K 線與 sentiment
+- daily report / Notion `Daily Review` 會自動產出 `Symbol Postmortem`，優先回顧單一重點標的的走勢、決策分布與主要卡點
 
 版本更新與里程碑請看 `CHANGELOG.md`，不再把歷史更新內容全部塞進 README。
 若要看 `Alpha Arena` 如何作為 benchmark / research 來源接進目前架構，請看 `ALPHA_ARENA_INTEGRATION_PLAN.md`。
@@ -118,6 +119,10 @@ BYBIT_DEMO_SECRET=...
 
 ```bash
 TRADING_MODE=bybit-demo-perp
+
+# 若要先聚焦單一幣種做 intraday attribution，可先收斂成單一 observation pool
+OBSERVATION_POOL=SOL/USDT
+SYMBOL=SOL/USDT
 BYBIT_DEMO_API_KEY=...
 BYBIT_DEMO_SECRET=...
 ```
