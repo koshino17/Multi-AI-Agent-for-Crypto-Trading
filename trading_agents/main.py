@@ -746,6 +746,7 @@ def execute_cycle(
                 if isinstance(item, dict)
             ],
             selected_strategy_rationale=str(payload.get("selected_strategy_rationale", "")),
+            current_signal=str(payload.get("current_signal", "hold") or "hold"),
         )
 
     settings = load_settings()
@@ -1027,6 +1028,7 @@ def execute_cycle(
                     "selected_strategy_id": strategy_research.selected_strategy_id,
                     "selected_strategy_name": strategy_research.selected_strategy_name,
                     "selected_strategy_rationale": strategy_research.selected_strategy_rationale,
+                    "current_signal": strategy_research.current_signal,
                     "summary": strategy_research.summary,
                     "candidates": [
                         {

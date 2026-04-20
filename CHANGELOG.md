@@ -16,6 +16,26 @@
 
 ---
 
+## v0.11.16 - Relax continuation sentiment gate for strong trend follow-through
+
+### Why
+
+- `SOL/USDT` 在 `2026-04-20` 午後出現明顯續漲段時，live 決策其實已經看到 `current_signal=long`，但仍被 fallback strategist 壓回 `hold`
+- 問題不在於系統完全沒看到價格或量能，而是 continuation entry 在「輕度負面 sentiment + 強勢 order flow」的情況下仍然太容易被情緒 gate 卡住
+- 這會讓框架在明顯續漲或續跌日的中後段，出現「知道方向，但不願意重新上車」的遲鈍行為
+
+### What Changed
+
+- `agents.py`
+  - 對 `current_signal == long/short` 的 continuation entry 新增更明確的強趨勢條件
+  - 當 momentum 與 order flow 都明顯站在同一邊時，允許 continuation setup 容忍較輕微的反向 sentiment
+  - 讓系統在強續漲 / 強續跌段更願意跟單，而不是無條件被 `fear` 或輕度反向情緒壓回 `hold`
+- `main.py`
+  - `strategy_research` payload 現在會把 `current_signal` 一起寫進 decision/trade logs
+  - 之後做 daily postmortem 或單筆回放時，可以直接看出「研究層當時到底看到 long / short / hold」，不用再從 summary 字串反推
+
+---
+
 ## v0.11.14 - Raise demo position budget to 40%
 
 ### Why

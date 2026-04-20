@@ -343,6 +343,22 @@ class StrategistAgent:
         sell_flow_ok = order_flow_bias <= (0.15 if aggressive_mode else 0.08)
         flow_score_boost = min(max(abs(order_flow_bias), 0.0), 0.35) * 0.18
         current_signal = str(getattr(strategy_research, "current_signal", "hold") or "hold").lower()
+        continuation_long_ready = (
+            current_signal == "long"
+            and momentum >= 0.0025
+            and order_flow_bias >= 0.18
+        )
+        continuation_short_ready = (
+            current_signal == "short"
+            and momentum <= -0.0025
+            and order_flow_bias <= -0.18
+        )
+        continuation_buy_sentiment_ok = buy_sentiment_ok or (
+            continuation_long_ready and sentiment.sentiment_score >= -0.50
+        )
+        continuation_sell_sentiment_ok = sell_sentiment_ok or (
+            continuation_short_ready and sentiment.sentiment_score <= 0.75
+        )
 
         if momentum > (0.0010 if aggressive_mode else 0.0020) and buy_sentiment_ok and buy_flow_ok and (
             backtest_supports_long or selected_edge_positive
@@ -381,7 +397,7 @@ class StrategistAgent:
                 invalidation="exit if downward momentum fades",
                 holding_horizon="intraday",
             )
-        if current_signal == "short" and can_sell and sell_sentiment_ok and (
+        if current_signal == "short" and can_sell and continuation_sell_sentiment_ok and (
             selected_backtest.expectancy_pct >= (-0.02 if aggressive_mode else 0.0)
             or backtest_supports_short
         ):
@@ -401,7 +417,7 @@ class StrategistAgent:
                 invalidation="exit if continuation signal collapses or downward momentum fades",
                 holding_horizon="intraday",
             )
-        if current_signal == "long" and can_buy and buy_sentiment_ok and (
+        if current_signal == "long" and can_buy and continuation_buy_sentiment_ok and (
             selected_backtest.expectancy_pct >= (-0.02 if aggressive_mode else 0.0)
             or backtest_supports_long
         ):
