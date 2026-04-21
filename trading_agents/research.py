@@ -69,6 +69,7 @@ class StrategyResearchAgent:
             f"selected strategy {selected.strategy_id}; "
             f"base={base_id}; {selected.backtest.summary}; "
             f"current_signal={current_signal}; "
+            f"current_signal_type={current_metrics.get('signal_type', 'hold')}; "
             f"current_adx={current_metrics.get('adx', 0.0):.2f}; "
             f"current_volume_ratio={current_metrics.get('volume_ratio', 0.0):.2f}; "
             f"rationale={rationale}"
@@ -81,6 +82,9 @@ class StrategyResearchAgent:
             candidates=candidates,
             selected_strategy_rationale=rationale,
             current_signal=current_signal,
+            current_signal_type=str(current_metrics.get("signal_type", "hold") or "hold"),
+            current_adx=float(current_metrics.get("adx", 0.0) or 0.0),
+            current_volume_ratio=float(current_metrics.get("volume_ratio", 0.0) or 0.0),
         )
 
     def _fallback_rationale(self, base_id: str, selected: StrategyCandidate, snapshot: MarketSnapshot, current_signal: str) -> str:

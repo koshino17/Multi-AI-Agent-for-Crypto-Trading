@@ -14,6 +14,7 @@
 - `Grid / Alpha Arena / 其他外部策略候選` 現在先走 research-only benchmark，不直接覆蓋 live trading
 - full cycle 會額外接入基礎 `order flow / market microstructure` 特徵，而不再只看 15m K 線與 sentiment
 - daily report / Notion `Daily Review` 會自動產出 `Symbol Postmortem`，優先回顧單一重點標的的走勢、決策分布與主要卡點
+- 每筆決策現在都會記錄 `Decision Source`，區分 `base_strategy / fallback / fallback_guard / policy_exit`
 
 版本更新與里程碑請看 `CHANGELOG.md`，不再把歷史更新內容全部塞進 README。
 若要看 `Alpha Arena` 如何作為 benchmark / research 來源接進目前架構，請看 `ALPHA_ARENA_INTEGRATION_PLAN.md`。
@@ -202,6 +203,7 @@ http://127.0.0.1:8765
   - 若持有超過 intraday 規劃窗口，且優勢已弱化，會走 policy exit
   - 若趨勢仍健康、保護單已收緊，系統允許繼續持有
   - 可選擇是否啟用接近日切時段的 de-risk / flatten
+  - 若 base strategy 已明確處於 `hold + 低 ADX` 的中性盤，TradePulse 也會抑制缺乏 tape / volume 跟進的 fallback 新開倉，避免 neutral day 被過度方向化
 
 ## 預設策略節奏
 
@@ -240,6 +242,21 @@ http://127.0.0.1:8765
 - `large_buy_count / large_sell_count`
 
 這一層不是把整本 order book 原樣丟給 LLM，而是先用 deterministic 特徵把盤面壓縮成可決策語意，讓系統真正具備一點基本的 microstructure awareness。
+
+## Decision Attribution
+
+TradePulse 現在會為每筆決策標記來源：
+
+- `base_strategy`
+- `fallback`
+- `fallback_guard`
+- `policy_exit`
+
+Daily Summary 與 `Symbol Postmortem` 也會顯示 attribution。這能幫我們分清楚：
+
+- 是主策略本身在犯錯
+- 還是 fallback override 過度干擾
+- 或是 policy exit 太早把單關掉
 
 ## 外部策略 Benchmark
 

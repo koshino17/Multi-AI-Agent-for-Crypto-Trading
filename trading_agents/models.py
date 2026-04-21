@@ -90,6 +90,9 @@ class StrategyResearchSnapshot:
     candidates: list[StrategyCandidate]
     selected_strategy_rationale: str = ""
     current_signal: str = "hold"
+    current_signal_type: str = "hold"
+    current_adx: float = 0.0
+    current_volume_ratio: float = 0.0
 
 
 @dataclass(frozen=True)

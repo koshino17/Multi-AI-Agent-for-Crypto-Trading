@@ -16,6 +16,48 @@
 
 ---
 
+## v0.11.18 - Decision attribution and neutral-range fallback guard
+
+### Why
+
+- `TradePulse` 最近幾次 intraday 問題，不只是「沒跟上行情」，而是很難分清楚到底是 `base strategy` 做錯，還是外層 fallback override 在干擾
+- 尤其在 `current_signal=hold`、`ADX` 偏低的 range / mixed day，系統仍可能被 fallback 持續拉去做空，讓責任歸屬與後續檢討都變得模糊
+- 需要把每筆決策的來源寫進 log / 日報，同時在 neutral range 狀態下先擋掉缺乏 follow-through 的 fallback 開倉
+
+### What Changed
+
+- `models.py` / `research.py`
+  - `StrategyResearchSnapshot` 新增：
+    - `current_signal_type`
+    - `current_adx`
+    - `current_volume_ratio`
+  - 讓主流程不再只從 summary 字串反推 base strategy 當下狀態
+- `main.py`
+  - 新增 `decision_source` attribution：
+    - `base_strategy`
+    - `fallback`
+    - `fallback_guard`
+    - `policy_exit`
+  - 每筆候選與最終 selected report 都會寫入 `decision_source`
+  - 新增 neutral-range fallback guard：
+    - 當 `current_signal=hold`
+    - `current_signal_type=hold`
+    - `ADX` 低於門檻
+    - 且 volume / tape follow-through 不夠強
+    時，會把新開方向單轉回 `hold`
+- `reporting.py`
+  - Daily Summary 新增：
+    - `Decision Attribution`
+    - `Accepted Attribution`
+  - `Latest Decision` 會顯示 `Decision Source`
+  - `Symbol Postmortem` 也會納入 attribution 分布與改善提示
+- `.env.example` / `config.py`
+  - 新增 neutral-range guard 相關設定：
+    - `FALLBACK_RANGE_GUARD_ENABLED`
+    - `FALLBACK_RANGE_GUARD_ADX_MAX`
+    - `FALLBACK_RANGE_GUARD_VOLUME_RATIO`
+    - `FALLBACK_RANGE_GUARD_TRADE_DELTA_RATIO`
+
 ## v0.11.17 - Adaptive cooldown for single-symbol continuation re-entry
 
 ### Why

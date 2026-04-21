@@ -97,6 +97,10 @@ def _result_reason(item: dict[str, Any]) -> str:
     return _normalize_result_reason(str(result.get("exchange_error") or result.get("reason") or ""))
 
 
+def _decision_source(item: dict[str, Any]) -> str:
+    return str(item.get("decision_source", "unknown")).strip().lower() or "unknown"
+
+
 def _record_mode(item: dict[str, Any]) -> str:
     return str(item.get("mode", "")).strip().lower()
 
@@ -178,6 +182,7 @@ def _build_symbol_postmortem(
     approved = sum(1 for item in symbol_records if bool(item.get("approval", {}).get("approved")))
     accepted = sum(1 for item in symbol_records if _result_status(item) == "accepted")
     rejected = sum(1 for item in symbol_records if _result_status(item) == "rejected")
+    source_counts = Counter(_decision_source(item) for item in symbol_records)
 
     symbol_blocked = Counter(
         _normalize_blocked_reason(str(item.get("approval", {}).get("reason", "")))
@@ -221,6 +226,8 @@ def _build_symbol_postmortem(
         f"({net_move_pct:+.2f}%)，日內區間約 {intraday_range_pct:.2f}%。"
         f" 系統共聚焦此標的 {len(symbol_records)} 次，"
         f"buy={buys} / sell={sells} / hold={holds}，"
+        f"source(base={source_counts.get('base_strategy', 0)}, fallback={source_counts.get('fallback', 0)}, "
+        f"guarded={source_counts.get('fallback_guard', 0)}, policy={source_counts.get('policy_exit', 0)})，"
         f"approved={approved}，accepted={accepted}，rejected={rejected}。"
         f" 主要 blocked 原因是 {top_block[0]} ({top_block[1]})；"
         f"主要 rejected 原因是 {top_reject[0]} ({top_reject[1]})。"
@@ -232,6 +239,8 @@ def _build_symbol_postmortem(
         improvements.append("在明顯下行日加強 continuation short 條件，避免整段趨勢中後段只剩 hold。")
     if net_move_pct >= 1.0 and holds > buys:
         improvements.append("在明顯上行日加強 continuation long 條件，避免整段趨勢中後段只剩 hold。")
+    if source_counts.get("fallback", 0) > max(source_counts.get("base_strategy", 0), 1):
+        improvements.append("fallback 主導次數高於 base strategy，應優先檢查 override 是否太常把 neutral day 做成方向單。")
     if top_block[0] == "symbol cooldown active":
         improvements.append("檢查單一標的模式下 cooldown 是否過長，避免同一日內趨勢段被過度冷卻。")
     if top_reject[0] == "Rejected due to minimum executable size":
@@ -258,6 +267,7 @@ def _build_symbol_postmortem(
         "rejected": rejected,
         "blocked_reason_counts": dict(symbol_blocked.most_common()),
         "rejection_reason_counts": dict(symbol_rejected.most_common()),
+        "decision_source_counts": dict(source_counts.most_common()),
         "summary": summary,
         "improvement_directions": improvements[:4],
     }
@@ -1178,6 +1188,8 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
     llm_wake_candidates = 0
     llm_wake_enabled = 0
     llm_wake_selected_enabled = 0
+    decision_source_counts: Counter[str] = Counter()
+    accepted_source_counts: Counter[str] = Counter()
     long_proposals = 0
     short_proposals = 0
     long_accepted = 0
@@ -1189,6 +1201,8 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
         approval = item.get("approval", {})
         action = str(idea.get("action", "unknown"))
         is_perp = _is_perp_record(item)
+        decision_source = _decision_source(item)
+        decision_source_counts[decision_source] += 1
         score = _safe_float(idea.get("score"))
         action_counts[action] += 1
         if action == "buy":
@@ -1206,6 +1220,7 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
             rejection_reason_counts[_result_reason(item)] += 1
         if _result_status(item) == "accepted":
             executed_symbol_counts[str(item.get("selected_symbol", "unknown"))] += 1
+            accepted_source_counts[decision_source] += 1
             order = _order_payload(item)
             side = str(order.get("side", "")).lower()
             reduce_only = bool(order.get("reduce_only"))
@@ -1300,6 +1315,8 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
         "llm_wake_rate_pct": llm_wake_rate_pct,
         "llm_selected_wake_enabled": llm_wake_selected_enabled,
         "llm_selected_wake_rate_pct": llm_selected_wake_rate_pct,
+        "decision_source_counts": dict(decision_source_counts.most_common()),
+        "accepted_source_counts": dict(accepted_source_counts.most_common()),
         "latest": latest,
     }
 
@@ -1362,6 +1379,8 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
     llm_wake_candidates = int(summary.get("llm_wake_candidates", 0))
     llm_wake_enabled = int(summary.get("llm_wake_enabled", 0))
     llm_wake_rate_pct = float(summary.get("llm_wake_rate_pct", 0.0))
+    decision_source_counts = summary.get("decision_source_counts", {})
+    accepted_source_counts = summary.get("accepted_source_counts", {})
     top_traded_symbol = next(iter(executed_symbol_counts.items()), ("n/a", 0))
     long_proposals = int(summary.get("long_proposals", 0))
     short_proposals = int(summary.get("short_proposals", 0))
@@ -1483,6 +1502,20 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
                 f"proposals long={long_proposals}, short={short_proposals} | "
                 f"accepted long={long_accepted}, short={short_accepted}"
             ),
+            (
+                f"- Decision Attribution: "
+                f"base={int(decision_source_counts.get('base_strategy', 0))} | "
+                f"fallback={int(decision_source_counts.get('fallback', 0))} | "
+                f"guarded={int(decision_source_counts.get('fallback_guard', 0))} | "
+                f"policy={int(decision_source_counts.get('policy_exit', 0))}"
+            ),
+            (
+                f"- Accepted Attribution: "
+                f"base={int(accepted_source_counts.get('base_strategy', 0))} | "
+                f"fallback={int(accepted_source_counts.get('fallback', 0))} | "
+                f"guarded={int(accepted_source_counts.get('fallback_guard', 0))} | "
+                f"policy={int(accepted_source_counts.get('policy_exit', 0))}"
+            ),
             f"- Approved by risk: {approved}",
             f"- Orders submitted: {submitted_orders}",
             f"- Executed trades: {executed}",
@@ -1559,6 +1592,7 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
                 f"- Selected Symbol: {latest.get('selected_symbol', 'n/a')}",
                 f"- Conclusion: {_summary_line(latest)}",
                 f"- Signal: {latest['idea']['action']} (score={float(latest['idea']['score']):.2f})",
+                f"- Decision Source: {latest.get('decision_source', 'unknown')}",
                 f"- Risk Decision: {latest['approval']['reason']}",
             ]
         )
@@ -1580,6 +1614,8 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
         debate = latest.get("debate") or {}
         if debate.get("risk_feedback"):
             lines.append(f"- Debate: risk raised `{debate['risk_feedback']}` before final decision")
+        if debate.get("fallback_guard_reason"):
+            lines.append(f"- Guardrail: {debate['fallback_guard_reason']}")
         account = latest.get("account")
         if account:
             if account.get("market_type") == "perp":

@@ -153,6 +153,100 @@ def _adaptive_trade_cooldown_seconds(report: dict, settings) -> float:
     return base_cooldown
 
 
+def _opens_new_exposure(action: str, *, position_side: str, mode: str) -> bool:
+    perp_mode = "perp" in mode
+    if action == "buy":
+        return not perp_mode or position_side != "short"
+    if action == "sell":
+        return perp_mode and position_side != "long"
+    return False
+
+
+def _derive_decision_source(
+    *,
+    idea: TradeIdea,
+    strategy_research,
+    policy_exit: bool,
+    position_side: str,
+    mode: str,
+    guard_applied: bool = False,
+) -> str:
+    if policy_exit:
+        return "policy_exit"
+    if guard_applied:
+        return "fallback_guard"
+
+    current_signal = str(getattr(strategy_research, "current_signal", "hold") or "hold").lower()
+    action = str(getattr(idea, "action", "hold") or "hold").lower()
+    if action == "hold":
+        return "base_strategy" if current_signal == "hold" else "fallback"
+    if current_signal == "long" and action == "buy":
+        return "base_strategy"
+    if current_signal == "short" and action == "sell":
+        return "base_strategy"
+    if not _opens_new_exposure(action, position_side=position_side, mode=mode):
+        return "base_strategy"
+    return "fallback"
+
+
+def _guard_range_fallback_override(
+    *,
+    idea: TradeIdea,
+    strategy_research,
+    llm_wake: dict,
+    position_side: str,
+    mode: str,
+    settings,
+) -> tuple[TradeIdea, str]:
+    if not bool(settings.fallback_range_guard_enabled):
+        return idea, ""
+    action = str(getattr(idea, "action", "hold") or "hold").lower()
+    if action not in {"buy", "sell"}:
+        return idea, ""
+    if not _opens_new_exposure(action, position_side=position_side, mode=mode):
+        return idea, ""
+
+    current_signal = str(getattr(strategy_research, "current_signal", "hold") or "hold").lower()
+    current_signal_type = str(getattr(strategy_research, "current_signal_type", "hold") or "hold").lower()
+    current_adx = float(getattr(strategy_research, "current_adx", 0.0) or 0.0)
+    current_volume_ratio = float(getattr(strategy_research, "current_volume_ratio", 0.0) or 0.0)
+    metrics = llm_wake.get("metrics") or {}
+    volume_ratio = max(current_volume_ratio, float(metrics.get("volume_ratio", 0.0) or 0.0))
+    trade_delta_ratio = float(metrics.get("trade_delta_ratio", 0.0) or 0.0)
+
+    if current_signal != "hold":
+        return idea, ""
+    if current_signal_type not in {"hold", ""}:
+        return idea, ""
+    if current_adx > float(settings.fallback_range_guard_adx_max or 0.0):
+        return idea, ""
+
+    compelling_buy = (
+        action == "buy"
+        and trade_delta_ratio >= float(settings.fallback_range_guard_trade_delta_ratio or 0.0)
+        and volume_ratio >= float(settings.fallback_range_guard_volume_ratio or 0.0)
+    )
+    compelling_sell = (
+        action == "sell"
+        and trade_delta_ratio <= -float(settings.fallback_range_guard_trade_delta_ratio or 0.0)
+        and volume_ratio >= float(settings.fallback_range_guard_volume_ratio or 0.0)
+    )
+    if compelling_buy or compelling_sell:
+        return idea, ""
+
+    guarded = TradeIdea(
+        action="hold",
+        score=min(float(getattr(idea, "score", 0.40) or 0.40), 0.45),
+        rationale=(
+            f"{idea.rationale}; converted to hold because base strategy is neutral "
+            f"(current_signal=hold, ADX {current_adx:.2f}) and fallback {action} lacked strong follow-through"
+        ),
+        invalidation="wait for a fresh directional setup or stronger tape confirmation",
+        holding_horizon="none",
+    )
+    return guarded, f"neutral-base guard: ADX {current_adx:.2f}, volume {volume_ratio:.2f}x, trade_delta {trade_delta_ratio:+.2f}"
+
+
 def _load_position_policy_state(path: Path) -> dict[str, dict]:
     raw = _read_json_file(path)
     return raw if isinstance(raw, dict) else {}
@@ -795,6 +889,9 @@ def execute_cycle(
             ],
             selected_strategy_rationale=str(payload.get("selected_strategy_rationale", "")),
             current_signal=str(payload.get("current_signal", "hold") or "hold"),
+            current_signal_type=str(payload.get("current_signal_type", "hold") or "hold"),
+            current_adx=float(payload.get("current_adx", 0.0) or 0.0),
+            current_volume_ratio=float(payload.get("current_volume_ratio", 0.0) or 0.0),
         )
 
     settings = load_settings()
@@ -976,6 +1073,22 @@ def execute_cycle(
                     strategy_memory=strategy_memory,
                 ),
             )
+        idea, fallback_guard_reason = _guard_range_fallback_override(
+            idea=idea,
+            strategy_research=strategy_research,
+            llm_wake=llm_wake,
+            position_side=position_side,
+            mode=mode,
+            settings=settings,
+        )
+        decision_source = _derive_decision_source(
+            idea=idea,
+            strategy_research=strategy_research,
+            policy_exit=bool(policy_idea is not None),
+            position_side=position_side,
+            mode=mode,
+            guard_applied=bool(fallback_guard_reason),
+        )
         risk_feedback = ""
         progress("strategist", "done", f"{candidate_symbol}: {idea.action} ({idea.score:.2f})")
         progress("risk_supervisor", "running", f"reviewing {candidate_symbol}")
@@ -1077,6 +1190,9 @@ def execute_cycle(
                     "selected_strategy_name": strategy_research.selected_strategy_name,
                     "selected_strategy_rationale": strategy_research.selected_strategy_rationale,
                     "current_signal": strategy_research.current_signal,
+                    "current_signal_type": strategy_research.current_signal_type,
+                    "current_adx": strategy_research.current_adx,
+                    "current_volume_ratio": strategy_research.current_volume_ratio,
                     "summary": strategy_research.summary,
                     "candidates": [
                         {
@@ -1137,8 +1253,10 @@ def execute_cycle(
                 "llm_wake": llm_wake,
                 "protection_targets": protection_targets,
                 "protection_sync": position_protection,
+                "decision_source": decision_source,
                 "debate": {
                     "risk_feedback": risk_feedback,
+                    "fallback_guard_reason": fallback_guard_reason,
                 },
                 "position_context": position_context,
                 "policy_exit": bool(policy_idea is not None),
@@ -1233,7 +1351,18 @@ def execute_cycle(
             ),
         )
         selected["approval"] = selected_approval.__dict__
-        selected["debate"] = {"risk_feedback": risk_feedback}
+        selected["debate"] = {
+            "risk_feedback": risk_feedback,
+            "fallback_guard_reason": selected.get("debate", {}).get("fallback_guard_reason", ""),
+        }
+        selected["decision_source"] = _derive_decision_source(
+            idea=selected_idea,
+            strategy_research=selected_strategy_research,
+            policy_exit=bool(selected.get("policy_exit")),
+            position_side=str(selected["account"].get("position_side", "flat")),
+            mode=mode,
+            guard_applied=bool(selected.get("debate", {}).get("fallback_guard_reason")),
+        )
         progress("risk_supervisor", "done", f"{selected['symbol']}: {selected_approval.reason}")
 
     report = {
@@ -1258,6 +1387,7 @@ def execute_cycle(
         "account": selected["account"],
         "execution_constraints": selected.get("execution_constraints", {}),
         "llm_wake": selected.get("llm_wake", {}),
+        "decision_source": selected.get("decision_source", "unknown"),
         "debate": selected.get("debate", {}),
         "stage_metrics": _serialize_stage_metrics(stage_metrics),
     }
