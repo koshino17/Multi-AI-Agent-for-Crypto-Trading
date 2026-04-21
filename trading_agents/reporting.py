@@ -227,7 +227,7 @@ def _build_symbol_postmortem(
         f" 系統共聚焦此標的 {len(symbol_records)} 次，"
         f"buy={buys} / sell={sells} / hold={holds}，"
         f"source(base={source_counts.get('base_strategy', 0)}, fallback={source_counts.get('fallback', 0)}, "
-        f"guarded={source_counts.get('fallback_guard', 0)}, policy={source_counts.get('policy_exit', 0)})，"
+        f"guarded={source_counts.get('fallback_guard', 0)}, memory={source_counts.get('memory_guard', 0)}, policy={source_counts.get('policy_exit', 0)})，"
         f"approved={approved}，accepted={accepted}，rejected={rejected}。"
         f" 主要 blocked 原因是 {top_block[0]} ({top_block[1]})；"
         f"主要 rejected 原因是 {top_reject[0]} ({top_reject[1]})。"
@@ -1660,6 +1660,7 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
                 f"base={int(decision_source_counts.get('base_strategy', 0))} | "
                 f"fallback={int(decision_source_counts.get('fallback', 0))} | "
                 f"guarded={int(decision_source_counts.get('fallback_guard', 0))} | "
+                f"memory={int(decision_source_counts.get('memory_guard', 0))} | "
                 f"policy={int(decision_source_counts.get('policy_exit', 0))}"
             ),
             (
@@ -1667,6 +1668,7 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
                 f"base={int(accepted_source_counts.get('base_strategy', 0))} | "
                 f"fallback={int(accepted_source_counts.get('fallback', 0))} | "
                 f"guarded={int(accepted_source_counts.get('fallback_guard', 0))} | "
+                f"memory={int(accepted_source_counts.get('memory_guard', 0))} | "
                 f"policy={int(accepted_source_counts.get('policy_exit', 0))}"
             ),
             f"- Approved by risk: {approved}",
@@ -1786,11 +1788,17 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
         strategy_research = latest.get("strategy_research")
         if strategy_research:
             lines.append(f"- Strategy Research: {strategy_research['summary']}")
+        strategy_memory = latest.get("strategy_memory") or {}
+        controls = strategy_memory.get("controls") or {}
+        if controls:
+            lines.append(f"- Learning Controls: {json.dumps(controls, ensure_ascii=False)}")
         debate = latest.get("debate") or {}
         if debate.get("risk_feedback"):
             lines.append(f"- Debate: risk raised `{debate['risk_feedback']}` before final decision")
         if debate.get("fallback_guard_reason"):
             lines.append(f"- Guardrail: {debate['fallback_guard_reason']}")
+        if debate.get("memory_guard_reason"):
+            lines.append(f"- Memory Guard: {debate['memory_guard_reason']}")
         account = latest.get("account")
         if account:
             if account.get("market_type") == "perp":

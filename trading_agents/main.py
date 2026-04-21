@@ -105,10 +105,21 @@ def _mark_trade_cooldown(path: Path, mode: str, symbol: str, cooldown_seconds: f
     _save_trade_cooldowns(path, cooldowns)
 
 
-def _adaptive_trade_cooldown_seconds(report: dict, settings) -> float:
+def _strategy_memory_controls(strategy_memory: dict | None) -> dict[str, object]:
+    controls = (strategy_memory or {}).get("controls", {})
+    return controls if isinstance(controls, dict) else {}
+
+
+def _adaptive_trade_cooldown_seconds(report: dict, settings, strategy_memory: dict | None = None) -> float:
     base_cooldown = max(float(settings.trade_cooldown_seconds or 0.0), 0.0)
     if base_cooldown <= 0:
         return 0.0
+    controls = _strategy_memory_controls(strategy_memory)
+    try:
+        cooldown_scale = float(controls.get("cooldown_scale", 1.0) or 1.0)
+    except (TypeError, ValueError):
+        cooldown_scale = 1.0
+    base_cooldown *= max(0.25, min(cooldown_scale, 1.0))
 
     symbol_pool = report.get("symbol_pool")
     if isinstance(symbol_pool, list) and len(symbol_pool) == 1:
@@ -149,8 +160,41 @@ def _adaptive_trade_cooldown_seconds(report: dict, settings) -> float:
         return max(
             max(float(settings.trade_cooldown_min_seconds or 0.0), 0.0),
             base_cooldown * max(float(settings.trade_cooldown_trend_multiplier or 0.0), 0.0),
-        )
+    )
     return base_cooldown
+
+
+def _apply_strategy_memory_fallback_policy(
+    *,
+    idea: TradeIdea,
+    strategy_research,
+    position_side: str,
+    mode: str,
+    strategy_memory: dict | None,
+) -> tuple[TradeIdea, str]:
+    controls = _strategy_memory_controls(strategy_memory)
+    fallback_entry_mode = str(controls.get("fallback_entry_mode", "normal") or "normal").strip().lower()
+    if fallback_entry_mode != "base_only":
+        return idea, ""
+    action = str(getattr(idea, "action", "hold") or "hold").lower()
+    if action not in {"buy", "sell"}:
+        return idea, ""
+    if not _opens_new_exposure(action, position_side=position_side, mode=mode):
+        return idea, ""
+    current_signal = str(getattr(strategy_research, "current_signal", "hold") or "hold").lower()
+    if current_signal != "hold":
+        return idea, ""
+    guarded = TradeIdea(
+        action="hold",
+        score=min(float(getattr(idea, "score", 0.40) or 0.40), 0.45),
+        rationale=(
+            f"{idea.rationale}; converted to hold because strategy memory disabled new fallback entries "
+            f"after a loss window dominated by fallback trades"
+        ),
+        invalidation="wait for base-strategy alignment or the next reflection window",
+        holding_horizon="none",
+    )
+    return guarded, "strategy-memory guard: fallback new entries disabled for this 12h window after fallback-led losses"
 
 
 def _opens_new_exposure(action: str, *, position_side: str, mode: str) -> bool:
@@ -170,9 +214,12 @@ def _derive_decision_source(
     position_side: str,
     mode: str,
     guard_applied: bool = False,
+    memory_guard_applied: bool = False,
 ) -> str:
     if policy_exit:
         return "policy_exit"
+    if memory_guard_applied:
+        return "memory_guard"
     if guard_applied:
         return "fallback_guard"
 
@@ -781,7 +828,8 @@ def _finalize_reporting(
     try:
         current_slot = current_strategy_slot()
         strategy_memory = load_strategy_memory(storage.strategy_memory_state)
-        if strategy_memory.get("slot") != current_slot:
+        controls_missing = not isinstance(strategy_memory.get("controls"), dict) or not strategy_memory.get("controls")
+        if strategy_memory.get("slot") != current_slot or controls_missing:
             reflection = strategy_reflector.evaluate(current_slot, daily_summary)
             payload = {
                 "slot": reflection.slot,
@@ -790,9 +838,14 @@ def _finalize_reporting(
                 "biases": reflection.biases,
                 "risk_adjustments": reflection.risk_adjustments,
                 "focus_symbols": reflection.focus_symbols,
+                "controls": reflection.controls,
             }
             save_strategy_memory(storage.strategy_memory_state, payload)
-            strategy_memory_sync = {"status": "updated", "slot": current_slot}
+            strategy_memory_sync = {
+                "status": "updated",
+                "slot": current_slot,
+                "reason": "backfilled controls" if controls_missing and strategy_memory.get("slot") == current_slot else "",
+            }
     except Exception as exc:
         strategy_memory_sync = {"status": "error", "reason": str(exc)}
     report["strategy_memory_sync"] = strategy_memory_sync
@@ -1073,6 +1126,13 @@ def execute_cycle(
                     strategy_memory=strategy_memory,
                 ),
             )
+        idea, memory_guard_reason = _apply_strategy_memory_fallback_policy(
+            idea=idea,
+            strategy_research=strategy_research,
+            position_side=position_side,
+            mode=mode,
+            strategy_memory=strategy_memory,
+        )
         idea, fallback_guard_reason = _guard_range_fallback_override(
             idea=idea,
             strategy_research=strategy_research,
@@ -1088,6 +1148,7 @@ def execute_cycle(
             position_side=position_side,
             mode=mode,
             guard_applied=bool(fallback_guard_reason),
+            memory_guard_applied=bool(memory_guard_reason),
         )
         risk_feedback = ""
         progress("strategist", "done", f"{candidate_symbol}: {idea.action} ({idea.score:.2f})")
@@ -1254,9 +1315,15 @@ def execute_cycle(
                 "protection_targets": protection_targets,
                 "protection_sync": position_protection,
                 "decision_source": decision_source,
+                "strategy_memory": {
+                    "slot": str(strategy_memory.get("slot", "")),
+                    "summary": str(strategy_memory.get("summary", "")),
+                    "controls": dict(_strategy_memory_controls(strategy_memory)),
+                },
                 "debate": {
                     "risk_feedback": risk_feedback,
                     "fallback_guard_reason": fallback_guard_reason,
+                    "memory_guard_reason": memory_guard_reason,
                 },
                 "position_context": position_context,
                 "policy_exit": bool(policy_idea is not None),
@@ -1354,6 +1421,7 @@ def execute_cycle(
         selected["debate"] = {
             "risk_feedback": risk_feedback,
             "fallback_guard_reason": selected.get("debate", {}).get("fallback_guard_reason", ""),
+            "memory_guard_reason": selected.get("debate", {}).get("memory_guard_reason", ""),
         }
         selected["decision_source"] = _derive_decision_source(
             idea=selected_idea,
@@ -1362,6 +1430,7 @@ def execute_cycle(
             position_side=str(selected["account"].get("position_side", "flat")),
             mode=mode,
             guard_applied=bool(selected.get("debate", {}).get("fallback_guard_reason")),
+            memory_guard_applied=bool(selected.get("debate", {}).get("memory_guard_reason")),
         )
         progress("risk_supervisor", "done", f"{selected['symbol']}: {selected_approval.reason}")
 
@@ -1388,6 +1457,7 @@ def execute_cycle(
         "execution_constraints": selected.get("execution_constraints", {}),
         "llm_wake": selected.get("llm_wake", {}),
         "decision_source": selected.get("decision_source", "unknown"),
+        "strategy_memory": selected.get("strategy_memory", {}),
         "debate": selected.get("debate", {}),
         "stage_metrics": _serialize_stage_metrics(stage_metrics),
     }
@@ -1489,7 +1559,7 @@ def execute_cycle(
             storage.trade_cooldown_state,
             mode,
             report["selected_symbol"],
-            _adaptive_trade_cooldown_seconds(report, settings),
+            _adaptive_trade_cooldown_seconds(report, settings, strategy_memory),
         )
     trade_log_path = write_json_log(storage.trade_logs, "trade", report)
     evaluation_log_path = write_json_log(

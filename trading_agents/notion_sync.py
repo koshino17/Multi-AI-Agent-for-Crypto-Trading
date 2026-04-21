@@ -69,6 +69,7 @@ class NotionSyncClient:
         backtest = latest.get("backtest", {})
         strategy_research = latest.get("strategy_research", {})
         debate = latest.get("debate", {})
+        strategy_memory = latest.get("strategy_memory", {})
         account = latest.get("account", {})
         blocked_reasons = daily_summary.get("blocked_reason_counts", {})
         rejection_reasons = daily_summary.get("rejection_reason_counts", {})
@@ -172,6 +173,11 @@ class NotionSyncClient:
             blocks.append(_bullet(f"Selection: {latest['selection_summary']}"))
         if debate.get("risk_feedback"):
             blocks.append(_bullet(f"Debate: risk raised {debate['risk_feedback']} before final decision"))
+        if debate.get("memory_guard_reason"):
+            blocks.append(_bullet(f"Memory Guard: {debate['memory_guard_reason']}"))
+        controls = strategy_memory.get("controls") or {}
+        if controls:
+            blocks.append(_bullet(f"Learning Controls: {json.dumps(controls, ensure_ascii=False)}"))
         if account:
             if account.get("market_type") == "perp":
                 account_line = (
@@ -681,6 +687,7 @@ def _build_daily_review_blocks(
     rejection_reasons = daily_summary.get("rejection_reason_counts", {})
     latest = daily_summary.get("latest") or {}
     debate = latest.get("debate", {})
+    strategy_memory = latest.get("strategy_memory", {})
     financial = daily_summary.get("financial_snapshot", {})
     equity_curve = daily_summary.get("equity_curve", {})
     avg_scores = daily_summary.get("avg_scores", {})
@@ -690,6 +697,7 @@ def _build_daily_review_blocks(
     top_benchmark = (external_benchmarks.get("top_candidates") or [{}])[0]
     top_alpha = (external_benchmarks.get("top_alpha_arena_candidates") or [{}])[0]
     symbol_postmortem = daily_summary.get("symbol_postmortem") or {}
+    trade_review = daily_summary.get("trade_review") or {}
     blocks: list[dict[str, Any]] = [
         _heading_1(title),
         _paragraph(f"Published at: {datetime.now(LOCAL_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')}"),
@@ -780,6 +788,40 @@ def _build_daily_review_blocks(
         )
         for item in symbol_postmortem.get("improvement_directions", [])[:4]:
             blocks.append(_bullet(f"Improvement: {item}"))
+    if trade_review:
+        blocks.extend(
+            [
+                _heading_2("Trade Review"),
+                _bullet(
+                    "Position Episodes: "
+                    f"long={int(trade_review.get('long_episodes', 0))} | "
+                    f"short={int(trade_review.get('short_episodes', 0))} | "
+                    f"wins={int(trade_review.get('closed_winners', 0))} | "
+                    f"losses={int(trade_review.get('closed_losers', 0))} | "
+                    f"open={int(trade_review.get('open_episodes', 0))}"
+                ),
+            ]
+        )
+        for episode in (trade_review.get("episodes") or [])[:8]:
+            symbol = str(episode.get("symbol", "n/a"))
+            direction = str(episode.get("direction", "n/a"))
+            opened_at = str(episode.get("opened_at", "n/a"))
+            entries = int(episode.get("entries", 0))
+            avg_entry = float(episode.get("avg_entry_price", 0.0))
+            close_or_mark = float(episode.get("close_or_mark_price", 0.0))
+            estimated_edge_pct = float(episode.get("estimated_edge_pct", 0.0))
+            status = str(episode.get("status", "unknown"))
+            entry_source = str(episode.get("entry_source", "unknown"))
+            blocks.append(
+                _bullet(
+                    f"{symbol} {direction} | opened {opened_at} | entries={entries} | "
+                    f"avg_entry={avg_entry:.4f} | close/mark={close_or_mark:.4f} | "
+                    f"edge={estimated_edge_pct:+.2f}% | status={status} | source={entry_source}"
+                )
+            )
+            close_reason = str(episode.get("close_reason", "")).strip()
+            if close_reason:
+                blocks.append(_bullet(f"Close reason: {close_reason}"))
     holdings = financial.get("holdings", [])
     if holdings:
         for item in holdings:
@@ -814,4 +856,9 @@ def _build_daily_review_blocks(
         )
         if debate.get("risk_feedback"):
             blocks.append(_bullet(f"Debate: risk raised {debate['risk_feedback']} before final decision"))
+        if debate.get("memory_guard_reason"):
+            blocks.append(_bullet(f"Memory Guard: {debate['memory_guard_reason']}"))
+        controls = strategy_memory.get("controls") or {}
+        if controls:
+            blocks.append(_bullet(f"Learning Controls: {json.dumps(controls, ensure_ascii=False)}"))
     return blocks

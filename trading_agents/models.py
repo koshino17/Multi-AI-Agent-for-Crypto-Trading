@@ -124,3 +124,4 @@ class StrategyReflectionSnapshot:
     biases: list[str]
     risk_adjustments: list[str]
     focus_symbols: list[str]
+    controls: dict[str, object]

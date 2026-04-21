@@ -16,6 +16,44 @@
 
 ---
 
+## v0.11.19 - Reflection controls that actually feed back into live behavior
+
+### Why
+
+- `TradePulse` 已經會寫 daily review / symbol postmortem / trade review，但仍然比較像「會寫檢討報告」，不是「真的會把昨天學到的東西用回今天」
+- 使用者明確指出：最近一路從 `500 USDT` 掉到 `478 USDT`，代表框架即使知道自己在虧，也還沒有形成有效的學習閉環
+- 尤其最近幾天的 daily attribution 很清楚顯示：
+  - `fallback` 常主導 accepted trades
+  - `symbol cooldown active` 常是第一大 blocked reason
+  這些都應該能直接轉成下一個 12h 視窗的硬控制，而不是只停留在摘要文字
+
+### What Changed
+
+- `models.py` / `strategy_memory.py`
+  - `StrategyReflectionSnapshot` 新增 `controls`
+  - `strategy_memory.json` 現在會正式保存可執行控制項，而不是只有 summary / biases
+- `agents.py`
+  - `StrategyReflectionAgent` 現在會輸出並正規化 controls，例如：
+    - `fallback_entry_mode`
+    - `cooldown_scale`
+    - `benchmark_watch_candidate`
+    - `benchmark_watch_symbol`
+  - fallback reflection 規則新增兩個真正會影響 live 的學習邏輯：
+    - 若上一個 12h 視窗是 `fallback` 主導且虧損，下一個視窗改成 `fallback_entry_mode=base_only`
+    - 若上一個 12h 視窗大量卡在 `symbol cooldown active`，下一個視窗自動縮短 cooldown
+- `main.py`
+  - 新增 strategy-memory fallback policy：
+    - 當 `fallback_entry_mode=base_only`
+    - 且 base strategy 當下為 neutral / hold
+    - 就不再允許 fallback 新開方向單
+  - `_adaptive_trade_cooldown_seconds(...)` 現在也會讀取 `cooldown_scale`
+  - 若目前 slot 的 strategy memory 還沒有 controls，主流程會自動回填一次，不必等下一個 reflection slot 才生效
+- `reporting.py` / `notion_sync.py`
+  - 日報與 Notion 會顯示：
+    - `Learning Controls`
+    - `Memory Guard`
+  - attribution 也新增 `memory_guard` 類別，方便之後直接看「這次是 base/fallback/policy 還是 memory 在攔」
+
 ## v0.11.18 - Decision attribution and neutral-range fallback guard
 
 ### Why

@@ -567,6 +567,7 @@ class StrategistAgent:
                 "biases": strategy_memory.get("biases", []),
                 "risk_adjustments": strategy_memory.get("risk_adjustments", []),
                 "focus_symbols": strategy_memory.get("focus_symbols", []),
+                "controls": strategy_memory.get("controls", {}),
             },
             ensure_ascii=False,
         )
@@ -1069,25 +1070,31 @@ class StrategyReflectionAgent:
                 (
                     "You are the strategy reflection agent for a crypto trading system. "
                     "This reflection runs only once every 12 hours to avoid overfitting. "
-                    "Return JSON with keys summary, biases, risk_adjustments, focus_symbols. "
+                    "Return JSON with keys summary, biases, risk_adjustments, focus_symbols, controls. "
+                    "controls may include fallback_entry_mode (normal/base_only), cooldown_scale (0.25-1.0), "
+                    "and benchmark_watch_candidate / benchmark_watch_symbol. "
                     f"slot={slot}; daily_summary={json.dumps(daily_summary, ensure_ascii=False)}"
                 )
             )
             biases = response.get("biases", fallback.biases)
             adjustments = response.get("risk_adjustments", fallback.risk_adjustments)
             focus_symbols = response.get("focus_symbols", fallback.focus_symbols)
+            controls = response.get("controls", fallback.controls)
             if not isinstance(biases, list):
                 biases = fallback.biases
             if not isinstance(adjustments, list):
                 adjustments = fallback.risk_adjustments
             if not isinstance(focus_symbols, list):
                 focus_symbols = fallback.focus_symbols
+            if not isinstance(controls, dict):
+                controls = fallback.controls
             return StrategyReflectionSnapshot(
                 slot=slot,
                 summary=str(response.get("summary", fallback.summary)).strip() or fallback.summary,
                 biases=[str(item).strip() for item in biases if str(item).strip()][:4] or fallback.biases,
                 risk_adjustments=[str(item).strip() for item in adjustments if str(item).strip()][:4] or fallback.risk_adjustments,
                 focus_symbols=[str(item).strip() for item in focus_symbols if str(item).strip()][:4] or fallback.focus_symbols,
+                controls=self._normalize_controls(controls, fallback.controls),
             )
         except Exception:
             return fallback
@@ -1096,6 +1103,8 @@ class StrategyReflectionAgent:
         blocked = daily_summary.get("blocked_reason_counts", {})
         rejected = daily_summary.get("rejection_reason_counts", {})
         selected = daily_summary.get("selected_symbol_counts", {})
+        financial = daily_summary.get("financial_snapshot", {})
+        accepted_sources = daily_summary.get("accepted_source_counts", {})
         top_block = next(iter(blocked.items()), ("none", 0))
         top_reject = next(iter(rejected.items()), ("none", 0))
         external_benchmarks = daily_summary.get("external_benchmarks", {})
@@ -1103,15 +1112,31 @@ class StrategyReflectionAgent:
         focus_symbols = [key for key, _ in list(selected.items())[:3]]
         biases: list[str] = []
         risk_adjustments: list[str] = []
+        controls: dict[str, object] = {}
+        daily_pnl_usdt = float(financial.get("daily_pnl_usdt", 0.0) or 0.0)
+        fallback_accepted = int(accepted_sources.get("fallback", 0) or 0)
+        base_accepted = int(accepted_sources.get("base_strategy", 0) or 0)
+        cooldown_blocks = int(blocked.get("symbol cooldown active", 0) or 0)
+        total_blocked = int(daily_summary.get("blocked", 0) or 0)
         if top_reject[1] > 0:
             biases.append("prefer execution-valid setups over raw signal frequency until rejection counts normalize")
             risk_adjustments.append(f"treat `{top_reject[0]}` as a first-class constraint in the next 12h window")
         if top_block[1] > 0:
             biases.append(f"reduce candidates that repeatedly hit `{top_block[0]}`")
+        if daily_pnl_usdt < 0 and fallback_accepted >= max(3, base_accepted + 2):
+            biases.append("fallback-driven entries underperformed in the last window")
+            risk_adjustments.append("temporarily require base-strategy alignment before opening new fallback exposure")
+            controls["fallback_entry_mode"] = "base_only"
+        if cooldown_blocks >= max(10, total_blocked // 2):
+            biases.append("cooldown blocked too many valid opportunities in the last window")
+            risk_adjustments.append("shorten cooldown in the next 12h window and re-check if fee bleed stays contained")
+            controls["cooldown_scale"] = 0.5
         if top_benchmark.get("candidate_id"):
             biases.append(
                 f"keep live strategy honest against external benchmark leader `{top_benchmark.get('candidate_id')}`"
             )
+            controls["benchmark_watch_candidate"] = str(top_benchmark.get("candidate_id", ""))
+            controls["benchmark_watch_symbol"] = str(top_benchmark.get("symbol", ""))
         if not biases:
             biases.append("keep favoring positive expectancy and strong payoff asymmetry")
         if not risk_adjustments:
@@ -1119,7 +1144,9 @@ class StrategyReflectionAgent:
         summary = (
             f"12h reflection for {slot}: focus on executable positive-expectancy setups; "
             f"top blocked={top_block[0]} ({top_block[1]}); top rejected={top_reject[0]} ({top_reject[1]}); "
-            f"external benchmark leader={top_benchmark.get('candidate_id', 'n/a')}."
+            f"external benchmark leader={top_benchmark.get('candidate_id', 'n/a')}; "
+            f"fallback accepted={fallback_accepted}; base accepted={base_accepted}; "
+            f"daily_pnl={daily_pnl_usdt:+.2f}."
         )
         return StrategyReflectionSnapshot(
             slot=slot,
@@ -1127,7 +1154,28 @@ class StrategyReflectionAgent:
             biases=biases[:4],
             risk_adjustments=risk_adjustments[:4],
             focus_symbols=focus_symbols,
+            controls=self._normalize_controls(controls, {}),
         )
+
+    def _normalize_controls(self, controls: dict | None, fallback: dict | None) -> dict[str, object]:
+        normalized: dict[str, object] = dict(fallback or {})
+        raw = controls or {}
+        mode = str(raw.get("fallback_entry_mode", normalized.get("fallback_entry_mode", "normal")) or "normal").strip().lower()
+        if mode not in {"normal", "base_only"}:
+            mode = "normal"
+        normalized["fallback_entry_mode"] = mode
+        try:
+            cooldown_scale = float(raw.get("cooldown_scale", normalized.get("cooldown_scale", 1.0)) or 1.0)
+        except (TypeError, ValueError):
+            cooldown_scale = 1.0
+        normalized["cooldown_scale"] = max(0.25, min(cooldown_scale, 1.0))
+        for key in ("benchmark_watch_candidate", "benchmark_watch_symbol"):
+            value = str(raw.get(key, normalized.get(key, "")) or "").strip()
+            if value:
+                normalized[key] = value
+            else:
+                normalized.pop(key, None)
+        return normalized
 
 
 class SelectorAgent:

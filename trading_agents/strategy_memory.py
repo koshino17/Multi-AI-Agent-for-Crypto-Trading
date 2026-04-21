@@ -23,6 +23,7 @@ def load_strategy_memory(path: Path) -> dict[str, Any]:
             "biases": [],
             "risk_adjustments": [],
             "focus_symbols": [],
+            "controls": {},
         }
     try:
         payload = json.loads(path.read_text())
@@ -34,6 +35,7 @@ def load_strategy_memory(path: Path) -> dict[str, Any]:
             "biases": [],
             "risk_adjustments": [],
             "focus_symbols": [],
+            "controls": {},
         }
     if not isinstance(payload, dict):
         return {
@@ -43,6 +45,7 @@ def load_strategy_memory(path: Path) -> dict[str, Any]:
             "biases": [],
             "risk_adjustments": [],
             "focus_symbols": [],
+            "controls": {},
         }
     payload.setdefault("slot", "")
     payload.setdefault("updated_at", "")
@@ -50,6 +53,7 @@ def load_strategy_memory(path: Path) -> dict[str, Any]:
     payload.setdefault("biases", [])
     payload.setdefault("risk_adjustments", [])
     payload.setdefault("focus_symbols", [])
+    payload.setdefault("controls", {})
     return payload
 
 
