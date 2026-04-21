@@ -273,6 +273,157 @@ def _build_symbol_postmortem(
     }
 
 
+def _accepted_trade_timestamp(item: dict[str, Any]) -> str:
+    result = item.get("result") or {}
+    return str(result.get("timestamp") or item.get("timestamp") or "")
+
+
+def _build_trade_review(records: list[dict[str, Any]]) -> dict[str, Any]:
+    accepted_records = [item for item in records if _result_status(item) == "accepted"]
+    if not accepted_records:
+        return {
+            "episodes": [],
+            "long_episodes": 0,
+            "short_episodes": 0,
+            "closed_winners": 0,
+            "closed_losers": 0,
+            "open_episodes": 0,
+        }
+
+    episodes: list[dict[str, Any]] = []
+    active: dict[str, dict[str, Any]] = {}
+
+    def close_episode(symbol: str, close_record: dict[str, Any]) -> None:
+        episode = active.pop(symbol, None)
+        if not episode:
+            return
+        order = _order_payload(close_record)
+        close_price = _safe_float(order.get("price")) or _safe_float(close_record.get("last_price"))
+        close_time = _accepted_trade_timestamp(close_record)
+        direction = episode["direction"]
+        avg_entry = _safe_float(episode.get("avg_entry_price"))
+        edge_pct = 0.0
+        if avg_entry > 0 and close_price > 0:
+            if direction == "long":
+                edge_pct = ((close_price - avg_entry) / avg_entry) * 100.0
+            else:
+                edge_pct = ((avg_entry - close_price) / avg_entry) * 100.0
+        episode.update(
+            {
+                "closed_at": close_time,
+                "close_price": round(close_price, 6),
+                "estimated_edge_pct": round(edge_pct, 4),
+                "status": "win" if edge_pct > 0 else "loss" if edge_pct < 0 else "flat",
+                "close_reason": str(close_record.get("idea", {}).get("rationale", "")).strip(),
+                "close_source": _decision_source(close_record),
+            }
+        )
+        episodes.append(episode)
+
+    for item in accepted_records:
+        symbol = str(item.get("selected_symbol", "")).strip()
+        if not symbol:
+            continue
+        order = _order_payload(item)
+        side = str(order.get("side", "")).lower()
+        reduce_only = bool(order.get("reduce_only"))
+        quantity = _safe_float(order.get("quantity")) or _safe_float(item.get("result", {}).get("submitted_qty"))
+        price = _safe_float(order.get("price")) or _safe_float(item.get("last_price"))
+        timestamp = _accepted_trade_timestamp(item)
+        source = _decision_source(item)
+
+        if reduce_only:
+            close_episode(symbol, item)
+            continue
+
+        direction = "long" if side == "buy" else "short"
+        existing = active.get(symbol)
+        if existing and existing.get("direction") != direction:
+            # Direction flipped without a clean reduce-only close; end the old episode at the new entry price.
+            synthetic_close = {
+                **item,
+                "idea": {
+                    "rationale": "position direction flipped without explicit reduce-only close",
+                },
+                "order": {
+                    **order,
+                    "price": price,
+                    "reduce_only": True,
+                },
+            }
+            close_episode(symbol, synthetic_close)
+            existing = None
+
+        if not existing:
+            active[symbol] = {
+                "symbol": symbol,
+                "direction": direction,
+                "opened_at": timestamp,
+                "entries": 1,
+                "entry_quantity": quantity,
+                "avg_entry_price": price,
+                "entry_source": source,
+                "latest_entry_reason": str(item.get("idea", {}).get("rationale", "")).strip(),
+            }
+            continue
+
+        total_qty = max(_safe_float(existing.get("entry_quantity")), 0.0) + max(quantity, 0.0)
+        prev_qty = max(_safe_float(existing.get("entry_quantity")), 0.0)
+        prev_avg = _safe_float(existing.get("avg_entry_price"))
+        weighted_avg = ((prev_avg * prev_qty) + (price * max(quantity, 0.0))) / total_qty if total_qty > 0 else prev_avg
+        existing.update(
+            {
+                "entries": int(existing.get("entries", 1)) + 1,
+                "entry_quantity": total_qty,
+                "avg_entry_price": weighted_avg,
+                "entry_source": existing.get("entry_source") or source,
+                "latest_entry_reason": str(item.get("idea", {}).get("rationale", "")).strip(),
+            }
+        )
+
+    latest_by_symbol: dict[str, dict[str, Any]] = {}
+    for item in reversed(records):
+        symbol = str(item.get("selected_symbol", "")).strip()
+        if symbol and symbol not in latest_by_symbol:
+            latest_by_symbol[symbol] = item
+    for symbol, episode in list(active.items()):
+        latest_item = latest_by_symbol.get(symbol) or {}
+        last_price = _safe_float(latest_item.get("last_price")) or _safe_float((latest_item.get("account") or {}).get("mark_price"))
+        avg_entry = _safe_float(episode.get("avg_entry_price"))
+        edge_pct = 0.0
+        if avg_entry > 0 and last_price > 0:
+            if episode["direction"] == "long":
+                edge_pct = ((last_price - avg_entry) / avg_entry) * 100.0
+            else:
+                edge_pct = ((avg_entry - last_price) / avg_entry) * 100.0
+        episode.update(
+            {
+                "closed_at": "",
+                "close_price": round(last_price, 6) if last_price > 0 else 0.0,
+                "estimated_edge_pct": round(edge_pct, 4),
+                "status": "open",
+                "close_reason": "still open at report cutoff",
+                "close_source": "",
+            }
+        )
+        episodes.append(episode)
+
+    episodes.sort(key=lambda item: str(item.get("opened_at", "")))
+    long_episodes = sum(1 for item in episodes if item.get("direction") == "long")
+    short_episodes = sum(1 for item in episodes if item.get("direction") == "short")
+    closed_winners = sum(1 for item in episodes if item.get("status") == "win")
+    closed_losers = sum(1 for item in episodes if item.get("status") == "loss")
+    open_episodes = sum(1 for item in episodes if item.get("status") == "open")
+    return {
+        "episodes": episodes,
+        "long_episodes": long_episodes,
+        "short_episodes": short_episodes,
+        "closed_winners": closed_winners,
+        "closed_losers": closed_losers,
+        "open_episodes": open_episodes,
+    }
+
+
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     lines = [json.dumps(row, ensure_ascii=False) for row in rows]
     path.write_text("\n".join(lines) + ("\n" if lines else ""))
@@ -1344,6 +1495,7 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
         mode_scoped_path(storage.equity_curve_svg, settings.trading_mode),
     )
     summary["external_benchmarks"] = load_external_benchmark_summary(storage.external_benchmark_state)
+    summary["trade_review"] = _build_trade_review(records)
     focus_symbol = settings.observation_pool[0] if len(settings.observation_pool) == 1 else ""
     summary["symbol_postmortem"] = _build_symbol_postmortem(
         records,
@@ -1381,6 +1533,7 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
     llm_wake_rate_pct = float(summary.get("llm_wake_rate_pct", 0.0))
     decision_source_counts = summary.get("decision_source_counts", {})
     accepted_source_counts = summary.get("accepted_source_counts", {})
+    trade_review = summary.get("trade_review", {})
     top_traded_symbol = next(iter(executed_symbol_counts.items()), ("n/a", 0))
     long_proposals = int(summary.get("long_proposals", 0))
     short_proposals = int(summary.get("short_proposals", 0))
@@ -1575,6 +1728,28 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
                     f"profit_factor={float(payload.get('profit_factor', 0.0)):.2f} | "
                     f"trades={int(payload.get('trade_count', 0))})"
                 )
+
+    if trade_review.get("episodes"):
+        lines.extend(["", "## Trade Review", ""])
+        lines.append(
+            f"- Position Episodes: long={int(trade_review.get('long_episodes', 0))} | "
+            f"short={int(trade_review.get('short_episodes', 0))} | "
+            f"wins={int(trade_review.get('closed_winners', 0))} | "
+            f"losses={int(trade_review.get('closed_losers', 0))} | "
+            f"open={int(trade_review.get('open_episodes', 0))}"
+        )
+        for item in trade_review.get("episodes", [])[:8]:
+            lines.append(
+                f"- {item.get('symbol', 'n/a')} {item.get('direction', 'n/a')} "
+                f"opened {item.get('opened_at', 'n/a')} | entries={int(item.get('entries', 0))} | "
+                f"avg_entry={float(item.get('avg_entry_price', 0.0)):.4f} | "
+                f"close={float(item.get('close_price', 0.0)):.4f} | "
+                f"edge={float(item.get('estimated_edge_pct', 0.0)):+.2f}% | "
+                f"status={item.get('status', 'n/a')} | "
+                f"entry_source={item.get('entry_source', 'unknown')}"
+            )
+            if item.get("close_reason"):
+                lines.append(f"  close_reason: {item.get('close_reason')}")
 
     if symbol_postmortem:
         lines.extend(["", "## Symbol Postmortem", ""])
