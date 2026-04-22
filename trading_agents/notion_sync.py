@@ -698,6 +698,7 @@ def _build_daily_review_blocks(
     top_alpha = (external_benchmarks.get("top_alpha_arena_candidates") or [{}])[0]
     symbol_postmortem = daily_summary.get("symbol_postmortem") or {}
     trade_review = daily_summary.get("trade_review") or {}
+    loss_attribution = daily_summary.get("loss_attribution") or {}
     blocks: list[dict[str, Any]] = [
         _heading_1(title),
         _paragraph(f"Published at: {datetime.now(LOCAL_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')}"),
@@ -822,6 +823,67 @@ def _build_daily_review_blocks(
             close_reason = str(episode.get("close_reason", "")).strip()
             if close_reason:
                 blocks.append(_bullet(f"Close reason: {close_reason}"))
+    if loss_attribution:
+        blocks.extend(
+            [
+                _heading_2("Loss Attribution"),
+                _bullet(f"Primary Driver: {loss_attribution.get('primary_driver', 'n/a')}"),
+                _bullet(
+                    f"Realized After Fees: {float(loss_attribution.get('realized_after_fees_usdt', 0.0)):+.2f} USDT"
+                ),
+            ]
+        )
+        accepted = loss_attribution.get("accepted_source_counts") or {}
+        if accepted:
+            blocks.append(
+                _bullet("Accepted by Source: " + " | ".join(f"{k}={int(v)}" for k, v in accepted.items()))
+            )
+        losing_sources = loss_attribution.get("losing_episode_source_counts") or {}
+        if losing_sources:
+            blocks.append(
+                _bullet(
+                    "Losing Episodes by Source: "
+                    + " | ".join(f"{k}={int(v)}" for k, v in losing_sources.items())
+                )
+            )
+        losing_dirs = loss_attribution.get("losing_episode_direction_counts") or {}
+        if losing_dirs:
+            blocks.append(
+                _bullet(
+                    "Losing Episodes by Direction: "
+                    + " | ".join(f"{k}={int(v)}" for k, v in losing_dirs.items())
+                )
+            )
+        avg_loss_source = loss_attribution.get("avg_loss_edge_by_source_pct") or {}
+        if avg_loss_source:
+            blocks.append(
+                _bullet(
+                    "Avg Losing Edge by Source: "
+                    + " | ".join(f"{k}={float(v):+.2f}%" for k, v in avg_loss_source.items())
+                )
+            )
+        benchmark_payload = loss_attribution.get("focus_symbol_benchmark") or {}
+        if benchmark_payload.get("candidate_id"):
+            blocks.append(
+                _bullet(
+                    f"Benchmark Check ({loss_attribution.get('focus_symbol', 'n/a')}): "
+                    f"{benchmark_payload.get('candidate_id')} "
+                    f"(expectancy={float(benchmark_payload.get('expectancy_pct', 0.0)):+.2f}% | "
+                    f"profit_factor={float(benchmark_payload.get('profit_factor', 0.0)):.2f} | "
+                    f"trades={int(benchmark_payload.get('trade_count', 0))})"
+                )
+            )
+        worst_episode = loss_attribution.get("worst_episode") or {}
+        if worst_episode:
+            blocks.append(
+                _bullet(
+                    f"Worst Episode: {worst_episode.get('symbol', 'n/a')} {worst_episode.get('direction', 'n/a')} | "
+                    f"source={worst_episode.get('entry_source', 'unknown')} | "
+                    f"edge={float(worst_episode.get('estimated_edge_pct', 0.0)):+.2f}%"
+                )
+            )
+        for item in loss_attribution.get("observations", [])[:5]:
+            blocks.append(_bullet(f"Observation: {item}"))
     holdings = financial.get("holdings", [])
     if holdings:
         for item in holdings:

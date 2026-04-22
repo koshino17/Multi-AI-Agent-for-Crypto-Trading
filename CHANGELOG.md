@@ -16,6 +16,41 @@
 
 ---
 
+## v0.11.20 - Daily loss attribution for faster postmortems
+
+### Why
+
+- 使用者希望 daily report 能直接帶出「今天到底是哪一層在虧」，方便與其他 AI 一起討論，不要每次都得自己盯盤後手動整理
+- 現有的 `Trade Review`、`Symbol Postmortem`、`Decision Attribution` 各自都有價值，但仍缺少一個把：
+  - `base / fallback / policy`
+  - `long / short`
+  - `fees`
+  - `benchmark gap`
+  直接收束成單一複盤區塊的視角
+- 對最近 `500 USDT -> 478 USDT` 的這段回撤來說，這種 loss attribution 應該成為日報標配，而不是額外人工分析
+
+### What Changed
+
+- `reporting.py`
+  - 新增 `_build_loss_attribution(...)`
+  - 會從當日 accepted trades、trade review episodes、financial snapshot、external benchmarks 自動整理：
+    - `Primary Driver`
+    - `Realized After Fees`
+    - `Accepted by Source`
+    - `Losing Episodes by Source`
+    - `Losing Episodes by Direction`
+    - `Avg Losing Edge by Source`
+    - `Benchmark Check`
+    - `Worst Episode`
+    - `Observations`
+  - `build_daily_summary(...)` 新增 `## Loss Attribution` 區塊
+- `notion_sync.py`
+  - `Daily Review` 現在也會同步顯示精簡版 `Loss Attribution`
+- 日報現在更適合直接拿去和其他 AI 討論：
+  - 可以快速看出今天是 base strategy、fallback、direction bias，還是 fees/benchmark mismatch 在拖累
+
+---
+
 ## v0.11.19 - Reflection controls that actually feed back into live behavior
 
 ### Why

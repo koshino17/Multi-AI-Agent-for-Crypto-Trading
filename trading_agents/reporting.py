@@ -424,6 +424,140 @@ def _build_trade_review(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _build_loss_attribution(
+    records: list[dict[str, Any]],
+    *,
+    trade_review: dict[str, Any] | None = None,
+    financial_snapshot: dict[str, Any] | None = None,
+    external_benchmarks: dict[str, Any] | None = None,
+    focus_symbol: str = "",
+) -> dict[str, Any]:
+    trade_review = trade_review or {}
+    financial_snapshot = financial_snapshot or {}
+    external_benchmarks = external_benchmarks or {}
+    episodes = [item for item in (trade_review.get("episodes") or []) if isinstance(item, dict)]
+
+    closed_episodes = [item for item in episodes if str(item.get("status", "")).lower() in {"win", "loss", "flat"}]
+    open_episodes = [item for item in episodes if str(item.get("status", "")).lower() == "open"]
+    losing_episodes = [item for item in closed_episodes if str(item.get("status", "")).lower() == "loss"]
+    winning_episodes = [item for item in closed_episodes if str(item.get("status", "")).lower() == "win"]
+
+    losing_by_source: Counter[str] = Counter()
+    winning_by_source: Counter[str] = Counter()
+    open_by_source: Counter[str] = Counter()
+    losing_by_direction: Counter[str] = Counter()
+    winning_by_direction: Counter[str] = Counter()
+    edge_by_source: dict[str, list[float]] = {}
+    edge_by_direction: dict[str, list[float]] = {"long": [], "short": []}
+
+    for item in losing_episodes:
+        source = str(item.get("entry_source", "unknown")).strip().lower() or "unknown"
+        direction = str(item.get("direction", "unknown")).strip().lower() or "unknown"
+        edge = _safe_float(item.get("estimated_edge_pct"))
+        losing_by_source[source] += 1
+        losing_by_direction[direction] += 1
+        edge_by_source.setdefault(source, []).append(edge)
+        edge_by_direction.setdefault(direction, []).append(edge)
+
+    for item in winning_episodes:
+        source = str(item.get("entry_source", "unknown")).strip().lower() or "unknown"
+        direction = str(item.get("direction", "unknown")).strip().lower() or "unknown"
+        winning_by_source[source] += 1
+        winning_by_direction[direction] += 1
+
+    for item in open_episodes:
+        source = str(item.get("entry_source", "unknown")).strip().lower() or "unknown"
+        open_by_source[source] += 1
+
+    worst_episode = None
+    if episodes:
+        worst_episode = min(episodes, key=lambda item: _safe_float(item.get("estimated_edge_pct"), 0.0))
+
+    accepted_source_counts: Counter[str] = Counter()
+    for item in records:
+        if _result_status(item) == "accepted":
+            accepted_source_counts[_decision_source(item)] += 1
+
+    focus_symbol = focus_symbol.strip()
+    if not focus_symbol:
+        symbol_counts = Counter(
+            str(item.get("selected_symbol", "")).strip()
+            for item in records
+            if str(item.get("selected_symbol", "")).strip()
+        )
+        focus_symbol = symbol_counts.most_common(1)[0][0] if symbol_counts else ""
+
+    symbol_benchmark = {}
+    if focus_symbol:
+        top_by_symbol = external_benchmarks.get("top_by_symbol") or {}
+        if isinstance(top_by_symbol, dict):
+            symbol_benchmark = top_by_symbol.get(focus_symbol) or {}
+            if not isinstance(symbol_benchmark, dict):
+                symbol_benchmark = {}
+
+    realized_pnl = _safe_float(financial_snapshot.get("realized_pnl_usdt"))
+    fees = _safe_float(financial_snapshot.get("daily_fees_usdt"))
+    realized_after_fees = realized_pnl - fees
+
+    primary_driver = ""
+    if accepted_source_counts.get("fallback", 0) > max(accepted_source_counts.get("base_strategy", 0), 1):
+        primary_driver = "fallback dominated accepted trades"
+    elif losing_by_direction.get("long", 0) > losing_by_direction.get("short", 0):
+        primary_driver = "long episodes drove most closed losses"
+    elif losing_by_direction.get("short", 0) > losing_by_direction.get("long", 0):
+        primary_driver = "short episodes drove most closed losses"
+    elif fees > max(abs(realized_pnl), 0.01):
+        primary_driver = "fees outweighed realized trading edge"
+    else:
+        primary_driver = "mixed execution drag across entry sources"
+
+    observations: list[str] = []
+    if accepted_source_counts.get("fallback", 0) > max(accepted_source_counts.get("base_strategy", 0), 1):
+        observations.append("accepted trades were still fallback-heavy")
+    if losing_by_direction.get("long", 0) > losing_by_direction.get("short", 0):
+        observations.append("closed long episodes lost more often than shorts")
+    if losing_by_direction.get("short", 0) > losing_by_direction.get("long", 0):
+        observations.append("closed short episodes lost more often than longs")
+    if fees > max(abs(realized_pnl), 0.01):
+        observations.append("fees remained a meaningful drag versus realized PnL")
+    if symbol_benchmark.get("candidate_id") and symbol_benchmark.get("candidate_id") != "donchian_adx_perp_v1":
+        observations.append(
+            f"{focus_symbol or 'focus symbol'} benchmark leader remained {symbol_benchmark.get('candidate_id')}"
+        )
+    if worst_episode:
+        observations.append(
+            f"worst episode was {worst_episode.get('symbol', 'n/a')} {worst_episode.get('direction', 'n/a')} "
+            f"from {worst_episode.get('entry_source', 'unknown')} at {float(worst_episode.get('estimated_edge_pct', 0.0)):+.2f}%"
+        )
+
+    avg_loss_by_source = {
+        source: (sum(edges) / len(edges) if edges else 0.0)
+        for source, edges in edge_by_source.items()
+    }
+    avg_loss_by_direction = {
+        direction: (sum(edges) / len(edges) if edges else 0.0)
+        for direction, edges in edge_by_direction.items()
+        if edges
+    }
+
+    return {
+        "primary_driver": primary_driver,
+        "accepted_source_counts": dict(accepted_source_counts.most_common()),
+        "losing_episode_source_counts": dict(losing_by_source.most_common()),
+        "winning_episode_source_counts": dict(winning_by_source.most_common()),
+        "open_episode_source_counts": dict(open_by_source.most_common()),
+        "losing_episode_direction_counts": dict(losing_by_direction.most_common()),
+        "winning_episode_direction_counts": dict(winning_by_direction.most_common()),
+        "avg_loss_edge_by_source_pct": avg_loss_by_source,
+        "avg_loss_edge_by_direction_pct": avg_loss_by_direction,
+        "realized_after_fees_usdt": round(realized_after_fees, 4),
+        "focus_symbol": focus_symbol,
+        "focus_symbol_benchmark": symbol_benchmark,
+        "worst_episode": worst_episode or {},
+        "observations": observations[:5],
+    }
+
+
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     lines = [json.dumps(row, ensure_ascii=False) for row in rows]
     path.write_text("\n".join(lines) + ("\n" if lines else ""))
@@ -1502,6 +1636,13 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
         focus_symbol=focus_symbol,
         external_benchmarks=summary["external_benchmarks"],
     )
+    summary["loss_attribution"] = _build_loss_attribution(
+        records,
+        trade_review=summary["trade_review"],
+        financial_snapshot=summary["financial_snapshot"],
+        external_benchmarks=summary["external_benchmarks"],
+        focus_symbol=focus_symbol,
+    )
     return summary
 
 
@@ -1543,6 +1684,7 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
     top_benchmark = (external_benchmarks.get("top_candidates") or [{}])[0]
     top_alpha_benchmark = (external_benchmarks.get("top_alpha_arena_candidates") or [{}])[0]
     symbol_postmortem = summary.get("symbol_postmortem") or {}
+    loss_attribution = summary.get("loss_attribution") or {}
 
     lines = [f"# Daily Summary: {date_label}", ""]
     if summary_mode:
@@ -1752,6 +1894,55 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
             )
             if item.get("close_reason"):
                 lines.append(f"  close_reason: {item.get('close_reason')}")
+
+    if loss_attribution:
+        lines.extend(["", "## Loss Attribution", ""])
+        lines.append(f"- Primary Driver: {loss_attribution.get('primary_driver', 'n/a')}")
+        lines.append(
+            f"- Realized After Fees: {float(loss_attribution.get('realized_after_fees_usdt', 0.0)):+.2f} USDT"
+        )
+        accepted = loss_attribution.get("accepted_source_counts") or {}
+        if accepted:
+            lines.append(
+                "- Accepted by Source: "
+                + " | ".join(f"{k}={int(v)}" for k, v in accepted.items())
+            )
+        losing_sources = loss_attribution.get("losing_episode_source_counts") or {}
+        if losing_sources:
+            lines.append(
+                "- Losing Episodes by Source: "
+                + " | ".join(f"{k}={int(v)}" for k, v in losing_sources.items())
+            )
+        losing_dirs = loss_attribution.get("losing_episode_direction_counts") or {}
+        if losing_dirs:
+            lines.append(
+                "- Losing Episodes by Direction: "
+                + " | ".join(f"{k}={int(v)}" for k, v in losing_dirs.items())
+            )
+        avg_loss_source = loss_attribution.get("avg_loss_edge_by_source_pct") or {}
+        if avg_loss_source:
+            lines.append(
+                "- Avg Losing Edge by Source: "
+                + " | ".join(f"{k}={float(v):+.2f}%" for k, v in avg_loss_source.items())
+            )
+        benchmark_payload = loss_attribution.get("focus_symbol_benchmark") or {}
+        if benchmark_payload.get("candidate_id"):
+            lines.append(
+                f"- Benchmark Check ({loss_attribution.get('focus_symbol', 'n/a')}): "
+                f"{benchmark_payload.get('candidate_id')} "
+                f"(expectancy={float(benchmark_payload.get('expectancy_pct', 0.0)):+.2f}% | "
+                f"profit_factor={float(benchmark_payload.get('profit_factor', 0.0)):.2f} | "
+                f"trades={int(benchmark_payload.get('trade_count', 0))})"
+            )
+        worst_episode = loss_attribution.get("worst_episode") or {}
+        if worst_episode:
+            lines.append(
+                f"- Worst Episode: {worst_episode.get('symbol', 'n/a')} {worst_episode.get('direction', 'n/a')} "
+                f"source={worst_episode.get('entry_source', 'unknown')} "
+                f"edge={float(worst_episode.get('estimated_edge_pct', 0.0)):+.2f}%"
+            )
+        for item in loss_attribution.get("observations", [])[:5]:
+            lines.append(f"- Observation: {item}")
 
     if symbol_postmortem:
         lines.extend(["", "## Symbol Postmortem", ""])
