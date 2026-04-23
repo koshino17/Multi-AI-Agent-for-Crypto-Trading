@@ -98,6 +98,10 @@ class NotionSyncClient:
                 f"({float(financial.get('daily_pnl_pct', 0.0)):+.2f}%)"
             ),
             _bullet(
+                f"Daily PnL Basis: {float(financial.get('day_start_portfolio_value_usdt', 0.0)):.2f} USDT "
+                f"at {str(financial.get('day_start_timestamp_local', 'n/a')) or 'n/a'}"
+            ),
+            _bullet(
                 "Realized PnL Split: "
                 f"long={float(financial.get('realized_long_pnl_usdt', 0.0)):+.2f} USDT | "
                 f"short={float(financial.get('realized_short_pnl_usdt', 0.0)):+.2f} USDT"
@@ -705,11 +709,15 @@ def _build_daily_review_blocks(
         _heading_2("Financial Snapshot"),
         _bullet(
             f"Total Portfolio Value: {float(financial.get('total_portfolio_value_usdt', 0.0)):.2f} USDT "
-            f"(Initial: {float(financial.get('initial_capital_usdt', 0.0)):.2f} USDT)"
+            f"(Configured Initial: {float(financial.get('initial_capital_usdt', 0.0)):.2f} USDT)"
         ),
         _bullet(
             f"Daily PnL: {float(financial.get('daily_pnl_usdt', 0.0)):+.2f} USDT "
             f"({float(financial.get('daily_pnl_pct', 0.0)):+.2f}%)"
+        ),
+        _bullet(
+            f"Daily PnL Basis: {float(financial.get('day_start_portfolio_value_usdt', 0.0)):.2f} USDT "
+            f"at {str(financial.get('day_start_timestamp_local', 'n/a')) or 'n/a'}"
         ),
         _bullet(f"Realized PnL: {float(financial.get('realized_pnl_usdt', 0.0)):+.2f} USDT"),
         _bullet(f"Unrealized PnL: {float(financial.get('unrealized_pnl_usdt', 0.0)):+.2f} USDT"),

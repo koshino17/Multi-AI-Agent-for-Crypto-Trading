@@ -989,9 +989,15 @@ def _load_daily_records(trade_logs_dir: Path, date_label: str) -> list[dict[str,
     records: list[dict[str, Any]] = []
     for path in today_files:
         try:
-            records.append(json.loads(path.read_text()))
+            payload = json.loads(path.read_text())
         except Exception:
             continue
+        if isinstance(payload, dict):
+            timestamp = _path_timestamp(path)
+            if timestamp is not None:
+                payload["__record_timestamp_utc"] = timestamp.isoformat()
+                payload["__record_timestamp_local"] = timestamp.astimezone(LOCAL_TZ).isoformat()
+            records.append(payload)
     return records
 
 
@@ -1000,9 +1006,15 @@ def _load_all_records(trade_logs_dir: Path) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for path in files:
         try:
-            records.append(json.loads(path.read_text()))
+            payload = json.loads(path.read_text())
         except Exception:
             continue
+        if isinstance(payload, dict):
+            timestamp = _path_timestamp(path)
+            if timestamp is not None:
+                payload["__record_timestamp_utc"] = timestamp.isoformat()
+                payload["__record_timestamp_local"] = timestamp.astimezone(LOCAL_TZ).isoformat()
+            records.append(payload)
     return records
 
 
@@ -1181,6 +1193,7 @@ def _build_financial_snapshot(
 
     start_snapshot = _portfolio_from_record(records[0])
     latest_snapshot = _portfolio_from_record(records[-1])
+    start_timestamp_local = str(records[0].get("__record_timestamp_local", "")).strip()
     accepted_today = _accepted_trade_rows(records, taker_fee_pct)
     accepted_all = _accepted_trade_rows(all_records, taker_fee_pct)
     is_perp = any(item.get("market_type") == "perp" for item in latest_snapshot.get("positions", []))
@@ -1308,6 +1321,9 @@ def _build_financial_snapshot(
         cumulative_pnl = total_portfolio_value - initial_balance_usdt
         return {
             "initial_capital_usdt": initial_balance_usdt,
+            "day_start_portfolio_value_usdt": start_value,
+            "day_start_timestamp_local": start_timestamp_local,
+            "daily_pnl_basis": "vs first portfolio snapshot for this Taiwan date",
             "total_portfolio_value_usdt": total_portfolio_value,
             "cumulative_pnl_usdt": cumulative_pnl,
             "cumulative_pnl_pct": (cumulative_pnl / initial_balance_usdt * 100) if initial_balance_usdt > 0 else 0.0,
@@ -1409,6 +1425,9 @@ def _build_financial_snapshot(
 
     return {
         "initial_capital_usdt": initial_balance_usdt,
+        "day_start_portfolio_value_usdt": start_value,
+        "day_start_timestamp_local": start_timestamp_local,
+        "daily_pnl_basis": "vs first portfolio snapshot for this Taiwan date",
         "total_portfolio_value_usdt": total_portfolio_value,
         "cumulative_pnl_usdt": cumulative_pnl,
         "cumulative_pnl_pct": (cumulative_pnl / initial_balance_usdt * 100) if initial_balance_usdt > 0 else 0.0,
@@ -1696,11 +1715,16 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
             "",
             (
                 f"- Total Portfolio Value: {float(financial.get('total_portfolio_value_usdt', 0.0)):.2f} USDT "
-                f"(Initial: {float(financial.get('initial_capital_usdt', 0.0)):.2f} USDT)"
+                f"(Configured Initial: {float(financial.get('initial_capital_usdt', 0.0)):.2f} USDT)"
             ),
             (
                 f"- Daily PnL: {float(financial.get('daily_pnl_usdt', 0.0)):+.2f} USDT "
                 f"({float(financial.get('daily_pnl_pct', 0.0)):+.2f}%)"
+            ),
+            (
+                f"- Daily PnL Basis: {float(financial.get('day_start_portfolio_value_usdt', 0.0)):.2f} USDT "
+                f"at {str(financial.get('day_start_timestamp_local', 'n/a')) or 'n/a'} "
+                f"({str(financial.get('daily_pnl_basis', 'vs day-start portfolio value'))})"
             ),
             f"- Realized PnL: {float(financial.get('realized_pnl_usdt', 0.0)):+.2f} USDT",
             (

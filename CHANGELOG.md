@@ -982,3 +982,13 @@
 - GitHub `Releases` 用的 release notes 模板
 - Notion 版的同內容版本紀錄頁
 - 每次 release 前自動提醒更新 changelog 的流程
+# v0.11.22 - Clarify daily PnL basis and align capital baseline
+
+Why:
+- Daily reports showed `Daily PnL` without stating what it was being compared against, which made the number hard to interpret.
+- The configured initial capital displayed in reports was still `150 USDT` even after the demo account baseline had been raised to `500 USDT`.
+
+What Changed:
+- Added explicit `Daily PnL Basis` fields to the financial snapshot, using the first portfolio snapshot of the Taiwan trading date.
+- Daily reports and Notion pages now show both `Configured Initial` and `Daily PnL Basis`.
+- Updated active/runtime and example settings to use `INITIAL_BALANCE_USDT=500`.
