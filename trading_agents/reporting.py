@@ -339,11 +339,12 @@ def _build_trade_review(records: list[dict[str, Any]]) -> dict[str, Any]:
         direction = "long" if side == "buy" else "short"
         existing = active.get(symbol)
         if existing and existing.get("direction") != direction:
-            # Direction flipped without a clean reduce-only close; end the old episode at the new entry price.
+            # Episode reconstruction inferred a direction flip before a logged reduce-only close.
+            # This is reporting-level stitching, not necessarily an executor bug.
             synthetic_close = {
                 **item,
                 "idea": {
-                    "rationale": "position direction flipped without explicit reduce-only close",
+                    "rationale": "episode reconstruction inferred a direction flip before a logged reduce-only close",
                 },
                 "order": {
                     **order,

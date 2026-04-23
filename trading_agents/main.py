@@ -294,6 +294,72 @@ def _guard_range_fallback_override(
     return guarded, f"neutral-base guard: ADX {current_adx:.2f}, volume {volume_ratio:.2f}x, trade_delta {trade_delta_ratio:+.2f}"
 
 
+def _guard_fallback_open_exposure(
+    *,
+    idea: TradeIdea,
+    strategy_research,
+    llm_wake: dict,
+    position_side: str,
+    mode: str,
+    settings,
+) -> tuple[TradeIdea, str]:
+    if not bool(settings.fallback_entry_guard_enabled):
+        return idea, ""
+    action = str(getattr(idea, "action", "hold") or "hold").lower()
+    if action not in {"buy", "sell"}:
+        return idea, ""
+    if not _opens_new_exposure(action, position_side=position_side, mode=mode):
+        return idea, ""
+
+    current_signal = str(getattr(strategy_research, "current_signal", "hold") or "hold").lower()
+    if (action == "buy" and current_signal == "long") or (action == "sell" and current_signal == "short"):
+        return idea, ""
+
+    metrics = llm_wake.get("metrics") or {}
+    score = float(getattr(idea, "score", 0.0) or 0.0)
+    momentum_pct = abs(float(metrics.get("momentum_pct", 0.0) or 0.0))
+    volume_ratio = max(
+        float(getattr(strategy_research, "current_volume_ratio", 0.0) or 0.0),
+        float(metrics.get("volume_ratio", 0.0) or 0.0),
+    )
+    trade_delta_ratio = float(metrics.get("trade_delta_ratio", 0.0) or 0.0)
+    required_score = float(settings.fallback_entry_min_score or 0.0)
+    required_momentum = float(settings.fallback_entry_min_momentum_pct or 0.0)
+    required_volume = float(settings.fallback_entry_min_volume_ratio or 0.0)
+    required_trade_delta = float(settings.fallback_entry_min_trade_delta_ratio or 0.0)
+
+    directional_delta_ok = (
+        (action == "buy" and trade_delta_ratio >= required_trade_delta)
+        or (action == "sell" and trade_delta_ratio <= -required_trade_delta)
+    )
+    strong_enough = (
+        score >= required_score
+        and momentum_pct >= required_momentum
+        and volume_ratio >= required_volume
+        and directional_delta_ok
+    )
+    if strong_enough:
+        return idea, ""
+
+    rationale = (
+        f"{idea.rationale}; converted to hold because fallback open-entry thresholds were not met "
+        f"(score {score:.2f}/{required_score:.2f}, momentum {momentum_pct:.2f}%/{required_momentum:.2f}%, "
+        f"volume {volume_ratio:.2f}x/{required_volume:.2f}x, trade_delta {trade_delta_ratio:+.2f})"
+    )
+    guarded = TradeIdea(
+        action="hold",
+        score=min(score if score > 0 else 0.40, 0.45),
+        rationale=rationale,
+        invalidation="wait for base-strategy alignment or a stronger continuation-quality fallback setup",
+        holding_horizon="none",
+    )
+    return guarded, (
+        "fallback-entry guard: "
+        f"base={current_signal}, score={score:.2f}, momentum={momentum_pct:.2f}%, "
+        f"volume={volume_ratio:.2f}x, trade_delta={trade_delta_ratio:+.2f}"
+    )
+
+
 def _load_position_policy_state(path: Path) -> dict[str, dict]:
     raw = _read_json_file(path)
     return raw if isinstance(raw, dict) else {}
@@ -1133,7 +1199,7 @@ def execute_cycle(
             mode=mode,
             strategy_memory=strategy_memory,
         )
-        idea, fallback_guard_reason = _guard_range_fallback_override(
+        idea, fallback_guard_reason = _guard_fallback_open_exposure(
             idea=idea,
             strategy_research=strategy_research,
             llm_wake=llm_wake,
@@ -1141,6 +1207,18 @@ def execute_cycle(
             mode=mode,
             settings=settings,
         )
+        if not fallback_guard_reason:
+            idea, fallback_guard_reason = _guard_range_fallback_override(
+                idea=idea,
+                strategy_research=strategy_research,
+                llm_wake=llm_wake,
+                position_side=position_side,
+                mode=mode,
+                settings=settings,
+            )
+        else:
+            # Keep a single guard reason in the report for attribution/reporting simplicity.
+            fallback_guard_reason = str(fallback_guard_reason)
         decision_source = _derive_decision_source(
             idea=idea,
             strategy_research=strategy_research,
@@ -1215,6 +1293,7 @@ def execute_cycle(
                 liq_price=float(getattr(account, "liq_price", 0.0)),
                 position_mm_usdt=float(getattr(account, "position_mm_usdt", 0.0)),
                 perp_max_leverage=settings.perp_max_leverage,
+                perp_min_available_balance_ratio_pct=settings.perp_min_available_balance_ratio_pct,
                 perp_min_liquidation_buffer_pct=settings.perp_min_liquidation_buffer_pct,
             ),
         )
@@ -1414,6 +1493,7 @@ def execute_cycle(
                 liq_price=float(selected["account"].get("liq_price", 0.0)),
                 position_mm_usdt=float(selected["account"].get("position_mm_usdt", 0.0)),
                 perp_max_leverage=settings.perp_max_leverage,
+                perp_min_available_balance_ratio_pct=settings.perp_min_available_balance_ratio_pct,
                 perp_min_liquidation_buffer_pct=settings.perp_min_liquidation_buffer_pct,
             ),
         )

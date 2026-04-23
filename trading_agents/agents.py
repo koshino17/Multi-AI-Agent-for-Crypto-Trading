@@ -608,6 +608,7 @@ class RiskSupervisorAgent:
         liq_price: float = 0.0,
         position_mm_usdt: float = 0.0,
         perp_max_leverage: float = 0.0,
+        perp_min_available_balance_ratio_pct: float = 0.0,
         perp_min_liquidation_buffer_pct: float = 0.0,
     ) -> Approval:
         perp_mode = "perp" in trading_mode
@@ -726,8 +727,10 @@ class RiskSupervisorAgent:
             )
         if perp_mode and current_equity > 0:
             projected_exposure = current_exposure
+            projected_available_balance = max(available_usdt, 0.0)
             if opening_long or opening_short:
                 projected_exposure += max_notional
+                projected_available_balance = max(projected_available_balance - max_notional, 0.0)
             elif closing_position:
                 projected_exposure = max(current_exposure - max_notional, 0.0)
             effective_leverage = projected_exposure / current_equity if current_equity > 0 else 0.0
@@ -735,6 +738,21 @@ class RiskSupervisorAgent:
                 return Approval(
                     False,
                     f"projected leverage too high: {effective_leverage:.2f}x > {perp_max_leverage:.2f}x",
+                    0.0,
+                    warnings,
+                )
+            available_balance_ratio_pct = (projected_available_balance / current_equity * 100.0) if current_equity > 0 else 0.0
+            if (
+                (opening_long or opening_short)
+                and perp_min_available_balance_ratio_pct > 0
+                and available_balance_ratio_pct < perp_min_available_balance_ratio_pct
+            ):
+                return Approval(
+                    False,
+                    (
+                        "projected available balance too low: "
+                        f"{available_balance_ratio_pct:.1f}% < {perp_min_available_balance_ratio_pct:.1f}% of equity"
+                    ),
                     0.0,
                     warnings,
                 )

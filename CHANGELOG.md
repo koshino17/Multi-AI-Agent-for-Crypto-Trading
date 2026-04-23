@@ -16,6 +16,34 @@
 
 ---
 
+## v0.11.21 - Tighter fallback entries and perp margin reserve
+
+### Why
+
+- `4/23` 雖然是獲利日，但 accepted trades 仍然明顯由 `fallback` 主導，代表 live baseline 還是不夠乾淨
+- 同一天的 `Available Balance` 幾乎被吃到見底，表示系統雖未超過 2x 上限，仍可能把保證金打得太滿
+- `Trade Review` 中的 direction flip 文案容易被誤讀成 executor 漏送 `reduce-only`，這會干擾後續複盤與外部審閱
+
+### What Changed
+
+- `main.py`
+  - 新增 `fallback open-entry guard`
+  - 當 base strategy 沒有明確同方向訊號時，fallback 若要新開倉，現在必須同時滿足更高門檻：
+    - 最低 score
+    - 最低 momentum
+    - 最低 volume ratio
+    - 同方向 trade delta
+  - 不符合時，直接轉成 `hold`
+- `agents.py`
+  - `RiskSupervisorAgent` 新增 `perp_min_available_balance_ratio_pct`
+  - 開新倉時若預估可用保證金占總資產比例低於門檻，直接拒絕，避免把可用餘額吃到幾乎歸零
+- `reporting.py`
+  - `Trade Review` 的 flip 文案改成 reporting-level episode reconstruction，避免再被誤讀成 executor 缺少 `reduce-only`
+- `config.py` / `.env.example` / `README.md`
+  - 新增 fallback 開倉門檻與 perp 可用保證金留底設定
+
+---
+
 ## v0.11.20 - Daily loss attribution for faster postmortems
 
 ### Why
