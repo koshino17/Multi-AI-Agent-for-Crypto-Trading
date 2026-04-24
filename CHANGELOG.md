@@ -16,6 +16,39 @@
 
 ---
 
+## v0.11.22 - Drawdown-aware learning controls
+
+### Why
+
+- `TradePulse` 已經能寫出越來越完整的 postmortem，但 learning loop 仍然太短視：在連續多日低於 `500 USDT` 基準後，控制項仍可能很快恢復成 `fallback_entry_mode=normal`
+- benchmark watch 也可能漂去和目前 live 無關的 `BTC/USDT` 候選，讓系統看起來有在觀察外部對照組，實際上卻沒有對齊正在交易的 `SOL/USDT`
+- 使用者希望 `TradePulse` 不只是「會檢討」，而是能把最近幾天的失敗真正記住，避免 12 小時就洗白一次
+
+### What Changed
+
+- `config.py`
+  - 新增 multi-day learning 參數：
+    - `STRATEGY_LEARNING_LOOKBACK_DAYS`
+    - `STRATEGY_LEARNING_NEGATIVE_DAY_THRESHOLD`
+    - `STRATEGY_LEARNING_RESTORE_POSITIVE_DAYS`
+    - `STRATEGY_LEARNING_RESTORE_EQUITY_RECOVERY_RATIO_PCT`
+- `main.py`
+  - 新增 strategy reflection context builder
+  - 會在每次 12h reflection 時帶入：
+    - 最近多日 daily PnL
+    - current equity vs configured initial capital
+    - positive streak
+    - 目前 live symbols
+    - 目前 live symbol 的 benchmark leader
+    - 前一個 slot 的 controls
+- `agents.py`
+  - `StrategyReflectionAgent` 現在會把 multi-day drawdown 納入 learning controls
+  - 若仍處於連續虧損且 equity 未恢復到門檻，`fallback_entry_mode` 會維持 `base_only`
+  - 縮短過的 cooldown 也會在恢復條件未達成前被保留
+  - `benchmark_watch_candidate` / `benchmark_watch_symbol` 會優先對齊目前 live symbol，而不是漂去不相干的 `BTC/USDT`
+- `.env.example` / `README.md`
+  - 補上 multi-day learning controls 的設定與說明
+
 ## v0.11.21 - Tighter fallback entries and perp margin reserve
 
 ### Why

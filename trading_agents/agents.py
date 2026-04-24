@@ -1079,8 +1079,8 @@ class StrategyReflectionAgent:
     def __init__(self, llm_client: OllamaClient | None = None) -> None:
         self.llm_client = llm_client
 
-    def evaluate(self, slot: str, daily_summary: dict) -> StrategyReflectionSnapshot:
-        fallback = self._fallback(slot, daily_summary)
+    def evaluate(self, slot: str, daily_summary: dict, reflection_context: dict | None = None) -> StrategyReflectionSnapshot:
+        fallback = self._fallback(slot, daily_summary, reflection_context=reflection_context)
         if self.llm_client is None:
             return fallback
         try:
@@ -1091,7 +1091,8 @@ class StrategyReflectionAgent:
                     "Return JSON with keys summary, biases, risk_adjustments, focus_symbols, controls. "
                     "controls may include fallback_entry_mode (normal/base_only), cooldown_scale (0.25-1.0), "
                     "and benchmark_watch_candidate / benchmark_watch_symbol. "
-                    f"slot={slot}; daily_summary={json.dumps(daily_summary, ensure_ascii=False)}"
+                    f"slot={slot}; daily_summary={json.dumps(daily_summary, ensure_ascii=False)}; "
+                    f"reflection_context={json.dumps(reflection_context or {}, ensure_ascii=False)}"
                 )
             )
             biases = response.get("biases", fallback.biases)
@@ -1112,12 +1113,13 @@ class StrategyReflectionAgent:
                 biases=[str(item).strip() for item in biases if str(item).strip()][:4] or fallback.biases,
                 risk_adjustments=[str(item).strip() for item in adjustments if str(item).strip()][:4] or fallback.risk_adjustments,
                 focus_symbols=[str(item).strip() for item in focus_symbols if str(item).strip()][:4] or fallback.focus_symbols,
-                controls=self._normalize_controls(controls, fallback.controls),
+                controls=self._normalize_controls(controls, fallback.controls, reflection_context=reflection_context),
             )
         except Exception:
             return fallback
 
-    def _fallback(self, slot: str, daily_summary: dict) -> StrategyReflectionSnapshot:
+    def _fallback(self, slot: str, daily_summary: dict, reflection_context: dict | None = None) -> StrategyReflectionSnapshot:
+        reflection_context = reflection_context or {}
         blocked = daily_summary.get("blocked_reason_counts", {})
         rejected = daily_summary.get("rejection_reason_counts", {})
         selected = daily_summary.get("selected_symbol_counts", {})
@@ -1127,7 +1129,8 @@ class StrategyReflectionAgent:
         top_reject = next(iter(rejected.items()), ("none", 0))
         external_benchmarks = daily_summary.get("external_benchmarks", {})
         top_benchmark = (external_benchmarks.get("top_candidates") or [{}])[0]
-        focus_symbols = [key for key, _ in list(selected.items())[:3]]
+        live_symbols = [str(item).strip() for item in reflection_context.get("live_symbols", []) if str(item).strip()]
+        focus_symbols = live_symbols or [key for key, _ in list(selected.items())[:3]]
         biases: list[str] = []
         risk_adjustments: list[str] = []
         controls: dict[str, object] = {}
@@ -1136,6 +1139,19 @@ class StrategyReflectionAgent:
         base_accepted = int(accepted_sources.get("base_strategy", 0) or 0)
         cooldown_blocks = int(blocked.get("symbol cooldown active", 0) or 0)
         total_blocked = int(daily_summary.get("blocked", 0) or 0)
+        lookback_days = int(reflection_context.get("lookback_days", 0) or 0)
+        negative_day_count = int(reflection_context.get("negative_day_count", 0) or 0)
+        positive_streak = int(reflection_context.get("positive_streak", 0) or 0)
+        multi_day_pnl_usdt = float(reflection_context.get("multi_day_pnl_usdt", 0.0) or 0.0)
+        current_equity_usdt = float(reflection_context.get("current_equity_usdt", 0.0) or 0.0)
+        configured_initial_usdt = float(reflection_context.get("configured_initial_usdt", 0.0) or 0.0)
+        restore_positive_days = int(reflection_context.get("restore_positive_days", 0) or 0)
+        restore_equity_floor_usdt = float(reflection_context.get("restore_equity_floor_usdt", 0.0) or 0.0)
+        force_base_only = bool(reflection_context.get("force_fallback_base_only"))
+        preserve_cooldown_scale = reflection_context.get("preserve_cooldown_scale")
+        live_symbol_benchmark = reflection_context.get("live_symbol_benchmark") or {}
+        current_live_symbol = str(reflection_context.get("current_live_symbol", "") or "").strip()
+        previous_controls = reflection_context.get("previous_controls") or {}
         if top_reject[1] > 0:
             biases.append("prefer execution-valid setups over raw signal frequency until rejection counts normalize")
             risk_adjustments.append(f"treat `{top_reject[0]}` as a first-class constraint in the next 12h window")
@@ -1149,33 +1165,72 @@ class StrategyReflectionAgent:
             biases.append("cooldown blocked too many valid opportunities in the last window")
             risk_adjustments.append("shorten cooldown in the next 12h window and re-check if fee bleed stays contained")
             controls["cooldown_scale"] = 0.5
-        if top_benchmark.get("candidate_id"):
-            biases.append(
-                f"keep live strategy honest against external benchmark leader `{top_benchmark.get('candidate_id')}`"
+        if force_base_only:
+            biases.append("multi-day drawdown remains active, so fallback entries stay in restricted mode")
+            risk_adjustments.append(
+                "only restore normal fallback mode after consecutive positive reflection windows and partial equity recovery"
             )
-            controls["benchmark_watch_candidate"] = str(top_benchmark.get("candidate_id", ""))
-            controls["benchmark_watch_symbol"] = str(top_benchmark.get("symbol", ""))
+            controls["fallback_entry_mode"] = "base_only"
+        if preserve_cooldown_scale is not None:
+            try:
+                controls["cooldown_scale"] = min(
+                    float(controls.get("cooldown_scale", 1.0) or 1.0),
+                    float(preserve_cooldown_scale or 1.0),
+                )
+            except (TypeError, ValueError):
+                pass
+        benchmark_candidate = {}
+        if isinstance(live_symbol_benchmark, dict) and live_symbol_benchmark.get("candidate_id"):
+            benchmark_candidate = live_symbol_benchmark
+        elif top_benchmark.get("candidate_id"):
+            benchmark_candidate = top_benchmark
+        if benchmark_candidate.get("candidate_id"):
+            biases.append(
+                f"keep live strategy honest against external benchmark leader `{benchmark_candidate.get('candidate_id')}`"
+            )
+            controls["benchmark_watch_candidate"] = str(benchmark_candidate.get("candidate_id", "")).strip()
+            controls["benchmark_watch_symbol"] = str(
+                benchmark_candidate.get("symbol", current_live_symbol or benchmark_candidate.get("symbol", ""))
+            ).strip()
         if not biases:
             biases.append("keep favoring positive expectancy and strong payoff asymmetry")
         if not risk_adjustments:
             risk_adjustments.append("avoid changing thresholds again until the next 12h reflection window")
-        summary = (
-            f"12h reflection for {slot}: focus on executable positive-expectancy setups; "
-            f"top blocked={top_block[0]} ({top_block[1]}); top rejected={top_reject[0]} ({top_reject[1]}); "
-            f"external benchmark leader={top_benchmark.get('candidate_id', 'n/a')}; "
-            f"fallback accepted={fallback_accepted}; base accepted={base_accepted}; "
-            f"daily_pnl={daily_pnl_usdt:+.2f}."
-        )
+        summary_parts = [
+            f"12h reflection for {slot}: focus on executable positive-expectancy setups",
+            f"top blocked={top_block[0]} ({top_block[1]})",
+            f"top rejected={top_reject[0]} ({top_reject[1]})",
+            f"fallback accepted={fallback_accepted}",
+            f"base accepted={base_accepted}",
+            f"daily_pnl={daily_pnl_usdt:+.2f}",
+        ]
+        if lookback_days > 0:
+            summary_parts.append(
+                f"lookback={lookback_days}d multi_day_pnl={multi_day_pnl_usdt:+.2f} negative_days={negative_day_count}"
+            )
+        if configured_initial_usdt > 0 and current_equity_usdt > 0:
+            summary_parts.append(f"equity={current_equity_usdt:.2f}/{configured_initial_usdt:.2f}")
+        if force_base_only:
+            summary_parts.append(
+                f"fallback locked until positive_streak>={restore_positive_days} and equity>={restore_equity_floor_usdt:.2f}"
+            )
+        summary = "; ".join(summary_parts) + "."
         return StrategyReflectionSnapshot(
             slot=slot,
             summary=summary,
             biases=biases[:4],
             risk_adjustments=risk_adjustments[:4],
             focus_symbols=focus_symbols,
-            controls=self._normalize_controls(controls, {}),
+            controls=self._normalize_controls(controls, previous_controls, reflection_context=reflection_context),
         )
 
-    def _normalize_controls(self, controls: dict | None, fallback: dict | None) -> dict[str, object]:
+    def _normalize_controls(
+        self,
+        controls: dict | None,
+        fallback: dict | None,
+        reflection_context: dict | None = None,
+    ) -> dict[str, object]:
+        reflection_context = reflection_context or {}
         normalized: dict[str, object] = dict(fallback or {})
         raw = controls or {}
         mode = str(raw.get("fallback_entry_mode", normalized.get("fallback_entry_mode", "normal")) or "normal").strip().lower()
@@ -1193,6 +1248,24 @@ class StrategyReflectionAgent:
                 normalized[key] = value
             else:
                 normalized.pop(key, None)
+        if bool(reflection_context.get("force_fallback_base_only")):
+            normalized["fallback_entry_mode"] = "base_only"
+        preserve_cooldown_scale = reflection_context.get("preserve_cooldown_scale")
+        if preserve_cooldown_scale is not None:
+            try:
+                normalized["cooldown_scale"] = min(
+                    float(normalized.get("cooldown_scale", 1.0) or 1.0),
+                    max(0.25, min(float(preserve_cooldown_scale or 1.0), 1.0)),
+                )
+            except (TypeError, ValueError):
+                pass
+        live_symbol_benchmark = reflection_context.get("live_symbol_benchmark") or {}
+        current_live_symbol = str(reflection_context.get("current_live_symbol", "") or "").strip()
+        if isinstance(live_symbol_benchmark, dict) and live_symbol_benchmark.get("candidate_id"):
+            normalized["benchmark_watch_candidate"] = str(live_symbol_benchmark.get("candidate_id", "")).strip()
+            normalized["benchmark_watch_symbol"] = str(live_symbol_benchmark.get("symbol", current_live_symbol)).strip()
+        elif current_live_symbol:
+            normalized["benchmark_watch_symbol"] = current_live_symbol
         return normalized
 
 

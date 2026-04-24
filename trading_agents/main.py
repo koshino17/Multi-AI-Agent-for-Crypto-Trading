@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 from statistics import fmean
@@ -47,6 +47,7 @@ from trading_agents.models import (
 )
 from trading_agents.notion_sync import sync_notion_daily_review, sync_notion_status
 from trading_agents.reporting import (
+    LOCAL_TZ,
     build_human_report,
     build_daily_summary,
     load_daily_summary_data,
@@ -95,6 +96,110 @@ def _cooldown_remaining_seconds(cooldowns: dict[str, float], mode: str, symbol: 
     if "perp" in mode:
         return 0.0
     return max(0.0, float(cooldowns.get(symbol, 0.0)) - now_epoch)
+
+
+def _recent_local_date_labels(count: int, *, end: datetime | None = None) -> list[str]:
+    if count <= 0:
+        return []
+    local_end = end.astimezone(LOCAL_TZ) if end is not None else datetime.now(LOCAL_TZ)
+    return [
+        (local_end - timedelta(days=offset)).strftime("%Y-%m-%d")
+        for offset in range(count - 1, -1, -1)
+    ]
+
+
+def _build_strategy_reflection_context(settings, storage, current_date_label: str, daily_summary: dict, previous_memory: dict) -> dict[str, object]:
+    live_symbols = _parse_symbol_pool(None, settings)
+    current_live_symbol = live_symbols[0] if len(live_symbols) == 1 else ""
+    lookback_days = max(int(settings.strategy_learning_lookback_days or 0), 1)
+    recent_windows: list[dict[str, object]] = []
+    for label in _recent_local_date_labels(lookback_days):
+        try:
+            summary = load_daily_summary_data(storage.trade_logs, label, storage.runner_log)
+        except Exception:
+            continue
+        if not isinstance(summary, dict):
+            continue
+        financial = summary.get("financial_snapshot") or {}
+        recent_windows.append(
+            {
+                "date": label,
+                "daily_pnl_usdt": float(financial.get("daily_pnl_usdt", 0.0) or 0.0),
+                "total_portfolio_value_usdt": float(financial.get("total_portfolio_value_usdt", 0.0) or 0.0),
+            }
+        )
+
+    previous_equity = float(settings.initial_balance_usdt or 0.0)
+    for item in recent_windows:
+        current_equity = float(item.get("total_portfolio_value_usdt", 0.0) or 0.0)
+        item["equity_delta_usdt"] = current_equity - previous_equity if previous_equity > 0 and current_equity > 0 else 0.0
+        previous_equity = current_equity if current_equity > 0 else previous_equity
+
+    negative_day_count = sum(1 for item in recent_windows if float(item.get("equity_delta_usdt", 0.0) or 0.0) < 0)
+    positive_streak = 0
+    for item in reversed(recent_windows):
+        if float(item.get("equity_delta_usdt", 0.0) or 0.0) > 0:
+            positive_streak += 1
+        else:
+            break
+
+    financial = daily_summary.get("financial_snapshot") or {}
+    current_equity_usdt = float(financial.get("total_portfolio_value_usdt", 0.0) or 0.0)
+    configured_initial_usdt = float(settings.initial_balance_usdt or 0.0)
+    multi_day_pnl_usdt = current_equity_usdt - configured_initial_usdt if configured_initial_usdt > 0 else 0.0
+    restore_equity_floor_usdt = configured_initial_usdt * float(
+        settings.strategy_learning_restore_equity_recovery_ratio_pct or 0.0
+    ) / 100.0
+    previous_controls = (previous_memory or {}).get("controls", {})
+    previous_mode = ""
+    previous_cooldown_scale = None
+    if isinstance(previous_controls, dict):
+        previous_mode = str(previous_controls.get("fallback_entry_mode", "") or "").strip().lower()
+        try:
+            previous_cooldown_scale = float(previous_controls.get("cooldown_scale", 1.0) or 1.0)
+        except (TypeError, ValueError):
+            previous_cooldown_scale = None
+
+    restore_ready = (
+        positive_streak >= int(settings.strategy_learning_restore_positive_days or 0)
+        and current_equity_usdt >= restore_equity_floor_usdt
+    )
+    force_fallback_base_only = bool(
+        current_equity_usdt > 0
+        and configured_initial_usdt > 0
+        and current_equity_usdt < restore_equity_floor_usdt
+        and negative_day_count >= int(settings.strategy_learning_negative_day_threshold or 0)
+        and multi_day_pnl_usdt < 0
+    )
+    if previous_mode == "base_only" and not restore_ready:
+        force_fallback_base_only = True
+
+    preserve_cooldown_scale = None
+    if previous_cooldown_scale is not None and previous_cooldown_scale < 1.0 and not restore_ready:
+        preserve_cooldown_scale = previous_cooldown_scale
+
+    top_by_symbol = (daily_summary.get("external_benchmarks") or {}).get("top_by_symbol") or {}
+    live_symbol_benchmark = top_by_symbol.get(current_live_symbol, {}) if current_live_symbol else {}
+
+    return {
+        "lookback_days": lookback_days,
+        "recent_windows": recent_windows,
+        "negative_day_count": negative_day_count,
+        "positive_streak": positive_streak,
+        "multi_day_pnl_usdt": round(multi_day_pnl_usdt, 4),
+        "current_equity_usdt": round(current_equity_usdt, 4),
+        "configured_initial_usdt": round(configured_initial_usdt, 4),
+        "restore_positive_days": int(settings.strategy_learning_restore_positive_days or 0),
+        "restore_equity_floor_usdt": round(restore_equity_floor_usdt, 4),
+        "restore_ready": restore_ready,
+        "force_fallback_base_only": force_fallback_base_only,
+        "preserve_cooldown_scale": preserve_cooldown_scale,
+        "live_symbols": live_symbols,
+        "current_live_symbol": current_live_symbol,
+        "live_symbol_benchmark": live_symbol_benchmark if isinstance(live_symbol_benchmark, dict) else {},
+        "previous_controls": previous_controls if isinstance(previous_controls, dict) else {},
+        "current_date_label": current_date_label,
+    }
 
 
 def _mark_trade_cooldown(path: Path, mode: str, symbol: str, cooldown_seconds: float) -> None:
@@ -922,7 +1027,14 @@ def _finalize_reporting(
         strategy_memory = load_strategy_memory(storage.strategy_memory_state)
         controls_missing = not isinstance(strategy_memory.get("controls"), dict) or not strategy_memory.get("controls")
         if strategy_memory.get("slot") != current_slot or controls_missing:
-            reflection = strategy_reflector.evaluate(current_slot, daily_summary)
+            reflection_context = _build_strategy_reflection_context(
+                settings,
+                storage,
+                date_label,
+                daily_summary,
+                strategy_memory,
+            )
+            reflection = strategy_reflector.evaluate(current_slot, daily_summary, reflection_context=reflection_context)
             payload = {
                 "slot": reflection.slot,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -931,6 +1043,7 @@ def _finalize_reporting(
                 "risk_adjustments": reflection.risk_adjustments,
                 "focus_symbols": reflection.focus_symbols,
                 "controls": reflection.controls,
+                "reflection_context": reflection_context,
             }
             save_strategy_memory(storage.strategy_memory_state, payload)
             strategy_memory_sync = {

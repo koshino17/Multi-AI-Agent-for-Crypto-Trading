@@ -140,6 +140,13 @@ class Settings:
     intraday_force_flat_enabled: bool = _bool("INTRADAY_FORCE_FLAT_ENABLED", False)
     intraday_force_flat_hour_local: float = _float("INTRADAY_FORCE_FLAT_HOUR_LOCAL", 23.0)
     intraday_force_flat_minute_local: float = _float("INTRADAY_FORCE_FLAT_MINUTE_LOCAL", 45.0)
+    strategy_learning_lookback_days: int = _int("STRATEGY_LEARNING_LOOKBACK_DAYS", 5)
+    strategy_learning_negative_day_threshold: int = _int("STRATEGY_LEARNING_NEGATIVE_DAY_THRESHOLD", 2)
+    strategy_learning_restore_positive_days: int = _int("STRATEGY_LEARNING_RESTORE_POSITIVE_DAYS", 2)
+    strategy_learning_restore_equity_recovery_ratio_pct: float = _float(
+        "STRATEGY_LEARNING_RESTORE_EQUITY_RECOVERY_RATIO_PCT",
+        99.0,
+    )
 
 
 def load_settings() -> Settings:
