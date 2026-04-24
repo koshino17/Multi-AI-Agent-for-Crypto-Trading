@@ -703,6 +703,7 @@ def _build_daily_review_blocks(
     symbol_postmortem = daily_summary.get("symbol_postmortem") or {}
     trade_review = daily_summary.get("trade_review") or {}
     loss_attribution = daily_summary.get("loss_attribution") or {}
+    policy_exit_diagnostics = daily_summary.get("policy_exit_diagnostics") or {}
     blocks: list[dict[str, Any]] = [
         _heading_1(title),
         _paragraph(f"Published at: {datetime.now(LOCAL_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')}"),
@@ -718,6 +719,11 @@ def _build_daily_review_blocks(
         _bullet(
             f"Daily PnL Basis: {float(financial.get('day_start_portfolio_value_usdt', 0.0)):.2f} USDT "
             f"at {str(financial.get('day_start_timestamp_local', 'n/a')) or 'n/a'}"
+        ),
+        _bullet(
+            f"PnL Bridge: realized {float(financial.get('realized_pnl_usdt', 0.0)):+.2f} "
+            f"+ unrealized change {float(financial.get('unrealized_change_usdt', 0.0)):+.2f} "
+            f"+ residual {float(financial.get('pnl_bridge_residual_usdt', 0.0)):+.2f}"
         ),
         _bullet(f"Realized PnL: {float(financial.get('realized_pnl_usdt', 0.0)):+.2f} USDT"),
         _bullet(f"Unrealized PnL: {float(financial.get('unrealized_pnl_usdt', 0.0)):+.2f} USDT"),
@@ -831,6 +837,13 @@ def _build_daily_review_blocks(
             close_reason = str(episode.get("close_reason", "")).strip()
             if close_reason:
                 blocks.append(_bullet(f"Close reason: {close_reason}"))
+    if policy_exit_diagnostics:
+        blocks.extend(
+            [
+                _heading_2("Policy Exit Diagnostics"),
+                _bullet(str(policy_exit_diagnostics.get("summary", "n/a"))),
+            ]
+        )
     if loss_attribution:
         blocks.extend(
             [

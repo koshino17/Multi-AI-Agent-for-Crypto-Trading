@@ -425,6 +425,37 @@ def _build_trade_review(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _build_policy_exit_diagnostics(records: list[dict[str, Any]], trade_review: dict[str, Any]) -> dict[str, Any]:
+    policy_records = [item for item in records if _decision_source(item) == "policy_exit"]
+    accepted_policy = [item for item in policy_records if _result_status(item) == "accepted"]
+    episodes = list(trade_review.get("episodes") or [])
+    policy_closed = [item for item in episodes if str(item.get("close_source", "")).strip().lower() == "policy_exit"]
+
+    stagnation_exits = 0
+    max_hold_exits = 0
+    end_of_day_exits = 0
+    for item in policy_closed:
+        reason = str(item.get("close_reason", "")).lower()
+        if "stagnation exit" in reason:
+            stagnation_exits += 1
+        elif "hold window exceeded" in reason:
+            max_hold_exits += 1
+        elif "end-of-day de-risk" in reason:
+            end_of_day_exits += 1
+
+    return {
+        "policy_decision_count": len(policy_records),
+        "accepted_policy_exit_count": len(accepted_policy),
+        "stagnation_exit_count": stagnation_exits,
+        "max_hold_exit_count": max_hold_exits,
+        "end_of_day_exit_count": end_of_day_exits,
+        "summary": (
+            f"policy decisions={len(policy_records)} | accepted exits={len(accepted_policy)} | "
+            f"stagnation={stagnation_exits} | max_hold={max_hold_exits} | end_of_day={end_of_day_exits}"
+        ),
+    }
+
+
 def _build_loss_attribution(
     records: list[dict[str, Any]],
     *,
@@ -1204,6 +1235,7 @@ def _build_financial_snapshot(
         total_portfolio_value = _safe_float(latest_snapshot.get("total_value_usdt")) or initial_balance_usdt
         start_value = _safe_float(start_snapshot.get("total_value_usdt")) or initial_balance_usdt
         unrealized_pnl = sum(_safe_float(item.get("unrealized_pnl_usdt")) for item in latest_positions)
+        day_start_unrealized_pnl = sum(_safe_float(item.get("unrealized_pnl_usdt")) for item in start_snapshot.get("positions", []))
         state: dict[str, dict[str, float]] = {}
         for item in start_snapshot.get("positions", []):
             signed_qty = _safe_float(item.get("signed_quantity", item.get("quantity", 0.0)))
@@ -1319,6 +1351,9 @@ def _build_financial_snapshot(
         daily_fees = sum(item["fee_usdt"] for item in accepted_today)
         daily_pnl = total_portfolio_value - start_value
         cumulative_pnl = total_portfolio_value - initial_balance_usdt
+        unrealized_change = unrealized_pnl - day_start_unrealized_pnl
+        explained_move = realized_pnl + unrealized_change
+        bridge_residual = daily_pnl - explained_move
         return {
             "initial_capital_usdt": initial_balance_usdt,
             "day_start_portfolio_value_usdt": start_value,
@@ -1332,7 +1367,11 @@ def _build_financial_snapshot(
             "realized_pnl_usdt": realized_pnl,
             "realized_long_pnl_usdt": realized_long_pnl,
             "realized_short_pnl_usdt": realized_short_pnl,
+            "day_start_unrealized_pnl_usdt": day_start_unrealized_pnl,
             "unrealized_pnl_usdt": unrealized_pnl,
+            "unrealized_change_usdt": unrealized_change,
+            "pnl_bridge_explained_usdt": explained_move,
+            "pnl_bridge_residual_usdt": bridge_residual,
             "daily_fees_usdt": daily_fees,
             "cumulative_fees_usdt": sum(item["fee_usdt"] for item in accepted_all),
             "available_usdt": _safe_float(latest_snapshot.get("free_usdt")),
@@ -1422,6 +1461,8 @@ def _build_financial_snapshot(
         item["weight_pct"] = (float(item["value_usdt"]) / total_portfolio_value * 100) if total_portfolio_value > 0 else 0.0
     daily_pnl = total_portfolio_value - start_value
     cumulative_pnl = total_portfolio_value - initial_balance_usdt
+    explained_move = realized_pnl + unrealized_pnl
+    bridge_residual = daily_pnl - explained_move
 
     return {
         "initial_capital_usdt": initial_balance_usdt,
@@ -1434,7 +1475,11 @@ def _build_financial_snapshot(
         "daily_pnl_usdt": daily_pnl,
         "daily_pnl_pct": (daily_pnl / start_value * 100) if start_value > 0 else 0.0,
         "realized_pnl_usdt": realized_pnl,
+        "day_start_unrealized_pnl_usdt": 0.0,
         "unrealized_pnl_usdt": unrealized_pnl,
+        "unrealized_change_usdt": unrealized_pnl,
+        "pnl_bridge_explained_usdt": explained_move,
+        "pnl_bridge_residual_usdt": bridge_residual,
         "daily_fees_usdt": daily_fees,
         "cumulative_fees_usdt": sum(item["fee_usdt"] for item in accepted_all),
         "available_usdt": cash_usdt,
@@ -1650,6 +1695,7 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
     )
     summary["external_benchmarks"] = load_external_benchmark_summary(storage.external_benchmark_state)
     summary["trade_review"] = _build_trade_review(records)
+    summary["policy_exit_diagnostics"] = _build_policy_exit_diagnostics(records, summary["trade_review"])
     focus_symbol = settings.observation_pool[0] if len(settings.observation_pool) == 1 else ""
     summary["symbol_postmortem"] = _build_symbol_postmortem(
         records,
@@ -1695,6 +1741,7 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
     decision_source_counts = summary.get("decision_source_counts", {})
     accepted_source_counts = summary.get("accepted_source_counts", {})
     trade_review = summary.get("trade_review", {})
+    policy_exit_diagnostics = summary.get("policy_exit_diagnostics", {})
     top_traded_symbol = next(iter(executed_symbol_counts.items()), ("n/a", 0))
     long_proposals = int(summary.get("long_proposals", 0))
     short_proposals = int(summary.get("short_proposals", 0))
@@ -1725,6 +1772,12 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
                 f"- Daily PnL Basis: {float(financial.get('day_start_portfolio_value_usdt', 0.0)):.2f} USDT "
                 f"at {str(financial.get('day_start_timestamp_local', 'n/a')) or 'n/a'} "
                 f"({str(financial.get('daily_pnl_basis', 'vs day-start portfolio value'))})"
+            ),
+            (
+                f"- PnL Bridge: realized {float(financial.get('realized_pnl_usdt', 0.0)):+.2f} "
+                f"+ unrealized change {float(financial.get('unrealized_change_usdt', 0.0)):+.2f} "
+                f"+ residual {float(financial.get('pnl_bridge_residual_usdt', 0.0)):+.2f} "
+                f"= daily {float(financial.get('daily_pnl_usdt', 0.0)):+.2f} USDT"
             ),
             f"- Realized PnL: {float(financial.get('realized_pnl_usdt', 0.0)):+.2f} USDT",
             (
@@ -1919,6 +1972,15 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
             )
             if item.get("close_reason"):
                 lines.append(f"  close_reason: {item.get('close_reason')}")
+
+    if policy_exit_diagnostics:
+        lines.extend(["", "## Policy Exit Diagnostics", ""])
+        lines.append(f"- Summary: {policy_exit_diagnostics.get('summary', 'n/a')}")
+        lines.append(f"- Policy decisions: {int(policy_exit_diagnostics.get('policy_decision_count', 0))}")
+        lines.append(f"- Accepted policy exits: {int(policy_exit_diagnostics.get('accepted_policy_exit_count', 0))}")
+        lines.append(f"- Stagnation exits: {int(policy_exit_diagnostics.get('stagnation_exit_count', 0))}")
+        lines.append(f"- Max-hold exits: {int(policy_exit_diagnostics.get('max_hold_exit_count', 0))}")
+        lines.append(f"- End-of-day exits: {int(policy_exit_diagnostics.get('end_of_day_exit_count', 0))}")
 
     if loss_attribution:
         lines.extend(["", "## Loss Attribution", ""])

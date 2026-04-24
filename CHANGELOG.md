@@ -992,3 +992,14 @@ What Changed:
 - Added explicit `Daily PnL Basis` fields to the financial snapshot, using the first portfolio snapshot of the Taiwan trading date.
 - Daily reports and Notion pages now show both `Configured Initial` and `Daily PnL Basis`.
 - Updated active/runtime and example settings to use `INITIAL_BALANCE_USDT=500`.
+# v0.11.23 - Tighten wake gate and add PnL bridge diagnostics
+
+Why:
+- `TradePulse` still woke the LLM almost every cycle, even on quiet range days, which kept latency too high.
+- Daily reports still required manual interpretation to understand how `Daily PnL` related to realized and unrealized movement.
+- `policy_exit` appeared in attribution counts, but it was still hard to tell whether it was driving behavior or mostly showing up as metadata.
+
+What Changed:
+- Tightened default wake thresholds and added a Python-side quiet-market / order-flow-only short-circuit for no-position states.
+- Added `PnL Bridge` fields to the financial snapshot and surfaced them in daily reports and Notion.
+- Added `Policy Exit Diagnostics` to daily reporting so policy-driven exits can be reviewed separately from base/fallback entries.

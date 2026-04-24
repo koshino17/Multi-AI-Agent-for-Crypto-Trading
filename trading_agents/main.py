@@ -661,34 +661,58 @@ def _market_wake_gate(snapshot, effective_base_asset: float, settings) -> dict:
     )
 
     score = 0
+    core_signal_count = 0
+    flow_signal_count = 0
     reasons: list[str] = []
     if recent_volatility_pct >= settings.llm_wake_volatility_pct:
         score += 1
+        core_signal_count += 1
         reasons.append(f"volatility {recent_volatility_pct:.2f}%")
     if abs(momentum_pct) >= settings.llm_wake_momentum_pct:
         score += 1
+        core_signal_count += 1
         reasons.append(f"momentum {momentum_pct:+.2f}%")
     if volume_ratio >= settings.llm_wake_volume_ratio:
         score += 1
+        core_signal_count += 1
         reasons.append(f"volume {volume_ratio:.2f}x")
     if breakout_proximity_pct <= settings.llm_wake_breakout_proximity_pct:
         score += 1
+        core_signal_count += 1
         reasons.append(f"near range edge {breakout_proximity_pct:.2f}%")
     if depth_imbalance >= settings.llm_wake_depth_imbalance:
         score += 1
+        flow_signal_count += 1
         reasons.append(f"depth imbalance {depth_imbalance:.2f}")
     if trade_delta_ratio >= settings.llm_wake_trade_delta_ratio:
         score += 1
+        flow_signal_count += 1
         reasons.append(f"trade delta {trade_delta_ratio:.2f}")
     if large_trade_count >= settings.llm_wake_large_trade_count:
         score += 1
+        flow_signal_count += 1
         reasons.append(f"large prints {large_trade_count}")
     if effective_base_asset > 0 and last_move_pct >= settings.llm_wake_position_move_pct:
         score += 1
         reasons.append(f"held position moved {last_move_pct:.2f}%")
 
     required_score = settings.llm_wake_position_min_score if effective_base_asset > 0 else settings.llm_wake_min_score
+    quiet_short_circuit = (
+        effective_base_asset <= 0
+        and recent_volatility_pct < float(settings.llm_wake_quiet_volatility_pct or 0.0)
+        and abs(momentum_pct) < float(settings.llm_wake_momentum_pct or 0.0)
+        and volume_ratio < float(settings.llm_wake_quiet_volume_ratio or 0.0)
+        and breakout_proximity_pct > float(settings.llm_wake_breakout_proximity_pct or 0.0) * 1.5
+        and flow_signal_count == 0
+    )
+    flow_only_suppressed = effective_base_asset <= 0 and core_signal_count == 0 and flow_signal_count > 0
     enabled = (not settings.llm_wake_gate_enabled) or score >= required_score
+    if quiet_short_circuit:
+        enabled = False
+        reasons = ["quiet-market short-circuit"]
+    elif flow_only_suppressed:
+        enabled = False
+        reasons = ["order-flow-only wake suppressed"]
     if not reasons:
         reasons.append("quiet market")
     return {
@@ -706,6 +730,8 @@ def _market_wake_gate(snapshot, effective_base_asset: float, settings) -> dict:
             "trade_delta_ratio": round(float(getattr(snapshot, "trade_delta_ratio", 0.0) or 0.0), 4),
             "large_trade_count": large_trade_count,
             "has_position": bool(effective_base_asset > 0),
+            "core_signal_count": core_signal_count,
+            "flow_signal_count": flow_signal_count,
         },
     }
 
