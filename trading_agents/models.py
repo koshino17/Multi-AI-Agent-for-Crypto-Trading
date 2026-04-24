@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -115,6 +115,12 @@ class DailyReviewSnapshot:
     operations_summary: str
     decision_summary: str
     improvement_directions: list[str]
+    strategist_review: str = ""
+    risk_review: str = ""
+    benchmark_review: str = ""
+    execution_review: str = ""
+    consensus_summary: str = ""
+    action_items: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

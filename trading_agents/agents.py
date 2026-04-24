@@ -966,8 +966,10 @@ class DailyReviewAgent:
             response = self.llm_client.generate_json(
                 (
                     "You are the daily reviewer agent for a crypto trading system. "
-                    "Return JSON with keys title, operations_summary, decision_summary, improvement_directions. "
-                    "improvement_directions must be a short array of concrete next steps. "
+                    "Return JSON with keys title, operations_summary, decision_summary, strategist_review, "
+                    "risk_review, benchmark_review, execution_review, consensus_summary, "
+                    "improvement_directions, action_items. "
+                    "improvement_directions and action_items must be short arrays of concrete next steps. "
                     f"date_label={date_label}; "
                     f"daily_summary={json.dumps(daily_summary, ensure_ascii=False)}"
                 )
@@ -978,6 +980,12 @@ class DailyReviewAgent:
             normalized_directions = [str(item).strip() for item in directions if str(item).strip()]
             if not normalized_directions:
                 normalized_directions = fallback.improvement_directions
+            action_items = response.get("action_items", fallback.action_items)
+            if not isinstance(action_items, list):
+                action_items = fallback.action_items
+            normalized_actions = [str(item).strip() for item in action_items if str(item).strip()]
+            if not normalized_actions:
+                normalized_actions = fallback.action_items
             return DailyReviewSnapshot(
                 title=str(response.get("title", fallback.title)).strip() or fallback.title,
                 operations_summary=str(response.get("operations_summary", fallback.operations_summary)).strip()
@@ -985,6 +993,12 @@ class DailyReviewAgent:
                 decision_summary=str(response.get("decision_summary", fallback.decision_summary)).strip()
                 or fallback.decision_summary,
                 improvement_directions=normalized_directions[:5],
+                strategist_review=str(response.get("strategist_review", fallback.strategist_review)).strip() or fallback.strategist_review,
+                risk_review=str(response.get("risk_review", fallback.risk_review)).strip() or fallback.risk_review,
+                benchmark_review=str(response.get("benchmark_review", fallback.benchmark_review)).strip() or fallback.benchmark_review,
+                execution_review=str(response.get("execution_review", fallback.execution_review)).strip() or fallback.execution_review,
+                consensus_summary=str(response.get("consensus_summary", fallback.consensus_summary)).strip() or fallback.consensus_summary,
+                action_items=normalized_actions[:5],
             )
         except Exception:
             return fallback
@@ -998,12 +1012,20 @@ class DailyReviewAgent:
         latest = daily_summary.get("latest") or {}
         external_benchmarks = daily_summary.get("external_benchmarks", {})
         symbol_postmortem = daily_summary.get("symbol_postmortem") or {}
+        loss_attribution = daily_summary.get("loss_attribution") or {}
+        policy_exit_diagnostics = daily_summary.get("policy_exit_diagnostics") or {}
+        strategy_memory = daily_summary.get("latest", {}).get("strategy_memory") or {}
         action_line = ", ".join(f"{key}={value}" for key, value in action_counts.items()) or "no actions"
         symbol_line = ", ".join(f"{key}={value}" for key, value in selected_symbol_counts.items()) or "no symbol focus"
         top_block = next(iter(blocked_reason_counts.items()), ("none", 0))
         top_reject = next(iter(rejection_reason_counts.items()), ("none", 0))
         top_benchmark = (external_benchmarks.get("top_candidates") or [{}])[0]
         top_alpha = (external_benchmarks.get("top_alpha_arena_candidates") or [{}])[0]
+        focus_symbol = str(symbol_postmortem.get("symbol", "") or "").strip()
+        benchmark_by_symbol = ((external_benchmarks.get("top_by_symbol") or {}) if isinstance(external_benchmarks.get("top_by_symbol"), dict) else {})
+        focus_benchmark = benchmark_by_symbol.get(focus_symbol) if focus_symbol else {}
+        if not isinstance(focus_benchmark, dict):
+            focus_benchmark = {}
 
         operations_summary = (
             f"目前總資產約 {float(financial.get('total_portfolio_value_usdt', 0.0)):.2f} USDT，"
@@ -1027,11 +1049,12 @@ class DailyReviewAgent:
         )
         if symbol_postmortem.get("summary"):
             decision_summary += f" 單一標的檢討：{symbol_postmortem.get('summary')}"
-        if top_benchmark.get("candidate_id"):
+        benchmark_for_review = focus_benchmark if focus_benchmark.get("candidate_id") else top_benchmark
+        if benchmark_for_review.get("candidate_id"):
             decision_summary += (
-                f" 最新外部 benchmark 目前以 {top_benchmark.get('candidate_id', 'n/a')} "
-                f"@ {top_benchmark.get('symbol', 'n/a')} 領先，"
-                f"expectancy {float(top_benchmark.get('expectancy_pct', 0.0)):+.2f}%。"
+                f" 最新外部 benchmark 目前以 {benchmark_for_review.get('candidate_id', 'n/a')} "
+                f"@ {benchmark_for_review.get('symbol', 'n/a')} 領先，"
+                f"expectancy {float(benchmark_for_review.get('expectancy_pct', 0.0)):+.2f}%。"
             )
         if top_alpha.get("candidate_id"):
             decision_summary += (
@@ -1039,6 +1062,7 @@ class DailyReviewAgent:
             )
 
         improvements: list[str] = []
+        action_items: list[str] = []
         if float(financial.get("daily_fees_usdt", 0.0)) > max(float(financial.get("daily_pnl_usdt", 0.0)), 0.0):
             improvements.append("手續費已接近或超過當日獲利，優先降低過度交易與低品質微型訊號。")
         if daily_summary.get("rejected_orders", 0) > 0:
@@ -1065,11 +1089,68 @@ class DailyReviewAgent:
         if not improvements:
             improvements.append("持續追蹤各策略的 expectancy 與實際填單結果，讓 selector 更偏向真正可成交且報酬風險比佳的候選。")
 
+        strategist_review = (
+            f"策略面來看，今日主要由 {loss_attribution.get('primary_driver', 'n/a')} 主導，"
+            f"動作分布為 {action_line}。"
+            f" {symbol_postmortem.get('summary', '')}".strip()
+        )
+        if not strategist_review.strip():
+            strategist_review = "策略面目前沒有足夠資料形成明確結論。"
+
+        risk_review = (
+            f"風控面最常擋下的是 {top_block[0]} ({top_block[1]})，"
+            f"主要 rejected 原因是 {top_reject[0]} ({top_reject[1]})。"
+            f" Policy exit 摘要：{policy_exit_diagnostics.get('summary', 'n/a')}。"
+        )
+
+        benchmark_review = "目前沒有可用的外部 benchmark。"
+        if benchmark_for_review.get("candidate_id"):
+            benchmark_review = (
+                f"外部 benchmark 顯示 {benchmark_for_review.get('candidate_id')} "
+                f"在 {benchmark_for_review.get('symbol', 'n/a')} 暫時領先，"
+                f"expectancy {float(benchmark_for_review.get('expectancy_pct', 0.0)):+.2f}% / "
+                f"profit factor {float(benchmark_for_review.get('profit_factor', 0.0)):.2f}。"
+            )
+
+        execution_review = (
+            f"執行面共有 {daily_summary.get('submitted_orders', 0)} 次送單、"
+            f"{daily_summary.get('accepted_orders', 0)} 次接受、"
+            f"{daily_summary.get('rejected_orders', 0)} 次拒絕。"
+            f" 已接受交易來源分布為 "
+            f"{' | '.join(f'{k}={int(v)}' for k, v in (loss_attribution.get('accepted_source_counts') or {}).items()) or 'none'}。"
+        )
+
+        if loss_attribution.get("primary_driver"):
+            action_items.append(f"明天優先驗證 `{loss_attribution.get('primary_driver')}` 是否仍然主導績效。")
+        if top_block[0] != "none" and top_block[1] > 0:
+            action_items.append(f"針對 `{top_block[0]}` 做下一輪條件調整與複盤。")
+        if benchmark_for_review.get("candidate_id"):
+            action_items.append(
+                f"將 `{benchmark_for_review.get('candidate_id')}` 與 live baseline 做同標的 attribution 對照。"
+            )
+        controls = strategy_memory.get("controls") or {}
+        if controls:
+            action_items.append(f"確認 learning controls 是否真的落地：{json.dumps(controls, ensure_ascii=False)}")
+        if not action_items:
+            action_items.append("繼續追蹤基準策略、風控、exit 與 benchmark 的責任歸屬。")
+
+        consensus_summary = (
+            f"綜合策略、風控、benchmark 與執行四個角度，"
+            f"目前最值得追的不是新增更多策略，而是確認 {top_block[0] if top_block[0] != 'none' else '進場/出場品質'} "
+            f"是否持續拖累績效，並驗證 benchmark 是否值得升級成更正式的候選。"
+        )
+
         return DailyReviewSnapshot(
             title=f"Trading Agents Daily Review - {date_label}",
             operations_summary=operations_summary,
             decision_summary=decision_summary,
             improvement_directions=improvements[:4],
+            strategist_review=strategist_review,
+            risk_review=risk_review,
+            benchmark_review=benchmark_review,
+            execution_review=execution_review,
+            consensus_summary=consensus_summary,
+            action_items=action_items[:4],
         )
 
 

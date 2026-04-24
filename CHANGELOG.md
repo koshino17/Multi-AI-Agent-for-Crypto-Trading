@@ -16,6 +16,32 @@
 
 ---
 
+## v0.11.23 - Noon strategy review debate
+
+### Why
+
+- 使用者希望 `TradePulse` 每天固定時間做一次真正的檢討討論，而不是只根據是否虧損去調整限制
+- 既有 `Daily Review` 比較像摘要與建議，還不夠像「strategist / risk / benchmark / execution 互相對照」的複盤會議
+- 這份 noon review 需要同時進 daily report 與 Notion，方便和外部 AI 或人工一起對照討論
+
+### What Changed
+
+- `DailyReviewAgent`
+  - 輸出新增：
+    - `strategist_review`
+    - `risk_review`
+    - `benchmark_review`
+    - `execution_review`
+    - `consensus_summary`
+    - `action_items`
+- `main.py`
+  - 每天中午之後即使 Notion daily page 已經發過，也會把當日 `daily_strategy_review-YYYY-MM-DD.json` 存到 service 目錄
+  - 本地 daily report 會在 review 寫入後重建，讓同一天的 markdown 報告立即帶出這段複盤
+- `reporting.py`
+  - daily report 新增 `## Noon Strategy Review`
+- `notion_sync.py`
+  - Notion `Daily Review` 新增對應的 `Noon Strategy Review` 區塊
+
 ## v0.11.22 - Drawdown-aware learning controls
 
 ### Why

@@ -150,6 +150,19 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _daily_strategy_review_path(trade_logs_dir: Path, date_label: str) -> Path:
+    return trade_logs_dir.parent.parent / "service" / f"daily_strategy_review-{date_label}.json"
+
+
+def _load_daily_strategy_review(trade_logs_dir: Path, date_label: str) -> dict[str, Any]:
+    path = _daily_strategy_review_path(trade_logs_dir, date_label)
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def _build_symbol_postmortem(
     records: list[dict[str, Any]],
     *,
@@ -1709,6 +1722,7 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
         external_benchmarks=summary["external_benchmarks"],
         focus_symbol=focus_symbol,
     )
+    summary["daily_strategy_review"] = _load_daily_strategy_review(trade_logs_dir, date_label)
     return summary
 
 
@@ -1752,6 +1766,7 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
     top_alpha_benchmark = (external_benchmarks.get("top_alpha_arena_candidates") or [{}])[0]
     symbol_postmortem = summary.get("symbol_postmortem") or {}
     loss_attribution = summary.get("loss_attribution") or {}
+    daily_strategy_review = summary.get("daily_strategy_review") or {}
 
     lines = [f"# Daily Summary: {date_label}", ""]
     if summary_mode:
@@ -2030,6 +2045,21 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
             )
         for item in loss_attribution.get("observations", [])[:5]:
             lines.append(f"- Observation: {item}")
+
+    if daily_strategy_review:
+        lines.extend(["", "## Noon Strategy Review", ""])
+        if daily_strategy_review.get("strategist_review"):
+            lines.append(f"- Strategist View: {daily_strategy_review.get('strategist_review')}")
+        if daily_strategy_review.get("risk_review"):
+            lines.append(f"- Risk View: {daily_strategy_review.get('risk_review')}")
+        if daily_strategy_review.get("benchmark_review"):
+            lines.append(f"- Benchmark View: {daily_strategy_review.get('benchmark_review')}")
+        if daily_strategy_review.get("execution_review"):
+            lines.append(f"- Execution View: {daily_strategy_review.get('execution_review')}")
+        if daily_strategy_review.get("consensus_summary"):
+            lines.append(f"- Consensus: {daily_strategy_review.get('consensus_summary')}")
+        for item in daily_strategy_review.get("action_items", [])[:5]:
+            lines.append(f"- Action Item: {item}")
 
     if symbol_postmortem:
         lines.extend(["", "## Symbol Postmortem", ""])

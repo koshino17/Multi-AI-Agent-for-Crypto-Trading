@@ -764,6 +764,22 @@ def _build_daily_review_blocks(
         _heading_2("Decision Summary"),
         _paragraph(str(daily_review.get("decision_summary", ""))),
     ]
+    strategy_sections = [
+        ("Strategist View", str(daily_review.get("strategist_review", "")).strip()),
+        ("Risk View", str(daily_review.get("risk_review", "")).strip()),
+        ("Benchmark View", str(daily_review.get("benchmark_review", "")).strip()),
+        ("Execution View", str(daily_review.get("execution_review", "")).strip()),
+    ]
+    strategy_sections = [(title, body) for title, body in strategy_sections if body]
+    if strategy_sections or str(daily_review.get("consensus_summary", "")).strip() or list(daily_review.get("action_items", []) or []):
+        blocks.append(_heading_2("Noon Strategy Review"))
+        for title, body in strategy_sections:
+            blocks.append(_bullet(f"{title}: {body}"))
+        consensus = str(daily_review.get("consensus_summary", "")).strip()
+        if consensus:
+            blocks.append(_bullet(f"Consensus: {consensus}"))
+        for item in list(daily_review.get("action_items", []) or [])[:5]:
+            blocks.append(_bullet(f"Action Item: {item}"))
     if equity_chart_upload_id:
         blocks.extend(
             [

@@ -70,6 +70,14 @@ def _read_json_file(path: Path) -> dict:
         return {}
 
 
+def _daily_strategy_review_path(storage, date_label: str) -> Path:
+    return storage.service / f"daily_strategy_review-{date_label}.json"
+
+
+def _write_daily_strategy_review(path: Path, payload: dict) -> None:
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
 def _load_trade_cooldowns(path: Path) -> dict[str, float]:
     raw = _read_json_file(path)
     cooldowns: dict[str, float] = {}
@@ -989,14 +997,17 @@ def _finalize_reporting(
             notion_sync = {"status": "error", "reason": str(exc)}
     report["notion_sync"] = notion_sync
 
-    daily_review_sync = {"status": "disabled", "reason": "outside noon window or missing Notion daily review parent page id"}
-    if (
-        settings.notion_api_token
-        and settings.notion_daily_review_parent_page_id
-        and _load_runner_heartbeat(storage).get("timestamp")
-        and datetime.now().astimezone().hour >= int(settings.notion_daily_review_hour)
-    ):
+    daily_review_sync = {"status": "disabled", "reason": "outside noon window or missing runner heartbeat"}
+    daily_strategy_review_path = _daily_strategy_review_path(storage, date_label)
+    runner_heartbeat = _load_runner_heartbeat(storage)
+    if runner_heartbeat.get("timestamp") and datetime.now().astimezone().hour >= int(settings.notion_daily_review_hour):
         try:
+            stored_review = _read_json_file(daily_strategy_review_path)
+            if not stored_review or stored_review.get("date_label") != date_label:
+                daily_review = daily_reviewer.evaluate(date_label, daily_summary)
+                stored_review = {"date_label": date_label, **daily_review.__dict__}
+                _write_daily_strategy_review(daily_strategy_review_path, stored_review)
+            daily_review_payload = {key: value for key, value in stored_review.items() if key != "date_label"}
             if _daily_review_already_published(storage.notion_daily_review_state, date_label):
                 state = _read_json_file(storage.notion_daily_review_state)
                 daily_review_sync = {
@@ -1005,21 +1016,32 @@ def _finalize_reporting(
                     "page_id": state.get("page_id", ""),
                     "mode": "daily_review",
                 }
-            else:
-                daily_review = daily_reviewer.evaluate(date_label, daily_summary)
+            elif settings.notion_api_token and settings.notion_daily_review_parent_page_id:
                 daily_review_sync = sync_notion_daily_review(
                     token=settings.notion_api_token,
                     parent_page_id=settings.notion_daily_review_parent_page_id,
                     date_label=date_label,
                     page_title_prefix=settings.notion_daily_review_title_prefix,
-                    daily_review=daily_review.__dict__,
+                    daily_review=daily_review_payload,
                     daily_summary=daily_summary,
                     state_path=storage.notion_daily_review_state,
                     lock_path=storage.notion_sync_lock,
                 )
+            else:
+                daily_review_sync = {
+                    "status": "stored",
+                    "reason": "daily strategy review saved locally; Notion daily review is not configured",
+                    "mode": "daily_review",
+                }
         except Exception as exc:
             daily_review_sync = {"status": "error", "reason": str(exc)}
     report["daily_review_sync"] = daily_review_sync
+    if daily_strategy_review_path.exists():
+        daily_content = build_daily_summary(storage.trade_logs, date_label, storage.runner_log)
+        daily_report_path = write_daily_summary(storage.daily_reports, date_label, daily_content)
+        report["daily_report"] = str(daily_report_path)
+        daily_summary = load_daily_summary_data(storage.trade_logs, date_label, storage.runner_log)
+        daily_summary["equity_curve"] = equity_curve
 
     strategy_memory_sync = {"status": "skipped", "reason": "12h reflection already up to date"}
     try:
