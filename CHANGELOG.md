@@ -38,9 +38,9 @@
   - 每天中午之後即使 Notion daily page 已經發過，也會把當日 `daily_strategy_review-YYYY-MM-DD.json` 存到 service 目錄
   - 本地 daily report 會在 review 寫入後重建，讓同一天的 markdown 報告立即帶出這段複盤
 - `reporting.py`
-  - daily report 新增 `## Noon Strategy Review`
+  - daily report 新增 `## Strategy Review`
 - `notion_sync.py`
-  - Notion `Daily Review` 新增對應的 `Noon Strategy Review` 區塊
+  - Notion `Daily Review` 新增對應的 `Strategy Review` 區塊
 
 ## v0.11.22 - Drawdown-aware learning controls
 

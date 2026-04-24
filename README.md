@@ -16,7 +16,7 @@
 - daily report / Notion `Daily Review` 會自動產出 `Symbol Postmortem`，優先回顧單一重點標的的走勢、決策分布與主要卡點
 - 每筆決策現在都會記錄 `Decision Source`，區分 `base_strategy / fallback / fallback_guard / policy_exit`
 - `TradePulse` 的 learning controls 現在會看多日資金曲線，而不只看最近 12 小時；若 equity 持續低於設定基準且連續多日虧損，fallback 會維持受限，benchmark watch 也會強制對齊目前 live symbol
-- 每天中午之後會額外產出一份 `Noon Strategy Review`，從 strategist / risk / benchmark / execution 四個角度對同一天表現做複盤，並把結論寫進 daily report 與 Notion Daily Review
+- 每天中午之後會把 `Strategy Review` 併入當天 daily report 與 Notion Daily Review，從 strategist / risk / benchmark / execution 四個角度對同一天表現做複盤
 
 版本更新與里程碑請看 `CHANGELOG.md`，不再把歷史更新內容全部塞進 README。
 若要看 `Alpha Arena` 如何作為 benchmark / research 來源接進目前架構，請看 `ALPHA_ARENA_INTEGRATION_PLAN.md`。

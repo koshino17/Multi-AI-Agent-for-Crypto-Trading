@@ -772,7 +772,7 @@ def _build_daily_review_blocks(
     ]
     strategy_sections = [(title, body) for title, body in strategy_sections if body]
     if strategy_sections or str(daily_review.get("consensus_summary", "")).strip() or list(daily_review.get("action_items", []) or []):
-        blocks.append(_heading_2("Noon Strategy Review"))
+        blocks.append(_heading_2("Strategy Review"))
         for title, body in strategy_sections:
             blocks.append(_bullet(f"{title}: {body}"))
         consensus = str(daily_review.get("consensus_summary", "")).strip()

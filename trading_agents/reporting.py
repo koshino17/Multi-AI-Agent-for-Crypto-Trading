@@ -2047,7 +2047,7 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
             lines.append(f"- Observation: {item}")
 
     if daily_strategy_review:
-        lines.extend(["", "## Noon Strategy Review", ""])
+        lines.extend(["", "## Strategy Review", ""])
         if daily_strategy_review.get("strategist_review"):
             lines.append(f"- Strategist View: {daily_strategy_review.get('strategist_review')}")
         if daily_strategy_review.get("risk_review"):
