@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -21,8 +22,64 @@ def runner_launch_target() -> str:
     return f"gui/{os.getuid()}/{RUNNER_LABEL}"
 
 
+def runner_runtime_root() -> Path:
+    return Path.home() / "Library" / "Application Support" / "TradePulse" / "runtime"
+
+
+def runner_state_root() -> Path:
+    return Path.home() / "Library" / "Application Support" / "TradePulse" / "state"
+
+
+def runner_service_storage():
+    return build_storage_layout(str(runner_state_root()))
+
+
+def sync_runner_runtime(project_root: Path) -> Path:
+    runtime_root = runner_runtime_root()
+    runtime_root.mkdir(parents=True, exist_ok=True)
+
+    def _copy_file(source: Path, target: Path) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+
+    package_source = project_root / "trading_agents"
+    package_target = runtime_root / "trading_agents"
+    if package_target.exists():
+        shutil.rmtree(package_target)
+    shutil.copytree(package_source, package_target)
+
+    config_source = project_root / "config"
+    config_target = runtime_root / "config"
+    if config_target.exists():
+        shutil.rmtree(config_target)
+    shutil.copytree(config_source, config_target)
+
+    env_source = project_root / ".env"
+    env_target = runtime_root / ".env"
+    env_lines: list[str] = []
+    if env_source.exists():
+        env_lines = env_source.read_text().splitlines()
+    data_root_written = False
+    state_root = runner_state_root()
+    for index, line in enumerate(env_lines):
+        if line.startswith("DATA_ROOT="):
+            env_lines[index] = f"DATA_ROOT={state_root}"
+            data_root_written = True
+            break
+    if not data_root_written:
+        env_lines.append(f"DATA_ROOT={state_root}")
+    env_target.write_text("\n".join(env_lines) + ("\n" if env_lines else ""))
+
+    entrypoint_source = project_root / "run_tradepulse_runner.py"
+    if entrypoint_source.exists():
+        _copy_file(entrypoint_source, runtime_root / "run_tradepulse_runner.py")
+
+    return runtime_root
+
+
 def ensure_runner_launch_agent(settings: Settings, project_root: Path) -> tuple[Path, bool]:
-    entrypoint_path = project_root / "run_tradepulse_runner.py"
+    runtime_root = sync_runner_runtime(project_root)
+    entrypoint_path = runtime_root / "run_tradepulse_runner.py"
     log_dir = Path.home() / "Library" / "Logs" / "TradePulse"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "launchd-runner.log"
@@ -47,11 +104,11 @@ def ensure_runner_launch_agent(settings: Settings, project_root: Path) -> tuple[
     <string>{settings.monitor_interval_seconds}</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>{project_root}</string>
+  <string>{runtime_root}</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PYTHONPATH</key>
-    <string>{project_root}</string>
+    <string>{runtime_root}</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -88,7 +145,9 @@ def is_runner_launch_agent_loaded() -> bool:
 
 
 def start_runner_service(settings: Settings, project_root: Path) -> dict[str, str]:
-    storage = build_storage_layout(settings.data_root)
+    storage = runner_service_storage()
+    runtime_root = sync_runner_runtime(project_root)
+    entrypoint_path = runtime_root / "run_tradepulse_runner.py"
     plist_path, _ = ensure_runner_launch_agent(settings, project_root)
     _clear_stale_pid(storage.runner_supervisor_pid)
     _clear_stale_pid(storage.runner_pid)
@@ -115,8 +174,8 @@ def start_runner_service(settings: Settings, project_root: Path) -> dict[str, st
         time.sleep(0.5)
 
     command = (
-        f"cd {shlex.quote(str(project_root))} && "
-        f"export PYTHONPATH={shlex.quote(str(project_root))} && "
+        f"cd {shlex.quote(str(runtime_root))} && "
+        f"export PYTHONPATH={shlex.quote(str(runtime_root))} && "
         f"nohup /usr/bin/python3 {shlex.quote(str(entrypoint_path))} "
         f"--mode {shlex.quote(str(settings.trading_mode))} "
         f"--symbol {shlex.quote(','.join(settings.observation_pool) or settings.symbol)} "
@@ -141,7 +200,7 @@ def start_runner_service(settings: Settings, project_root: Path) -> dict[str, st
 
 
 def stop_runner_service(settings: Settings) -> dict[str, str]:
-    storage = build_storage_layout(settings.data_root)
+    storage = runner_service_storage()
     if is_runner_launch_agent_loaded():
         subprocess.run(["launchctl", "bootout", runner_launch_target()], capture_output=True, text=True, check=False)
         deadline = time.time() + 10

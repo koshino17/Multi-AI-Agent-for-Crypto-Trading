@@ -16,6 +16,29 @@
 
 ---
 
+## v0.11.24 - Always-on launchd runner
+
+### Why
+
+- 使用者希望 `TradePulse` 不應再依賴 Codex 會話或父程序；只要電腦開機且恢復連網，就應該持續自行執行
+- 先前的 background runner 曾經被掛在 Codex `app-server` 底下，會造成 usage limit / 父程序退出時一起停掉，這不符合真正常駐服務的預期
+- macOS `launchd` 直接從 `Documents` 和外接磁碟的既有 `DATA_ROOT` 啟動時，會遇到 TCC / 權限限制，導致 service 無法穩定寫入 pid/lock 狀態檔
+
+### What Changed
+
+- `service_manager.py`
+  - 新增 `~/Library/Application Support/TradePulse/runtime` 與 `~/Library/Application Support/TradePulse/state`
+  - `launchd` 版 runner 會從 internal runtime 啟動，不再直接執行 `Documents` 下的 entrypoint
+  - service 專用 `.env` 會自動覆寫 `DATA_ROOT` 到 internal state root，避免卡在外接磁碟權限
+  - `start_runner_service()` / `stop_runner_service()` 也改成讀寫 internal service pid / lock / log
+- `launchd`
+  - LaunchAgent 現在會直接拉起 `run_tradepulse_runner.py`
+  - 實測 runner pid 的父程序已變成 `PID 1`，不再是 Codex
+  - 手動 kill runner 後，`launchd` 會自動重新拉起新 pid
+- 服務行為
+  - 即使 Codex 退出，`TradePulse` 仍能由系統接管持續執行
+  - 網路暫時中斷時，runner 仍會在 loop 中持續重試；若進程真的退出，`launchd KeepAlive` 會再拉起來
+
 ## v0.11.23 - Noon strategy review debate
 
 ### Why

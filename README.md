@@ -335,7 +335,7 @@ python scripts/run_external_strategy_benchmarks.py --force
 - 關掉網頁控制台，runner 仍會繼續跑
 - runner 若意外退出，supervisor 會把它再拉起來
 
-服務相關檔案預設都在：
+若你是直接從終端或前景手動跑，服務相關檔案預設都在：
 
 ```text
 ./runtime/service
@@ -347,6 +347,25 @@ python scripts/run_external_strategy_benchmarks.py --force
 - `runner.pid`
 - `runner_supervisor.log`
 - `runner.log`
+
+若你使用的是 **macOS 開機自動啟動 / `launchd` 常駐版本**，TradePulse 會把自己的 runtime 與 service state 移到：
+
+```text
+~/Library/Application Support/TradePulse/runtime
+~/Library/Application Support/TradePulse/state
+```
+
+這樣做的原因是：
+
+- 避免 `launchd` 直接從 `Documents` 或外接磁碟啟動時遇到 TCC/權限限制
+- 讓 runner 的 pid / lock / log / daily report 能由系統級服務穩定寫入
+- 確保即使 Codex 或終端關閉，TradePulse 仍能由 macOS 自己接管
+
+macOS 常駐版的關鍵特性：
+
+- 開機後會自動啟動
+- runner 被 kill 後，`launchd KeepAlive` 會自動拉回
+- 網路暫時中斷時，runner 會在 loop 裡持續重試；若進程真的退出，`launchd` 也會重啟它
 
 ## 重要設定
 
