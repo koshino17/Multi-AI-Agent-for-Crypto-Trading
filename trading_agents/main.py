@@ -825,6 +825,13 @@ def _market_wake_gate(snapshot, effective_base_asset: float, settings) -> dict:
         and flow_signal_count == 0
     )
     flow_only_suppressed = effective_base_asset <= 0 and core_signal_count == 0 and flow_signal_count > 0
+    weak_core_signal_suppressed = (
+        effective_base_asset <= 0
+        and core_signal_count <= 1
+        and score < max(required_score, 4)
+        and breakout_proximity_pct > float(settings.llm_wake_breakout_proximity_pct or 0.0) * 1.25
+        and recent_volatility_pct < max(float(settings.llm_wake_volatility_pct or 0.0), 0.30)
+    )
     enabled = (not settings.llm_wake_gate_enabled) or score >= required_score
     if quiet_short_circuit:
         enabled = False
@@ -832,6 +839,9 @@ def _market_wake_gate(snapshot, effective_base_asset: float, settings) -> dict:
     elif flow_only_suppressed:
         enabled = False
         reasons = ["order-flow-only wake suppressed"]
+    elif weak_core_signal_suppressed:
+        enabled = False
+        reasons = ["weak-setup short-circuit"]
     if not reasons:
         reasons.append("quiet market")
     return {

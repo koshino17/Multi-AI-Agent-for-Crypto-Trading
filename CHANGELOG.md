@@ -1119,3 +1119,14 @@ What Changed:
 - Tightened default wake thresholds and added a Python-side quiet-market / order-flow-only short-circuit for no-position states.
 - Added `PnL Bridge` fields to the financial snapshot and surfaced them in daily reports and Notion.
 - Added `Policy Exit Diagnostics` to daily reporting so policy-driven exits can be reviewed separately from base/fallback entries.
+
+# v0.11.25 - Sharpen no-trade attribution and tighten wake gate again
+
+Why:
+- On flat no-trade days, `Loss Attribution` could still describe the outcome as execution drag, which was misleading.
+- `TradePulse` was still waking the LLM too often on quiet, no-position sessions, despite producing no trade proposals.
+
+What Changed:
+- Zero-accepted-trade days now report a clearer primary driver such as `no-trade day; no validated edge passed entry filters`.
+- Added an explicit observation for observe-only sessions so daily postmortems line up with actual execution.
+- Tightened default wake thresholds again and added a `weak-setup short-circuit` for no-position states with only weak core signals away from range edges.

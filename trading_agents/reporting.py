@@ -544,9 +544,16 @@ def _build_loss_attribution(
     fees = _safe_float(financial_snapshot.get("daily_fees_usdt"))
     realized_after_fees = realized_pnl - fees
 
+    total_accepted = sum(int(value) for value in accepted_source_counts.values())
+    total_losing_episodes = sum(int(value) for value in losing_by_source.values())
+
     primary_driver = ""
-    if accepted_source_counts.get("fallback", 0) > max(accepted_source_counts.get("base_strategy", 0), 1):
+    if total_accepted == 0:
+        primary_driver = "no-trade day; no validated edge passed entry filters"
+    elif accepted_source_counts.get("fallback", 0) > max(accepted_source_counts.get("base_strategy", 0), 1):
         primary_driver = "fallback dominated accepted trades"
+    elif total_losing_episodes == 0 and abs(realized_after_fees) <= 0.05:
+        primary_driver = "low-activity day; trading impact stayed negligible"
     elif losing_by_direction.get("long", 0) > losing_by_direction.get("short", 0):
         primary_driver = "long episodes drove most closed losses"
     elif losing_by_direction.get("short", 0) > losing_by_direction.get("long", 0):
@@ -557,6 +564,8 @@ def _build_loss_attribution(
         primary_driver = "mixed execution drag across entry sources"
 
     observations: list[str] = []
+    if total_accepted == 0:
+        observations.append("no orders were accepted; today was primarily an observe-only session")
     if accepted_source_counts.get("fallback", 0) > max(accepted_source_counts.get("base_strategy", 0), 1):
         observations.append("accepted trades were still fallback-heavy")
     if losing_by_direction.get("long", 0) > losing_by_direction.get("short", 0):
