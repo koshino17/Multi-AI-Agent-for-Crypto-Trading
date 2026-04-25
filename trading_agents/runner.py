@@ -22,6 +22,7 @@ from trading_agents.storage import build_storage_layout
 
 
 _running = True
+_RUNNER_LOG_PATH: Path | None = None
 
 _TIMEFRAME_SECONDS = {
     "1m": 60,
@@ -41,7 +42,15 @@ def _stop(_: int, __) -> None:
 
 
 def _emit(payload: dict) -> None:
-    print(json.dumps(payload, ensure_ascii=False), flush=True)
+    line = json.dumps(payload, ensure_ascii=False)
+    print(line, flush=True)
+    if _RUNNER_LOG_PATH is not None:
+        try:
+            _RUNNER_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with _RUNNER_LOG_PATH.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+        except OSError:
+            pass
 
 
 def _write_pid(path: Path) -> None:
@@ -187,11 +196,13 @@ def _classify_cycle_mode(reason: str) -> str:
 
 
 def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
+    global _RUNNER_LOG_PATH
     signal.signal(signal.SIGINT, _stop)
     signal.signal(signal.SIGTERM, _stop)
 
     settings = load_settings()
     storage = build_storage_layout(settings.data_root)
+    _RUNNER_LOG_PATH = storage.runner_log
     _write_pid(storage.runner_pid)
     exchange = _build_exchange(mode, settings)
     symbol_pool = _parse_symbol_pool(symbol, settings)
