@@ -37,7 +37,41 @@
   - 手動 kill runner 後，`launchd` 會自動重新拉起新 pid
 - 服務行為
   - 即使 Codex 退出，`TradePulse` 仍能由系統接管持續執行
-  - 網路暫時中斷時，runner 仍會在 loop 中持續重試；若進程真的退出，`launchd KeepAlive` 會再拉起來
+- 網路暫時中斷時，runner 仍會在 loop 中持續重試；若進程真的退出，`launchd KeepAlive` 會再拉起來
+
+## v0.11.25 - External AI daily review
+
+### Why
+
+- 使用者確認可以透過 API key 和其他 AI 對話，希望把這種能力接進 `TradePulse`，但只放在研究 / 檢討層，不直接碰 live 下單
+- 目前 daily report 已有 `Strategy Review`、`Loss Attribution`、`Symbol Postmortem`，很適合再接一層外部審稿，方便和 Gemini 等外部模型對照討論
+- 需要一個不會污染主交易策略、又能穩定累積外部觀點的第一版落地方式
+
+### What Changed
+
+- `external_ai_review.py`
+  - 新增外部 AI 審稿模組
+  - 第一版支援 `gemini` provider，透過官方 `generateContent` API 取回結構化 JSON
+  - 會輸出：
+    - `summary`
+    - `strengths`
+    - `concerns`
+    - `action_items`
+    - `verdict`
+- `config.py`
+  - 新增：
+    - `EXTERNAL_AI_REVIEW_ENABLED`
+    - `EXTERNAL_AI_REVIEW_PROVIDER`
+    - `EXTERNAL_AI_REVIEW_MODEL`
+    - `EXTERNAL_AI_REVIEW_API_KEY`
+    - `EXTERNAL_AI_REVIEW_TIMEOUT_SECONDS`
+- `main.py`
+  - 每天中午 daily review 產生後，會額外建立 `external_ai_review-YYYY-MM-DD.json`
+  - 若未設定 API key，會安全地標成 disabled，不影響 live
+- `reporting.py` / `notion_sync.py`
+  - daily report 與 Notion `Daily Review` 新增 `External AI Review` 區塊
+- `.env.example` / `README.md`
+  - 補上設定與使用方式說明
 
 ## v0.11.23 - Noon strategy review debate
 

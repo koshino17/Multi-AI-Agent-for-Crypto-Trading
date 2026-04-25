@@ -17,6 +17,7 @@
 - 每筆決策現在都會記錄 `Decision Source`，區分 `base_strategy / fallback / fallback_guard / policy_exit`
 - `TradePulse` 的 learning controls 現在會看多日資金曲線，而不只看最近 12 小時；若 equity 持續低於設定基準且連續多日虧損，fallback 會維持受限，benchmark watch 也會強制對齊目前 live symbol
 - 每天中午之後會把 `Strategy Review` 併入當天 daily report 與 Notion Daily Review，從 strategist / risk / benchmark / execution 四個角度對同一天表現做複盤
+- 若設定外部模型 API key，Daily 也可以額外產出 `External AI Review`，把同一天的摘要送去給外部模型做第二視角審稿；這層只用於研究與檢討，不直接影響 live 下單
 
 版本更新與里程碑請看 `CHANGELOG.md`，不再把歷史更新內容全部塞進 README。
 若要看 `Alpha Arena` 如何作為 benchmark / research 來源接進目前架構，請看 `ALPHA_ARENA_INTEGRATION_PLAN.md`。
@@ -140,6 +141,11 @@ NOTION_STATUS_PAGE_TITLE=Trading Agents Live Status
 NOTION_DAILY_REVIEW_PARENT_PAGE_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 NOTION_DAILY_REVIEW_TITLE_PREFIX=Trading Agents Daily Review
 NOTION_DAILY_REVIEW_HOUR=12
+EXTERNAL_AI_REVIEW_ENABLED=true
+EXTERNAL_AI_REVIEW_PROVIDER=gemini
+EXTERNAL_AI_REVIEW_MODEL=gemini-2.5-flash
+EXTERNAL_AI_REVIEW_API_KEY=your_api_key_here
+EXTERNAL_AI_REVIEW_TIMEOUT_SECONDS=20
 ```
 
 ### 4. 啟動 Ollama
@@ -437,6 +443,11 @@ EXTERNAL_BENCHMARK_ENABLED=true
 EXTERNAL_BENCHMARK_REFRESH_HOURS=4
 EXTERNAL_BENCHMARK_LIMIT=320
 EXTERNAL_BENCHMARK_MAX_ALPHA_SIGNALS=1000
+EXTERNAL_AI_REVIEW_ENABLED=false
+EXTERNAL_AI_REVIEW_PROVIDER=gemini
+EXTERNAL_AI_REVIEW_MODEL=gemini-2.5-flash
+EXTERNAL_AI_REVIEW_API_KEY=
+EXTERNAL_AI_REVIEW_TIMEOUT_SECONDS=20
 ```
 
 其中：
@@ -454,6 +465,9 @@ EXTERNAL_BENCHMARK_MAX_ALPHA_SIGNALS=1000
 - `EXTERNAL_BENCHMARK_ENABLED=true` 代表 runner 會低頻刷新 research-only benchmark 快照。
 - `EXTERNAL_BENCHMARK_REFRESH_HOURS=4` 代表 benchmark 預設每 4 小時重跑一次，不會每輪 cycle 都重算。
 - `EXTERNAL_BENCHMARK_MAX_ALPHA_SIGNALS=1000` 用來控制 Alpha Arena normalized dataset 每次最多讀多少筆訊號，避免 research 支線無限制膨脹。
+- `EXTERNAL_AI_REVIEW_ENABLED=true` 代表中午 daily review 產出後，會再呼叫外部模型幫 `TradePulse` 做一份第二視角審稿。
+- 目前第一版支援 `EXTERNAL_AI_REVIEW_PROVIDER=gemini`，透過 Gemini `generateContent` API 回收結構化評論。
+- `EXTERNAL_AI_REVIEW` 只會進 daily report / Notion `Daily Review`，不會直接影響 live strategist / risk / executor。
 
 ## Alpha Arena 第一階段 Benchmark
 

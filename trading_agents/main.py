@@ -31,6 +31,12 @@ from trading_agents.external_benchmarks import (
     load_external_benchmark_summary,
     refresh_external_benchmark_suite,
 )
+from trading_agents.external_ai_review import (
+    external_ai_review_path,
+    generate_external_ai_review,
+    load_external_ai_review,
+    save_external_ai_review,
+)
 from trading_agents.exchange import (
     BinanceTestnetExchangeClient,
     BybitDemoExchangeClient,
@@ -975,6 +981,7 @@ def _finalize_reporting(
     report["equity_curve"] = equity_curve
 
     notion_sync = {"status": "disabled", "reason": "missing Notion token or status page id"}
+    report["external_ai_review_sync"] = {"status": "disabled", "reason": "outside noon window or missing daily review"}
     if settings.notion_api_token and settings.notion_status_page_id:
         try:
             if report.get("cycle_mode") != "full" and "result" not in report:
@@ -999,6 +1006,7 @@ def _finalize_reporting(
 
     daily_review_sync = {"status": "disabled", "reason": "outside noon window or missing runner heartbeat"}
     daily_strategy_review_path = _daily_strategy_review_path(storage, date_label)
+    external_review_path = external_ai_review_path(storage, date_label)
     runner_heartbeat = _load_runner_heartbeat(storage)
     if runner_heartbeat.get("timestamp") and datetime.now().astimezone().hour >= int(settings.notion_daily_review_hour):
         try:
@@ -1035,6 +1043,23 @@ def _finalize_reporting(
                 }
         except Exception as exc:
             daily_review_sync = {"status": "error", "reason": str(exc)}
+
+        external_ai_review_sync = {"status": "disabled", "reason": "external AI review disabled"}
+        try:
+            stored_external_review = load_external_ai_review(external_review_path)
+            if not stored_external_review or stored_external_review.get("date_label") != date_label:
+                generated_external_review = generate_external_ai_review(
+                    date_label=date_label,
+                    daily_summary=daily_summary,
+                    daily_review=daily_review_payload if 'daily_review_payload' in locals() else (stored_review or {}),
+                    settings=settings,
+                )
+                stored_external_review = {"date_label": date_label, **generated_external_review}
+                save_external_ai_review(external_review_path, stored_external_review)
+            external_ai_review_sync = {key: value for key, value in stored_external_review.items() if key != "date_label"}
+        except Exception as exc:
+            external_ai_review_sync = {"status": "error", "reason": str(exc)}
+        report["external_ai_review_sync"] = external_ai_review_sync
     report["daily_review_sync"] = daily_review_sync
     if daily_strategy_review_path.exists():
         daily_content = build_daily_summary(storage.trade_logs, date_label, storage.runner_log)

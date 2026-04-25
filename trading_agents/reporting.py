@@ -1687,6 +1687,7 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
 def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_path: Path | None = None) -> dict[str, Any]:
     from trading_agents.config import load_settings
     from trading_agents.external_benchmarks import load_external_benchmark_summary
+    from trading_agents.external_ai_review import external_ai_review_path, load_external_ai_review
     from trading_agents.storage import build_storage_layout, mode_scoped_path
 
     settings = load_settings()
@@ -1723,6 +1724,7 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
         focus_symbol=focus_symbol,
     )
     summary["daily_strategy_review"] = _load_daily_strategy_review(trade_logs_dir, date_label)
+    summary["external_ai_review"] = load_external_ai_review(external_ai_review_path(storage, date_label))
     return summary
 
 
@@ -1767,6 +1769,7 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
     symbol_postmortem = summary.get("symbol_postmortem") or {}
     loss_attribution = summary.get("loss_attribution") or {}
     daily_strategy_review = summary.get("daily_strategy_review") or {}
+    external_ai_review = summary.get("external_ai_review") or {}
 
     lines = [f"# Daily Summary: {date_label}", ""]
     if summary_mode:
@@ -2060,6 +2063,25 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
             lines.append(f"- Consensus: {daily_strategy_review.get('consensus_summary')}")
         for item in daily_strategy_review.get("action_items", [])[:5]:
             lines.append(f"- Action Item: {item}")
+
+    if external_ai_review and external_ai_review.get("status") not in {"disabled", ""}:
+        lines.extend(["", "## External AI Review", ""])
+        if external_ai_review.get("provider") or external_ai_review.get("model"):
+            lines.append(
+                f"- Reviewer: {external_ai_review.get('provider', 'n/a')} / {external_ai_review.get('model', 'n/a')}"
+            )
+        if external_ai_review.get("status"):
+            lines.append(f"- Status: {external_ai_review.get('status')}")
+        if external_ai_review.get("summary"):
+            lines.append(f"- Summary: {external_ai_review.get('summary')}")
+        if external_ai_review.get("verdict"):
+            lines.append(f"- Verdict: {external_ai_review.get('verdict')}")
+        for item in external_ai_review.get("strengths", [])[:4]:
+            lines.append(f"- Strength: {item}")
+        for item in external_ai_review.get("concerns", [])[:4]:
+            lines.append(f"- Concern: {item}")
+        for item in external_ai_review.get("action_items", [])[:4]:
+            lines.append(f"- External Action Item: {item}")
 
     if symbol_postmortem:
         lines.extend(["", "## Symbol Postmortem", ""])

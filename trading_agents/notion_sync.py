@@ -704,6 +704,7 @@ def _build_daily_review_blocks(
     trade_review = daily_summary.get("trade_review") or {}
     loss_attribution = daily_summary.get("loss_attribution") or {}
     policy_exit_diagnostics = daily_summary.get("policy_exit_diagnostics") or {}
+    external_ai_review = daily_summary.get("external_ai_review") or {}
     blocks: list[dict[str, Any]] = [
         _heading_1(title),
         _paragraph(f"Published at: {datetime.now(LOCAL_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')}"),
@@ -780,6 +781,25 @@ def _build_daily_review_blocks(
             blocks.append(_bullet(f"Consensus: {consensus}"))
         for item in list(daily_review.get("action_items", []) or [])[:5]:
             blocks.append(_bullet(f"Action Item: {item}"))
+    if external_ai_review and external_ai_review.get("status") not in {"disabled", ""}:
+        blocks.append(_heading_2("External AI Review"))
+        if external_ai_review.get("provider") or external_ai_review.get("model"):
+            blocks.append(
+                _bullet(
+                    f"Reviewer: {external_ai_review.get('provider', 'n/a')} / "
+                    f"{external_ai_review.get('model', 'n/a')}"
+                )
+            )
+        if external_ai_review.get("summary"):
+            blocks.append(_bullet(f"Summary: {external_ai_review.get('summary')}"))
+        if external_ai_review.get("verdict"):
+            blocks.append(_bullet(f"Verdict: {external_ai_review.get('verdict')}"))
+        for item in external_ai_review.get("strengths", [])[:4]:
+            blocks.append(_bullet(f"Strength: {item}"))
+        for item in external_ai_review.get("concerns", [])[:4]:
+            blocks.append(_bullet(f"Concern: {item}"))
+        for item in external_ai_review.get("action_items", [])[:4]:
+            blocks.append(_bullet(f"External Action Item: {item}"))
     if equity_chart_upload_id:
         blocks.extend(
             [
