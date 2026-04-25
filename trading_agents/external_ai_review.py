@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+import time
 from typing import Any
 from urllib import error, request
 
@@ -98,12 +99,28 @@ def _generate_gemini_review(
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    try:
-        with request.urlopen(req, timeout=timeout_seconds) as response:
-            raw = response.read().decode("utf-8")
-    except error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Gemini API error {exc.code}: {detail}") from exc
+    retryable_statuses = {429, 500, 502, 503, 504}
+    attempts = 3
+    raw = ""
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            with request.urlopen(req, timeout=timeout_seconds) as response:
+                raw = response.read().decode("utf-8")
+            break
+        except error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            last_error = RuntimeError(f"Gemini API error {exc.code}: {detail}")
+            if exc.code not in retryable_statuses or attempt >= attempts:
+                raise last_error from exc
+        except error.URLError as exc:
+            last_error = RuntimeError(f"Gemini API network error: {exc}")
+            if attempt >= attempts:
+                raise last_error from exc
+        if attempt < attempts:
+            time.sleep(2 ** (attempt - 1))
+    if not raw:
+        raise last_error or RuntimeError("Gemini API returned no response")
     parsed = json.loads(raw)
     text = _extract_gemini_text(parsed).strip()
     if not text:

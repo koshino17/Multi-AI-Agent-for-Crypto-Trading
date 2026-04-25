@@ -1047,7 +1047,15 @@ def _finalize_reporting(
         external_ai_review_sync = {"status": "disabled", "reason": "external AI review disabled"}
         try:
             stored_external_review = load_external_ai_review(external_review_path)
-            if not stored_external_review or stored_external_review.get("date_label") != date_label:
+            should_refresh_external_review = (
+                not stored_external_review
+                or stored_external_review.get("date_label") != date_label
+                or (
+                    getattr(settings, "external_ai_review_enabled", False)
+                    and str(stored_external_review.get("status", "")).lower() in {"disabled", "error"}
+                )
+            )
+            if should_refresh_external_review:
                 generated_external_review = generate_external_ai_review(
                     date_label=date_label,
                     daily_summary=daily_summary,
