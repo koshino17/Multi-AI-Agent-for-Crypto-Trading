@@ -140,6 +140,7 @@ class Settings:
     perp_profit_lock_trigger_2_pct: float = _float("PERP_PROFIT_LOCK_TRIGGER_2_PCT", 2.0)
     perp_profit_lock_stop_2_pct: float = _float("PERP_PROFIT_LOCK_STOP_2_PCT", 0.80)
     intraday_max_hold_bars: float = _float("INTRADAY_MAX_HOLD_BARS", 12.0)
+    intraday_max_entries_per_episode: int = _int("INTRADAY_MAX_ENTRIES_PER_EPISODE", 3)
     intraday_stagnation_bars: float = _float("INTRADAY_STAGNATION_BARS", 4.0)
     intraday_stagnation_pnl_pct: float = _float("INTRADAY_STAGNATION_PNL_PCT", 0.35)
     intraday_force_flat_enabled: bool = _bool("INTRADAY_FORCE_FLAT_ENABLED", False)

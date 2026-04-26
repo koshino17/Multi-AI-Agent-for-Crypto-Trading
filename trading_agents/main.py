@@ -505,6 +505,43 @@ def _position_policy_key(mode: str, symbol: str) -> str:
     return f"{mode}:{symbol}"
 
 
+def _is_same_direction_entry(position_side: str, action: str) -> bool:
+    side = str(position_side or "").strip().lower()
+    act = str(action or "").strip().lower()
+    return (side == "long" and act == "buy") or (side == "short" and act == "sell")
+
+
+def _record_position_policy_entry_fill(
+    state: dict[str, dict],
+    *,
+    mode: str,
+    symbol: str,
+    position_side: str,
+    entry_price: float,
+    net_position: float,
+    now_epoch: float,
+) -> int:
+    key = _position_policy_key(mode, symbol)
+    if position_side not in {"long", "short"} or abs(net_position) <= 0:
+        state.pop(key, None)
+        return 0
+
+    existing = state.get(key, {})
+    same_episode = str(existing.get("position_side", "")).strip().lower() == position_side
+    opened_at = float(existing.get("opened_at_epoch", now_epoch) or now_epoch) if same_episode else now_epoch
+    entry_count = int(existing.get("entry_count", 0) or 0) + 1 if same_episode else 1
+    state[key] = {
+        "position_side": position_side,
+        "entry_price": round(entry_price, 6),
+        "opened_at_epoch": opened_at,
+        "net_position": round(net_position, 8),
+        "updated_at_epoch": now_epoch,
+        "entry_count": entry_count,
+        "last_entry_epoch": now_epoch,
+    }
+    return entry_count
+
+
 def _sync_position_policy_state(
     state: dict[str, dict],
     *,
@@ -529,17 +566,17 @@ def _sync_position_policy_state(
         }
 
     entry = state.get(key, {})
-    same_position = (
-        str(entry.get("position_side", "")) == position_side
-        and abs(float(entry.get("entry_price", 0.0) or 0.0) - entry_price) <= 1e-4
-    )
+    same_position = str(entry.get("position_side", "")).strip().lower() == position_side
     opened_at = float(entry.get("opened_at_epoch", now_epoch) or now_epoch) if same_position else now_epoch
+    entry_count = int(entry.get("entry_count", 1) or 1) if same_position else 1
     state[key] = {
         "position_side": position_side,
         "entry_price": entry_price,
         "opened_at_epoch": opened_at,
         "net_position": net_position,
         "updated_at_epoch": now_epoch,
+        "entry_count": entry_count,
+        "last_entry_epoch": float(entry.get("last_entry_epoch", now_epoch) or now_epoch) if same_position else now_epoch,
     }
     hold_minutes = max((now_epoch - opened_at) / 60.0, 0.0)
     hold_bars = hold_minutes / timeframe_minutes if timeframe_minutes > 0 else 0.0
@@ -549,6 +586,7 @@ def _sync_position_policy_state(
         "hold_minutes": round(hold_minutes, 2),
         "hold_bars": round(hold_bars, 2),
         "opened_at_epoch": opened_at,
+        "entry_count": entry_count,
     }
 
 
@@ -1501,6 +1539,23 @@ def execute_cycle(
                 perp_min_liquidation_buffer_pct=settings.perp_min_liquidation_buffer_pct,
             ),
         )
+        episode_entry_count = int(position_context.get("entry_count", 0) or 0)
+        max_entries_per_episode = max(int(settings.intraday_max_entries_per_episode or 0), 0)
+        if (
+            approval.approved
+            and idea.action != "hold"
+            and max_entries_per_episode > 0
+            and _is_same_direction_entry(position_side, idea.action)
+            and episode_entry_count >= max_entries_per_episode
+        ):
+            entry_warnings = list(approval.warnings)
+            entry_warnings.append("same-direction add-on capped to reduce fee drag")
+            approval = type(approval)(
+                approved=False,
+                reason=f"episode entry cap reached: {episode_entry_count}/{max_entries_per_episode}",
+                max_notional_usdt=0.0,
+                warnings=entry_warnings,
+            )
         cooldown_remaining = _cooldown_remaining_seconds(cooldowns, mode, candidate_symbol, now_epoch)
         if idea.action != "hold" and cooldown_remaining > 0:
             cooldown_warnings = list(approval.warnings)
@@ -1588,11 +1643,13 @@ def execute_cycle(
                     "dust_notional_usdt": round(float(dust_info.get("dust_notional_usdt", 0.0)), 4),
                     "hold_minutes": round(float(position_context.get("hold_minutes", 0.0)), 2),
                     "hold_bars": round(float(position_context.get("hold_bars", 0.0)), 2),
+                    "entry_count": int(position_context.get("entry_count", 0) or 0),
                 },
                 "execution_constraints": {
                     "min_order_value_usdt": round(min_order_value_usdt, 4),
                     "cooldown_remaining_seconds": int(cooldown_remaining),
                     "dust_threshold_usdt": round(float(dust_info.get("dust_threshold_usdt", 0.0)), 4),
+                    "max_entries_per_episode": max_entries_per_episode,
                 },
                 "llm_wake": llm_wake,
                 "protection_targets": protection_targets,
@@ -1838,6 +1895,17 @@ def execute_cycle(
             )
         except Exception as exc:
             report["protection_result"] = {"status": "error", "reason": str(exc)}
+    if str(result.get("status", "")).lower() in {"accepted", "filled"} and not bool(order.get("reduce_only")):
+        entry_count_after_fill = _record_position_policy_entry_fill(
+            position_policy_state,
+            mode=mode,
+            symbol=report["selected_symbol"],
+            position_side=str(report["account"].get("position_side", "flat")).strip().lower(),
+            entry_price=float(report["account"].get("entry_price", report["last_price"]) or report["last_price"]),
+            net_position=float(report["account"].get("net_position", 0.0) or 0.0),
+            now_epoch=time.time(),
+        )
+        report["account"]["entry_count"] = entry_count_after_fill
     if str(result.get("status", "")).lower() in {"accepted", "filled"}:
         _mark_trade_cooldown(
             storage.trade_cooldown_state,
@@ -1845,6 +1913,7 @@ def execute_cycle(
             report["selected_symbol"],
             _adaptive_trade_cooldown_seconds(report, settings, strategy_memory),
         )
+    _save_position_policy_state(storage.position_policy_state, position_policy_state)
     trade_log_path = write_json_log(storage.trade_logs, "trade", report)
     evaluation_log_path = write_json_log(
         storage.evaluation_logs,

@@ -1130,3 +1130,14 @@ What Changed:
 - Zero-accepted-trade days now report a clearer primary driver such as `no-trade day; no validated edge passed entry filters`.
 - Added an explicit observation for observe-only sessions so daily postmortems line up with actual execution.
 - Tightened default wake thresholds again and added a `weak-setup short-circuit` for no-position states with only weak core signals away from range edges.
+
+# v0.11.26 - Cap same-episode add-ons to reduce fee drag
+
+Why:
+- `TradePulse` could slice one directional episode into too many accepted entries, which looked directionally correct but left too much of the edge to fees.
+- Position hold tracking also reset too easily during same-direction scaling, which made intraday hold policy less trustworthy.
+
+What Changed:
+- Added `INTRADAY_MAX_ENTRIES_PER_EPISODE` so the live executor can block same-direction add-ons after a configurable number of fills.
+- Position policy state now preserves the same episode across same-direction scaling and tracks `entry_count`.
+- Candidate snapshots now expose `entry_count` and `max_entries_per_episode` for easier postmortem and daily review analysis.

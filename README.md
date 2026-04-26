@@ -449,6 +449,7 @@ EXTERNAL_AI_REVIEW_PROVIDER=gemini
 EXTERNAL_AI_REVIEW_MODEL=gemini-2.5-flash
 EXTERNAL_AI_REVIEW_API_KEY=
 EXTERNAL_AI_REVIEW_TIMEOUT_SECONDS=20
+INTRADAY_MAX_ENTRIES_PER_EPISODE=3
 ```
 
 其中：
@@ -463,6 +464,7 @@ EXTERNAL_AI_REVIEW_TIMEOUT_SECONDS=20
 - `PERP_MAX_LEVERAGE=2.0` 會在風控審批時限制有效槓桿，避免合約曝險擴得太快。
 - `PERP_MIN_LIQUIDATION_BUFFER_PCT=8.0` 會在現有倉位距離強平太近時擋下新的加碼。
 - `PERP_HARD_STOP_LOSS_PCT` / `PERP_TAKE_PROFIT_PCT` 會在新開倉後嘗試設定交易所 stop loss / take profit。
+- `INTRADAY_MAX_ENTRIES_PER_EPISODE=3` 會限制單一持倉 episode 的同方向加倉次數，避免像單邊小波段被切成太多筆、最後利潤被 taker fee 吃掉。
 - `EXTERNAL_BENCHMARK_ENABLED=true` 代表 runner 會低頻刷新 research-only benchmark 快照。
 - `EXTERNAL_BENCHMARK_REFRESH_HOURS=4` 代表 benchmark 預設每 4 小時重跑一次，不會每輪 cycle 都重算。
 - `EXTERNAL_BENCHMARK_MAX_ALPHA_SIGNALS=1000` 用來控制 Alpha Arena normalized dataset 每次最多讀多少筆訊號，避免 research 支線無限制膨脹。
