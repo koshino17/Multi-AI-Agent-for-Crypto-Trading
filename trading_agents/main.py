@@ -694,6 +694,16 @@ def _tighten_stop_loss(position_side: str, current_stop: float, candidate_stop: 
     return max(current_stop, candidate_stop)
 
 
+def _tighten_take_profit(position_side: str, current_take_profit: float, candidate_take_profit: float) -> float:
+    if candidate_take_profit <= 0:
+        return max(current_take_profit, 0.0)
+    if current_take_profit <= 0:
+        return candidate_take_profit
+    if position_side == "short":
+        return max(current_take_profit, candidate_take_profit)
+    return min(current_take_profit, candidate_take_profit)
+
+
 def _protection_targets_match(account, targets: dict[str, float], tolerance: float = 1e-4) -> bool:
     current_tp = float(getattr(account, "take_profit_price", 0.0) or 0.0)
     current_sl = float(getattr(account, "stop_loss_price", 0.0) or 0.0)
@@ -728,8 +738,7 @@ def _build_perp_protection_targets(account, settings) -> dict[str, float]:
         stop_loss = entry_price * (1.0 + stop_pct) if stop_pct > 0 else 0.0
         take_profit = entry_price * (1.0 - take_pct) if take_pct > 0 else 0.0
 
-    if current_take_profit > 0:
-        take_profit = current_take_profit
+    take_profit = _tighten_take_profit(position_side, current_take_profit, take_profit)
     stop_loss = _tighten_stop_loss(position_side, current_stop_loss, stop_loss)
 
     trigger_1 = max(float(settings.perp_profit_lock_trigger_pct), 0.0)

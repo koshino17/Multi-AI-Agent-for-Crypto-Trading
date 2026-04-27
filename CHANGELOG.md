@@ -1152,3 +1152,21 @@ What Changed:
 - Current perp positions now show direction, opened time, entry price, mark price, TP/SL, leverage, liquidation buffer, and entry count in a multi-line readable format.
 - Daily reports now include an `Executed Trades Today` section with timestamp, long/short action label, quantity, price, notional, TP/SL, decision source, risk decision, and rationale.
 - Position policy metadata is now surfaced into reporting so open positions can show when the current episode began.
+
+# v0.11.28 - Tighten intraday exits and teach reviews to flag giveback risk
+
+Why:
+- Several recent `SOL` episodes showed the same pattern: open profit reached roughly `+0.8% ~ +2.0%`, but the take-profit sat too far away and the first profit-lock stage sat too close to round-trip fees.
+- That meant `TradePulse` could be directionally right, yet still give back too much of the move before realizing profit.
+- The daily review layer also was not explicitly calling out this "too much giveback after correct directional read" pattern on its own.
+
+What Changed:
+- Tightened default perp exit settings for intraday trading:
+  - `PERP_TAKE_PROFIT_PCT` from `2.4` to `1.8`
+  - `PERP_PROFIT_LOCK_TRIGGER_PCT` from `1.0` to `0.8`
+  - `PERP_PROFIT_LOCK_BREAKEVEN_OFFSET_PCT` from `0.10` to `0.25`
+  - `PERP_PROFIT_LOCK_TRIGGER_2_PCT` from `2.0` to `1.5`
+  - `PERP_PROFIT_LOCK_STOP_2_PCT` from `0.80` to `0.60`
+- Existing perp positions now retarget stale take-profit orders toward the tighter current intraday target instead of preserving the older, wider TP forever.
+- Daily review fallback analysis now explicitly flags cases where realized gains do not clear fees or where unrealized gains dominate realized results, and suggests tightening TP / first-stage profit-lock as a concrete next action.
+- Strategy reflection now records the same giveback pattern in its risk-adjustment output so future learning controls can respond to it instead of only reacting to raw PnL.

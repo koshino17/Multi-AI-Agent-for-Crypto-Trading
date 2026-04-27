@@ -1063,8 +1063,17 @@ class DailyReviewAgent:
 
         improvements: list[str] = []
         action_items: list[str] = []
+        accepted_orders = int(daily_summary.get("accepted_orders", 0) or 0)
+        daily_fees_usdt = float(financial.get("daily_fees_usdt", 0.0) or 0.0)
+        realized_pnl_usdt = float(financial.get("realized_pnl_usdt", 0.0) or 0.0)
+        unrealized_pnl_usdt = float(financial.get("unrealized_pnl_usdt", 0.0) or 0.0)
         if float(financial.get("daily_fees_usdt", 0.0)) > max(float(financial.get("daily_pnl_usdt", 0.0)), 0.0):
             improvements.append("手續費已接近或超過當日獲利，優先降低過度交易與低品質微型訊號。")
+        if accepted_orders > 0 and daily_fees_usdt > max(realized_pnl_usdt, 0.0):
+            improvements.append("已實現毛利不足以覆蓋手續費時，優先檢查止盈是否過遠，以及第一段 profit-lock 是否低於來回費用門檻。")
+            action_items.append("回看當日交易：若浮盈常落在 +0.8%~+1.8% 後回吐，優先收緊 TP 與第一段鎖利。")
+        if unrealized_pnl_usdt > max(realized_pnl_usdt, 0.0) * 2 and daily_fees_usdt > 0:
+            improvements.append("若帳面浮盈明顯大於已實現獲利，代表趨勢有抓到，但落袋節奏仍偏慢。")
         if daily_summary.get("rejected_orders", 0) > 0:
             improvements.append("在 executor 前補一層交易所最小單與最終下單 notional 檢查，避免把 rejected 當成有效成交。")
         if top_block[0] != "none" and top_block[1] > 0:
@@ -1216,6 +1225,10 @@ class StrategyReflectionAgent:
         risk_adjustments: list[str] = []
         controls: dict[str, object] = {}
         daily_pnl_usdt = float(financial.get("daily_pnl_usdt", 0.0) or 0.0)
+        realized_pnl_usdt = float(financial.get("realized_pnl_usdt", 0.0) or 0.0)
+        unrealized_pnl_usdt = float(financial.get("unrealized_pnl_usdt", 0.0) or 0.0)
+        daily_fees_usdt = float(financial.get("daily_fees_usdt", 0.0) or 0.0)
+        accepted_orders = int(daily_summary.get("accepted_orders", 0) or 0)
         fallback_accepted = int(accepted_sources.get("fallback", 0) or 0)
         base_accepted = int(accepted_sources.get("base_strategy", 0) or 0)
         cooldown_blocks = int(blocked.get("symbol cooldown active", 0) or 0)
@@ -1242,6 +1255,12 @@ class StrategyReflectionAgent:
             biases.append("fallback-driven entries underperformed in the last window")
             risk_adjustments.append("temporarily require base-strategy alignment before opening new fallback exposure")
             controls["fallback_entry_mode"] = "base_only"
+        if accepted_orders > 0 and daily_fees_usdt > max(realized_pnl_usdt, 0.0):
+            biases.append("take-profit distance and first profit-lock may be leaving too much edge on the table after fees")
+            risk_adjustments.append("review whether first profit-lock clears round-trip fees and whether target distance matches intraday volatility")
+        if unrealized_pnl_usdt > max(realized_pnl_usdt, 0.0) * 2 and daily_fees_usdt > 0:
+            biases.append("open-profit giveback risk remains high when unrealized gains dominate realized results")
+            risk_adjustments.append("prefer earlier profit-lock activation when intraday moves often stall before the current take-profit target")
         if cooldown_blocks >= max(10, total_blocked // 2):
             biases.append("cooldown blocked too many valid opportunities in the last window")
             risk_adjustments.append("shorten cooldown in the next 12h window and re-check if fee bleed stays contained")
