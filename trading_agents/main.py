@@ -586,6 +586,7 @@ def _sync_position_policy_state(
         "hold_minutes": round(hold_minutes, 2),
         "hold_bars": round(hold_bars, 2),
         "opened_at_epoch": opened_at,
+        "opened_at_local": datetime.fromtimestamp(opened_at, tz=timezone.utc).astimezone(LOCAL_TZ).isoformat(),
         "entry_count": entry_count,
     }
 
@@ -1643,6 +1644,8 @@ def execute_cycle(
                     "dust_notional_usdt": round(float(dust_info.get("dust_notional_usdt", 0.0)), 4),
                     "hold_minutes": round(float(position_context.get("hold_minutes", 0.0)), 2),
                     "hold_bars": round(float(position_context.get("hold_bars", 0.0)), 2),
+                    "opened_at_epoch": round(float(position_context.get("opened_at_epoch", 0.0) or 0.0), 3),
+                    "opened_at_local": str(position_context.get("opened_at_local", "")),
                     "entry_count": int(position_context.get("entry_count", 0) or 0),
                 },
                 "execution_constraints": {
@@ -1795,6 +1798,7 @@ def execute_cycle(
         "idea": selected["idea"],
         "approval": selected["approval"],
         "account": selected["account"],
+        "position_context": selected.get("position_context", {}),
         "execution_constraints": selected.get("execution_constraints", {}),
         "llm_wake": selected.get("llm_wake", {}),
         "decision_source": selected.get("decision_source", "unknown"),
@@ -1905,7 +1909,23 @@ def execute_cycle(
             net_position=float(report["account"].get("net_position", 0.0) or 0.0),
             now_epoch=time.time(),
         )
+        current_state = position_policy_state.get(_position_policy_key(mode, report["selected_symbol"]), {})
         report["account"]["entry_count"] = entry_count_after_fill
+        report["account"]["opened_at_epoch"] = round(float(current_state.get("opened_at_epoch", 0.0) or 0.0), 3)
+        report["account"]["opened_at_local"] = (
+            datetime.fromtimestamp(float(current_state.get("opened_at_epoch", 0.0)), tz=timezone.utc).astimezone(LOCAL_TZ).isoformat()
+            if float(current_state.get("opened_at_epoch", 0.0) or 0.0) > 0
+            else ""
+        )
+        report["position_context"] = {
+            "is_open": True,
+            "position_side": str(report["account"].get("position_side", "flat")),
+            "hold_minutes": 0.0,
+            "hold_bars": 0.0,
+            "opened_at_epoch": float(current_state.get("opened_at_epoch", 0.0) or 0.0),
+            "opened_at_local": str(report["account"].get("opened_at_local", "")),
+            "entry_count": entry_count_after_fill,
+        }
     if str(result.get("status", "")).lower() in {"accepted", "filled"}:
         _mark_trade_cooldown(
             storage.trade_cooldown_state,

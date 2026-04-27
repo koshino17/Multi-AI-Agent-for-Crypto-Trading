@@ -133,6 +133,59 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _epoch_to_local_iso(value: Any) -> str:
+    try:
+        stamp = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if stamp <= 0:
+        return ""
+    return datetime.fromtimestamp(stamp, tz=timezone.utc).astimezone(LOCAL_TZ).isoformat()
+
+
+def _trade_timestamp_local(item: dict[str, Any]) -> str:
+    timestamp_text = _accepted_trade_timestamp(item)
+    if not timestamp_text:
+        return "n/a"
+    try:
+        parsed = datetime.fromisoformat(str(timestamp_text).replace("Z", "+00:00"))
+    except ValueError:
+        return str(timestamp_text)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(LOCAL_TZ).isoformat()
+
+
+def _perp_trade_label(side: str, reduce_only: bool) -> str:
+    normalized = str(side or "").strip().lower()
+    if reduce_only:
+        return "close short" if normalized == "buy" else "close long" if normalized == "sell" else "close position"
+    return "open/add long" if normalized == "buy" else "open/add short" if normalized == "sell" else normalized or "unknown"
+
+
+def _load_position_policy_metadata(path: Path, mode: str) -> dict[str, dict[str, Any]]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    prefix = f"{str(mode or '').strip().lower()}:"
+    result: dict[str, dict[str, Any]] = {}
+    for key, value in payload.items():
+        if not isinstance(key, str) or not isinstance(value, dict):
+            continue
+        if not key.startswith(prefix):
+            continue
+        symbol = key[len(prefix) :].strip()
+        if not symbol:
+            continue
+        result[symbol] = value
+    return result
+
+
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -855,26 +908,43 @@ def build_human_report(report: dict, mode: str, symbol: str) -> str:
     if report.get("selection_summary"):
         lines.append(f"- Selection: {report['selection_summary']}")
     account = report.get("account")
+    position_context = report.get("position_context") or {}
     if account:
         if account.get("market_type") == "perp":
-            account_line = (
-                f"- Account: equity {float(account.get('total_equity_usdt', account['free_usdt'])):.2f} USDT | "
-                f"available {float(account.get('available_balance_usdt', account['free_usdt'])):.2f} USDT | "
-                f"position {account.get('position_side', 'flat')} "
-                f"{float(account.get('base_asset', 0.0)):.6f} {account['base_symbol']} "
-                f"@ {float(account.get('entry_price', 0.0)):.4f} | "
-                f"UPnL {float(account.get('unrealized_pnl_usdt', 0.0)):+.2f} USDT | "
-                f"Lev {float(account.get('leverage', 0.0)):.2f}x | "
-                f"Liq {float(account.get('liq_price', 0.0)):.4f} | "
-                f"Buffer {float(account.get('liquidation_buffer_pct', 0.0)):.2f}% | "
-                f"TP {float(account.get('take_profit_price', 0.0)):.4f} | "
-                f"SL {float(account.get('stop_loss_price', 0.0)):.4f}"
+            opened_at_local = str(account.get("opened_at_local") or position_context.get("opened_at_local") or "").strip() or "n/a"
+            lines.extend(
+                [
+                    (
+                        f"- Account: equity {float(account.get('total_equity_usdt', account['free_usdt'])):.2f} USDT | "
+                        f"available {float(account.get('available_balance_usdt', account['free_usdt'])):.2f} USDT"
+                    ),
+                    (
+                        f"- Current Position: {account.get('position_side', 'flat')} "
+                        f"{float(account.get('base_asset', 0.0)):.6f} {account['base_symbol']}"
+                    ),
+                    f"- Position Opened: {opened_at_local}",
+                    (
+                        f"- Entry / Mark: {float(account.get('entry_price', 0.0)):.4f} -> "
+                        f"{float(account.get('mark_price', report.get('last_price', 0.0))):.4f}"
+                    ),
+                    (
+                        f"- Take Profit / Stop Loss: "
+                        f"{float(account.get('take_profit_price', 0.0)):.4f} / "
+                        f"{float(account.get('stop_loss_price', 0.0)):.4f}"
+                    ),
+                    (
+                        f"- Position Risk: UPnL {float(account.get('unrealized_pnl_usdt', 0.0)):+.2f} USDT | "
+                        f"Lev {float(account.get('leverage', 0.0)):.2f}x | "
+                        f"Liq {float(account.get('liq_price', 0.0)):.4f} | "
+                        f"Buffer {float(account.get('liquidation_buffer_pct', 0.0)):.2f}%"
+                    ),
+                ]
             )
         else:
             account_line = f"- Account: {account['free_usdt']:.2f} USDT + {account['base_asset']:.6f} {account['base_symbol']}"
             if account.get("dust_position"):
                 account_line += f" (dust ignored for execution: {float(account.get('dust_notional_usdt', 0.0)):.2f} USDT)"
-        lines.append(account_line)
+            lines.append(account_line)
 
     warnings = approval.get("warnings", [])
     if warnings:
@@ -1220,13 +1290,82 @@ def _accepted_trade_rows(records: list[dict[str, Any]], taker_fee_pct: float) ->
     return rows
 
 
+def _build_executed_trade_timeline(records: list[dict[str, Any]], *, limit: int = 12) -> list[dict[str, Any]]:
+    timeline: list[dict[str, Any]] = []
+    for item in records:
+        if _result_status(item) != "accepted":
+            continue
+        order = _order_payload(item)
+        result = item.get("result") or {}
+        account = item.get("account") or {}
+        if not isinstance(order, dict):
+            continue
+        side = str(order.get("side", "")).strip().lower()
+        reduce_only = bool(order.get("reduce_only"))
+        symbol = str(order.get("symbol") or item.get("selected_symbol") or "").strip()
+        quantity = _safe_float(result.get("submitted_qty")) or _safe_float(order.get("quantity"))
+        price = _safe_float(order.get("price")) or _safe_float(item.get("last_price"))
+        notional = _safe_float(order.get("notional_usdt"))
+        if notional <= 0 and quantity > 0 and price > 0:
+            notional = quantity * price
+        timeline.append(
+            {
+                "timestamp_local": _trade_timestamp_local(item),
+                "symbol": symbol,
+                "market_type": str(account.get("market_type", item.get("mode", ""))),
+                "label": _perp_trade_label(side, reduce_only) if _is_perp_record(item) else side or "trade",
+                "side": side,
+                "reduce_only": reduce_only,
+                "quantity": quantity,
+                "price": price,
+                "notional_usdt": notional,
+                "take_profit_price": _safe_float(account.get("take_profit_price")),
+                "stop_loss_price": _safe_float(account.get("stop_loss_price")),
+                "decision_source": _decision_source(item),
+                "approval_reason": str((item.get("approval") or {}).get("reason", "")).strip(),
+                "rationale": str((item.get("idea") or {}).get("rationale", "")).strip(),
+                "score": _safe_float((item.get("idea") or {}).get("score")),
+            }
+        )
+    return timeline[-limit:]
+
+
+def _latest_opening_record(
+    records: list[dict[str, Any]],
+    *,
+    symbol: str,
+    position_side: str,
+) -> dict[str, Any]:
+    target_symbol = str(symbol or "").strip()
+    target_side = str(position_side or "").strip().lower()
+    if not target_symbol or target_side not in {"long", "short"}:
+        return {}
+    expected_order_side = "buy" if target_side == "long" else "sell"
+    for item in reversed(records):
+        if _result_status(item) != "accepted":
+            continue
+        order = _order_payload(item)
+        if not isinstance(order, dict):
+            continue
+        if str(order.get("symbol") or item.get("selected_symbol") or "").strip() != target_symbol:
+            continue
+        if bool(order.get("reduce_only")):
+            continue
+        if str(order.get("side", "")).strip().lower() != expected_order_side:
+            continue
+        return item
+    return {}
+
+
 def _build_financial_snapshot(
     records: list[dict[str, Any]],
     all_records: list[dict[str, Any]],
     *,
     initial_balance_usdt: float,
     taker_fee_pct: float,
+    position_policy_metadata: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    position_policy_metadata = position_policy_metadata or {}
     if not records:
         return {
             "initial_capital_usdt": initial_balance_usdt,
@@ -1342,6 +1481,11 @@ def _build_financial_snapshot(
                 current_long_exposure += position_value
             elif side == "short":
                 current_short_exposure += position_value
+            opening_record = _latest_opening_record(
+                all_records,
+                symbol=str(item.get("symbol", "")).strip(),
+                position_side=side,
+            )
             base_pct = 0.0
             if position_value > 0 and current_price > 0:
                 base_pct = unrealized / position_value * 100
@@ -1367,6 +1511,15 @@ def _build_financial_snapshot(
                     "stop_loss_price": _safe_float(item.get("stop_loss_price")),
                     "trailing_stop_distance": _safe_float(item.get("trailing_stop_distance")),
                     "liquidation_buffer_pct": _safe_float(item.get("liquidation_buffer_pct")),
+                    "opened_at_local": _epoch_to_local_iso(
+                        (position_policy_metadata.get(str(item.get("symbol", "")).strip()) or {}).get("opened_at_epoch")
+                    ),
+                    "entry_count": _safe_int(
+                        (position_policy_metadata.get(str(item.get("symbol", "")).strip()) or {}).get("entry_count")
+                    ),
+                    "entry_source": _decision_source(opening_record) if opening_record else "",
+                    "entry_reason": str((opening_record.get("idea") or {}).get("rationale", "")).strip() if opening_record else "",
+                    "entry_trade_timestamp_local": _trade_timestamp_local(opening_record) if opening_record else "",
                 }
             )
         holdings.sort(key=lambda item: float(item["value_usdt"]), reverse=True)
@@ -1704,6 +1857,7 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
     records = _filter_records_by_mode(_load_daily_records(trade_logs_dir, date_label), settings.trading_mode)
     all_records = _filter_records_by_mode(_load_all_records(trade_logs_dir), settings.trading_mode)
     runner_event_counts = _load_runner_event_counts(runner_log_path, date_label)
+    position_policy_metadata = _load_position_policy_metadata(storage.position_policy_state, settings.trading_mode)
     summary = summarize_daily_records(records, runner_event_counts)
     summary["mode"] = settings.trading_mode
     summary["financial_snapshot"] = _build_financial_snapshot(
@@ -1711,6 +1865,7 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
         all_records,
         initial_balance_usdt=settings.initial_balance_usdt,
         taker_fee_pct=settings.taker_fee_pct,
+        position_policy_metadata=position_policy_metadata,
     )
     summary["equity_curve"] = load_equity_curve_summary(
         mode_scoped_path(storage.equity_curve_history_state, settings.trading_mode),
@@ -1732,8 +1887,13 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
         external_benchmarks=summary["external_benchmarks"],
         focus_symbol=focus_symbol,
     )
+    summary["executed_trade_timeline"] = _build_executed_trade_timeline(records)
     summary["daily_strategy_review"] = _load_daily_strategy_review(trade_logs_dir, date_label)
-    summary["external_ai_review"] = load_external_ai_review(external_ai_review_path(storage, date_label))
+    summary["external_ai_review"] = (
+        load_external_ai_review(external_ai_review_path(storage, date_label))
+        if settings.external_ai_review_enabled
+        else {}
+    )
     return summary
 
 
@@ -1766,6 +1926,7 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
     decision_source_counts = summary.get("decision_source_counts", {})
     accepted_source_counts = summary.get("accepted_source_counts", {})
     trade_review = summary.get("trade_review", {})
+    executed_trade_timeline = summary.get("executed_trade_timeline", [])
     policy_exit_diagnostics = summary.get("policy_exit_diagnostics", {})
     top_traded_symbol = next(iter(executed_symbol_counts.items()), ("n/a", 0))
     long_proposals = int(summary.get("long_proposals", 0))
@@ -1860,18 +2021,45 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
         )
 
     holdings = financial.get("holdings", [])
+    open_episode_by_symbol = {
+        str(item.get("symbol", "")).strip(): item
+        for item in trade_review.get("episodes", [])
+        if isinstance(item, dict) and str(item.get("status", "")).strip().lower() == "open"
+    }
     if holdings:
         lines.append("- Positions:")
         for item in holdings:
             if item.get("market_type") == "perp":
+                symbol_key = str(item.get("symbol", "")).strip()
+                open_episode = open_episode_by_symbol.get(symbol_key, {})
                 lines.append(
                     f"  - {item['asset']} {item.get('position_side', 'flat')}: {float(item['quantity']):.6f} "
-                    f"(Notional: {float(item['value_usdt']):.2f} USDT | Entry: {float(item.get('entry_price', 0.0)):.4f} | "
-                    f"Mark: {float(item['price']):.4f} | Weight: {float(item['weight_pct']):.1f}% | "
-                    f"UPnL: {float(item['unrealized_pnl_usdt']):+.2f} USDT / {float(item['unrealized_pnl_pct']):+.2f}% | "
-                    f"Lev: {float(item.get('leverage', 0.0)):.2f}x | Liq buffer: {float(item.get('liquidation_buffer_pct', 0.0)):.2f}% | "
-                    f"TP: {float(item.get('take_profit_price', 0.0)):.4f} | SL: {float(item.get('stop_loss_price', 0.0)):.4f})"
+                    f"(Notional: {float(item['value_usdt']):.2f} USDT | Weight: {float(item['weight_pct']):.1f}%)"
                 )
+                lines.append(
+                    f"    opened: {str(item.get('opened_at_local', 'n/a')) or 'n/a'} | "
+                    f"entry: {float(item.get('entry_price', 0.0)):.4f} | "
+                    f"mark: {float(item['price']):.4f} | "
+                    f"entries: {int(item.get('entry_count', 0) or 0)}"
+                )
+                lines.append(
+                    f"    TP / SL: {float(item.get('take_profit_price', 0.0)):.4f} / "
+                    f"{float(item.get('stop_loss_price', 0.0)):.4f} | "
+                    f"UPnL: {float(item['unrealized_pnl_usdt']):+.2f} USDT / {float(item['unrealized_pnl_pct']):+.2f}%"
+                )
+                lines.append(
+                    f"    leverage: {float(item.get('leverage', 0.0)):.2f}x | "
+                    f"liq buffer: {float(item.get('liquidation_buffer_pct', 0.0)):.2f}%"
+                )
+                if item.get("entry_trade_timestamp_local") or item.get("entry_source"):
+                    lines.append(
+                        f"    opened by: {item.get('entry_source', 'unknown') or 'unknown'} | "
+                        f"trade_time: {item.get('entry_trade_timestamp_local', 'n/a') or 'n/a'}"
+                    )
+                if item.get("entry_reason"):
+                    lines.append(f"    thesis: {item.get('entry_reason')}")
+                elif open_episode.get("latest_entry_reason"):
+                    lines.append(f"    thesis: {open_episode.get('latest_entry_reason')}")
             else:
                 lines.append(
                     f"  - {item['asset']}: {float(item['quantity']):.6f} "
@@ -1949,6 +2137,25 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
         lines.extend(["", "## Why Rejected", ""])
         for reason, count in rejection_reason_counts.items():
             lines.append(f"- {reason}: {count}")
+
+    lines.extend(["", "## Executed Trades Today", ""])
+    if executed_trade_timeline:
+        for item in executed_trade_timeline:
+            lines.append(
+                f"- {item.get('timestamp_local', 'n/a')} | {item.get('symbol', 'n/a')} | "
+                f"{item.get('label', 'trade')} | qty={float(item.get('quantity', 0.0)):.6f} | "
+                f"price={float(item.get('price', 0.0)):.4f} | notional={float(item.get('notional_usdt', 0.0)):.2f} USDT | "
+                f"TP={float(item.get('take_profit_price', 0.0)):.4f} | SL={float(item.get('stop_loss_price', 0.0)):.4f}"
+            )
+            lines.append(
+                f"  source={item.get('decision_source', 'unknown')} | "
+                f"score={float(item.get('score', 0.0)):.2f} | "
+                f"risk={item.get('approval_reason', 'n/a')}"
+            )
+            if item.get("rationale"):
+                lines.append(f"  why={item.get('rationale')}")
+    else:
+        lines.append("- No accepted trades today.")
 
     if top_benchmark.get("candidate_id"):
         lines.extend(["", "## External Benchmarks", ""])
@@ -2127,6 +2334,8 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
         strategy_research = latest.get("strategy_research")
         if strategy_research:
             lines.append(f"- Strategy Research: {strategy_research['summary']}")
+        if latest.get("idea", {}).get("rationale"):
+            lines.append(f"- Why This Decision: {latest['idea']['rationale']}")
         strategy_memory = latest.get("strategy_memory") or {}
         controls = strategy_memory.get("controls") or {}
         if controls:
@@ -2141,18 +2350,34 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
         account = latest.get("account")
         if account:
             if account.get("market_type") == "perp":
-                account_line = (
-                    f"- Account: equity {float(account.get('total_equity_usdt', account['free_usdt'])):.2f} USDT | "
-                    f"available {float(account.get('available_balance_usdt', account['free_usdt'])):.2f} USDT | "
-                    f"position {account.get('position_side', 'flat')} "
-                    f"{float(account.get('base_asset', 0.0)):.6f} {account['base_symbol']} "
-                    f"@ {float(account.get('entry_price', 0.0)):.4f} | "
-                    f"UPnL {float(account.get('unrealized_pnl_usdt', 0.0)):+.2f} USDT | "
-                    f"Lev {float(account.get('leverage', 0.0)):.2f}x | "
-                    f"Liq {float(account.get('liq_price', 0.0)):.4f} | "
-                    f"Buffer {float(account.get('liquidation_buffer_pct', 0.0)):.2f}% | "
-                    f"TP {float(account.get('take_profit_price', 0.0)):.4f} | "
-                    f"SL {float(account.get('stop_loss_price', 0.0)):.4f}"
+                opened_at_local = str(account.get("opened_at_local") or (latest.get("position_context") or {}).get("opened_at_local") or "").strip() or "n/a"
+                lines.extend(
+                    [
+                        (
+                            f"- Account: equity {float(account.get('total_equity_usdt', account['free_usdt'])):.2f} USDT | "
+                            f"available {float(account.get('available_balance_usdt', account['free_usdt'])):.2f} USDT"
+                        ),
+                        (
+                            f"- Current Position: {account.get('position_side', 'flat')} "
+                            f"{float(account.get('base_asset', 0.0)):.6f} {account['base_symbol']}"
+                        ),
+                        f"- Position Opened: {opened_at_local}",
+                        (
+                            f"- Entry / Mark: {float(account.get('entry_price', 0.0)):.4f} -> "
+                            f"{float(account.get('mark_price', latest.get('last_price', 0.0))):.4f}"
+                        ),
+                        (
+                            f"- Take Profit / Stop Loss: "
+                            f"{float(account.get('take_profit_price', 0.0)):.4f} / "
+                            f"{float(account.get('stop_loss_price', 0.0)):.4f}"
+                        ),
+                        (
+                            f"- Position Risk: UPnL {float(account.get('unrealized_pnl_usdt', 0.0)):+.2f} USDT | "
+                            f"Lev {float(account.get('leverage', 0.0)):.2f}x | "
+                            f"Liq {float(account.get('liq_price', 0.0)):.4f} | "
+                            f"Buffer {float(account.get('liquidation_buffer_pct', 0.0)):.2f}%"
+                        ),
+                    ]
                 )
             else:
                 account_line = (
@@ -2163,7 +2388,7 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
                     account_line += (
                         f" (dust ignored for execution: {float(account.get('dust_notional_usdt', 0.0)):.2f} USDT)"
                     )
-            lines.append(account_line)
+                lines.append(account_line)
             warnings = latest.get("approval", {}).get("warnings", [])
             if warnings:
                 lines.append(f"- Main Risk: {'; '.join(warnings[:2])}")

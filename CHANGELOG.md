@@ -1141,3 +1141,14 @@ What Changed:
 - Added `INTRADAY_MAX_ENTRIES_PER_EPISODE` so the live executor can block same-direction add-ons after a configurable number of fills.
 - Position policy state now preserves the same episode across same-direction scaling and tracks `entry_count`.
 - Candidate snapshots now expose `entry_count` and `max_entries_per_episode` for easier postmortem and daily review analysis.
+
+# v0.11.27 - Make reports explain positions and executed trades
+
+Why:
+- Daily and 5-minute reports still compressed current positions into a single dense line, which made it hard to answer basic questions like "is this long or short?", "when did we enter?", and "where are TP/SL?".
+- Daily review also lacked a clean, timestamped trade ledger for the current Taiwan date, so manual replay was still too dependent on raw logs.
+
+What Changed:
+- Current perp positions now show direction, opened time, entry price, mark price, TP/SL, leverage, liquidation buffer, and entry count in a multi-line readable format.
+- Daily reports now include an `Executed Trades Today` section with timestamp, long/short action label, quantity, price, notional, TP/SL, decision source, risk decision, and rationale.
+- Position policy metadata is now surfaced into reporting so open positions can show when the current episode began.
