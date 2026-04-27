@@ -704,6 +704,110 @@ def _tighten_take_profit(position_side: str, current_take_profit: float, candida
     return min(current_take_profit, candidate_take_profit)
 
 
+def _snapshot_atr_pct(snapshot, period: int = 14) -> float:
+    highs = [float(item) for item in getattr(snapshot, "highs", []) if float(item) > 0]
+    lows = [float(item) for item in getattr(snapshot, "lows", []) if float(item) > 0]
+    closes = [float(item) for item in getattr(snapshot, "closes", []) if float(item) > 0]
+    if len(highs) < period + 1 or len(lows) < period + 1 or len(closes) < period + 1:
+        return 0.0
+    true_ranges: list[float] = []
+    start = max(1, len(closes) - period)
+    for idx in range(start, len(closes)):
+        prev_close = closes[idx - 1]
+        high = highs[idx]
+        low = lows[idx]
+        true_ranges.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+    if not true_ranges:
+        return 0.0
+    last_price = closes[-1]
+    if last_price <= 0:
+        return 0.0
+    return (fmean(true_ranges) / last_price) * 100.0
+
+
+def _resolve_intraday_protection_profile(snapshot) -> dict[str, float | str]:
+    if snapshot is None:
+        return {
+            "regime": "normal",
+            "atr_pct": 0.0,
+            "range_pct": 0.0,
+            "net_move_pct": 0.0,
+            "efficiency": 0.0,
+            "stop_mult": 1.0,
+            "take_mult": 1.0,
+            "trigger1_mult": 1.0,
+            "offset1_mult": 1.0,
+            "trigger2_mult": 1.0,
+            "lock2_mult": 1.0,
+        }
+    closes = [float(item) for item in getattr(snapshot, "closes", []) if float(item) > 0]
+    highs = [float(item) for item in getattr(snapshot, "highs", []) if float(item) > 0]
+    lows = [float(item) for item in getattr(snapshot, "lows", []) if float(item) > 0]
+    if len(closes) < 15 or len(highs) < 15 or len(lows) < 15:
+        return {
+            "regime": "normal",
+            "atr_pct": 0.0,
+            "range_pct": 0.0,
+            "net_move_pct": 0.0,
+            "efficiency": 0.0,
+            "stop_mult": 1.0,
+            "take_mult": 1.0,
+            "trigger1_mult": 1.0,
+            "offset1_mult": 1.0,
+            "trigger2_mult": 1.0,
+            "lock2_mult": 1.0,
+        }
+
+    window = min(20, len(closes))
+    window_high = max(highs[-window:])
+    window_low = min(lows[-window:])
+    last_price = closes[-1]
+    range_pct = ((window_high - window_low) / last_price) * 100.0 if last_price > 0 else 0.0
+    anchor_price = closes[-window]
+    net_move_pct = abs(((closes[-1] - anchor_price) / anchor_price) * 100.0) if anchor_price > 0 else 0.0
+    atr_pct = _snapshot_atr_pct(snapshot, period=min(14, len(closes) - 1))
+    efficiency = net_move_pct / max(range_pct, 0.01)
+
+    profile = {
+        "regime": "normal",
+        "atr_pct": round(atr_pct, 4),
+        "range_pct": round(range_pct, 4),
+        "net_move_pct": round(net_move_pct, 4),
+        "efficiency": round(efficiency, 4),
+        "stop_mult": 1.0,
+        "take_mult": 1.0,
+        "trigger1_mult": 1.0,
+        "offset1_mult": 1.0,
+        "trigger2_mult": 1.0,
+        "lock2_mult": 1.0,
+    }
+    if atr_pct <= 0.85 and efficiency <= 0.35:
+        profile.update(
+            {
+                "regime": "quiet_range",
+                "stop_mult": 0.85,
+                "take_mult": 0.80,
+                "trigger1_mult": 0.75,
+                "offset1_mult": 1.00,
+                "trigger2_mult": 0.80,
+                "lock2_mult": 0.85,
+            }
+        )
+    elif efficiency >= 0.65 and net_move_pct >= 1.0:
+        profile.update(
+            {
+                "regime": "directional_trend",
+                "stop_mult": 0.95,
+                "take_mult": 1.15,
+                "trigger1_mult": 0.90,
+                "offset1_mult": 1.00,
+                "trigger2_mult": 0.90,
+                "lock2_mult": 1.00,
+            }
+        )
+    return profile
+
+
 def _protection_targets_match(account, targets: dict[str, float], tolerance: float = 1e-4) -> bool:
     current_tp = float(getattr(account, "take_profit_price", 0.0) or 0.0)
     current_sl = float(getattr(account, "stop_loss_price", 0.0) or 0.0)
@@ -715,17 +819,19 @@ def _protection_targets_match(account, targets: dict[str, float], tolerance: flo
     )
 
 
-def _build_perp_protection_targets(account, settings) -> dict[str, float]:
+def _build_perp_protection_targets(account, settings, snapshot=None) -> tuple[dict[str, float], dict[str, float | str]]:
     if getattr(account, "market_type", "spot") != "perp":
-        return {"take_profit": 0.0, "stop_loss": 0.0, "trailing_stop": 0.0}
+        return {"take_profit": 0.0, "stop_loss": 0.0, "trailing_stop": 0.0}, _resolve_intraday_protection_profile(snapshot)
     position_side = str(getattr(account, "position_side", "flat"))
     entry_price = float(getattr(account, "entry_price", 0.0) or 0.0)
     mark_price = float(getattr(account, "mark_price", entry_price) or entry_price)
     if position_side not in {"long", "short"} or entry_price <= 0:
-        return {"take_profit": 0.0, "stop_loss": 0.0, "trailing_stop": 0.0}
+        return {"take_profit": 0.0, "stop_loss": 0.0, "trailing_stop": 0.0}, _resolve_intraday_protection_profile(snapshot)
 
-    stop_pct = max(float(settings.perp_hard_stop_loss_pct), 0.0) / 100.0
-    take_pct = max(float(settings.perp_take_profit_pct), 0.0) / 100.0
+    profile = _resolve_intraday_protection_profile(snapshot)
+
+    stop_pct = (max(float(settings.perp_hard_stop_loss_pct), 0.0) * float(profile["stop_mult"])) / 100.0
+    take_pct = (max(float(settings.perp_take_profit_pct), 0.0) * float(profile["take_mult"])) / 100.0
     trail_pct = max(float(settings.perp_trailing_stop_pct), 0.0) / 100.0
     profit_pct = _perp_position_return_pct(account)
     current_take_profit = float(getattr(account, "take_profit_price", 0.0) or 0.0)
@@ -741,10 +847,10 @@ def _build_perp_protection_targets(account, settings) -> dict[str, float]:
     take_profit = _tighten_take_profit(position_side, current_take_profit, take_profit)
     stop_loss = _tighten_stop_loss(position_side, current_stop_loss, stop_loss)
 
-    trigger_1 = max(float(settings.perp_profit_lock_trigger_pct), 0.0)
-    breakeven_offset_pct = max(float(settings.perp_profit_lock_breakeven_offset_pct), 0.0) / 100.0
-    trigger_2 = max(float(settings.perp_profit_lock_trigger_2_pct), 0.0)
-    lock_2_pct = max(float(settings.perp_profit_lock_stop_2_pct), 0.0) / 100.0
+    trigger_1 = max(float(settings.perp_profit_lock_trigger_pct), 0.0) * float(profile["trigger1_mult"])
+    breakeven_offset_pct = (max(float(settings.perp_profit_lock_breakeven_offset_pct), 0.0) * float(profile["offset1_mult"])) / 100.0
+    trigger_2 = max(float(settings.perp_profit_lock_trigger_2_pct), 0.0) * float(profile["trigger2_mult"])
+    lock_2_pct = (max(float(settings.perp_profit_lock_stop_2_pct), 0.0) * float(profile["lock2_mult"])) / 100.0
 
     if profit_pct >= trigger_1 and breakeven_offset_pct > 0:
         candidate_stop = (
@@ -766,29 +872,35 @@ def _build_perp_protection_targets(account, settings) -> dict[str, float]:
         "take_profit": round(max(take_profit, 0.0), 6),
         "stop_loss": round(max(stop_loss, 0.0), 6),
         "trailing_stop": round(max(trailing_stop, 0.0), 6),
-    }
+    }, profile
 
 
-def _apply_perp_protection(exchange, symbol: str, settings, *, force: bool = False) -> tuple[dict[str, float], dict]:
+def _apply_perp_protection(exchange, symbol: str, settings, snapshot=None, *, force: bool = False) -> tuple[dict[str, float], dict, dict[str, float | str]]:
     if not settings.perp_enable_protection_orders:
-        return {"take_profit": 0.0, "stop_loss": 0.0, "trailing_stop": 0.0}, {"status": "disabled"}
+        profile = _resolve_intraday_protection_profile(snapshot)
+        return {"take_profit": 0.0, "stop_loss": 0.0, "trailing_stop": 0.0}, {"status": "disabled"}, profile
     account = None
     for _ in range(3):
         account = exchange.fetch_account_state(symbol)
         if getattr(account, "market_type", "spot") == "perp" and str(getattr(account, "position_side", "flat")) in {"long", "short"}:
             break
         sleep(0.6)
-    protection_targets = _build_perp_protection_targets(account, settings) if account is not None else {
+    if snapshot is None:
+        try:
+            snapshot = exchange.fetch_snapshot(symbol, settings.timeframe)
+        except Exception:
+            snapshot = None
+    protection_targets, profile = _build_perp_protection_targets(account, settings, snapshot=snapshot) if account is not None else ({
         "take_profit": 0.0,
         "stop_loss": 0.0,
         "trailing_stop": 0.0,
-    }
+    }, _resolve_intraday_protection_profile(snapshot))
     if not any(float(value) > 0 for value in protection_targets.values()):
-        return protection_targets, {"status": "skipped", "reason": "no active perp position for protection"}
+        return protection_targets, {"status": "skipped", "reason": "no active perp position for protection"}, profile
     if not force and account is not None and _protection_targets_match(account, protection_targets):
-        return protection_targets, {"status": "unchanged", "reason": "existing protection already matches target"}
+        return protection_targets, {"status": "unchanged", "reason": "existing protection already matches target"}, profile
     protection_result = exchange.set_position_protection(symbol, **protection_targets)
-    return protection_targets, protection_result
+    return protection_targets, protection_result, profile
 
 
 def _market_wake_gate(snapshot, effective_base_asset: float, settings) -> dict:
@@ -1317,20 +1429,22 @@ def execute_cycle(
         )
         account = exchange.fetch_account_state(candidate_symbol)
         protection_targets = {"take_profit": 0.0, "stop_loss": 0.0, "trailing_stop": 0.0}
+        protection_profile: dict[str, float | str] = {}
         position_protection = {"status": "skipped", "reason": "no active perp position"}
         if mode == "bybit-demo-perp" and str(getattr(account, "position_side", "flat")) in {"long", "short"}:
             protection_started_at = perf_counter()
-            protection_targets, position_protection = _apply_perp_protection(
+            protection_targets, position_protection, protection_profile = _apply_perp_protection(
                 exchange,
                 candidate_symbol,
                 settings,
+                snapshot,
                 force=False,
             )
             _record_stage_metric(stage_metrics, "protection_sync", perf_counter() - protection_started_at)
             if str(position_protection.get("status", "")).lower() == "ok":
                 account = exchange.fetch_account_state(candidate_symbol)
             else:
-                protection_targets = _build_perp_protection_targets(account, settings)
+                protection_targets, protection_profile = _build_perp_protection_targets(account, settings, snapshot=snapshot)
         available_usdt = account.free_usdt
         actual_base_asset = account.base_asset
         position_side = getattr(account, "position_side", "flat")
@@ -1665,6 +1779,7 @@ def execute_cycle(
                 },
                 "llm_wake": llm_wake,
                 "protection_targets": protection_targets,
+                "protection_profile": protection_profile,
                 "protection_sync": position_protection,
                 "decision_source": decision_source,
                 "strategy_memory": {
@@ -1870,8 +1985,14 @@ def execute_cycle(
     report["evaluation"] = evaluation.__dict__
     if str(result.get("status", "")).lower() in {"accepted", "filled"} and mode == "bybit-demo-perp" and not bool(order.get("reduce_only")):
         try:
-            protection_targets, protection_result = _apply_perp_protection(exchange, report["selected_symbol"], settings)
+            protection_targets, protection_result, protection_profile = _apply_perp_protection(
+                exchange,
+                report["selected_symbol"],
+                settings,
+                selected.get("snapshot"),
+            )
             report["protection_targets"] = protection_targets
+            report["protection_profile"] = protection_profile
             report["protection_result"] = protection_result
             refreshed_account = exchange.fetch_account_state(report["selected_symbol"])
             report["account"].update(

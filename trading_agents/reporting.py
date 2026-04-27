@@ -909,6 +909,7 @@ def build_human_report(report: dict, mode: str, symbol: str) -> str:
         lines.append(f"- Selection: {report['selection_summary']}")
     account = report.get("account")
     position_context = report.get("position_context") or {}
+    protection_profile = report.get("protection_profile") or {}
     if account:
         if account.get("market_type") == "perp":
             opened_at_local = str(account.get("opened_at_local") or position_context.get("opened_at_local") or "").strip() or "n/a"
@@ -931,6 +932,12 @@ def build_human_report(report: dict, mode: str, symbol: str) -> str:
                         f"- Take Profit / Stop Loss: "
                         f"{float(account.get('take_profit_price', 0.0)):.4f} / "
                         f"{float(account.get('stop_loss_price', 0.0)):.4f}"
+                    ),
+                    (
+                        f"- Protection Logic: {str(protection_profile.get('regime', 'normal'))} | "
+                        f"ATR {float(protection_profile.get('atr_pct', 0.0)):.2f}% | "
+                        f"range {float(protection_profile.get('range_pct', 0.0)):.2f}% | "
+                        f"efficiency {float(protection_profile.get('efficiency', 0.0)):.2f}"
                     ),
                     (
                         f"- Position Risk: UPnL {float(account.get('unrealized_pnl_usdt', 0.0)):+.2f} USDT | "
@@ -1049,6 +1056,7 @@ def build_human_report(report: dict, mode: str, symbol: str) -> str:
         )
     protection_result = report.get("protection_result")
     protection_targets = report.get("protection_targets")
+    protection_profile = report.get("protection_profile") or {}
     if protection_result or protection_targets:
         lines.extend(["", "## Protection", ""])
         if protection_targets:
@@ -1056,6 +1064,14 @@ def build_human_report(report: dict, mode: str, symbol: str) -> str:
                 f"- Targets: TP {float(protection_targets.get('take_profit', 0.0)):.4f} | "
                 f"SL {float(protection_targets.get('stop_loss', 0.0)):.4f} | "
                 f"Trailing {float(protection_targets.get('trailing_stop', 0.0)):.4f}"
+            )
+        if protection_profile:
+            lines.append(
+                f"- Profile: {str(protection_profile.get('regime', 'normal'))} | "
+                f"ATR {float(protection_profile.get('atr_pct', 0.0)):.2f}% | "
+                f"range {float(protection_profile.get('range_pct', 0.0)):.2f}% | "
+                f"net move {float(protection_profile.get('net_move_pct', 0.0)):.2f}% | "
+                f"efficiency {float(protection_profile.get('efficiency', 0.0)):.2f}"
             )
         if protection_result:
             lines.append(f"- Result: {protection_result.get('status', 'unknown')}")
@@ -2351,6 +2367,7 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
         if account:
             if account.get("market_type") == "perp":
                 opened_at_local = str(account.get("opened_at_local") or (latest.get("position_context") or {}).get("opened_at_local") or "").strip() or "n/a"
+                protection_profile = latest.get("protection_profile") or {}
                 lines.extend(
                     [
                         (
@@ -2370,6 +2387,12 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
                             f"- Take Profit / Stop Loss: "
                             f"{float(account.get('take_profit_price', 0.0)):.4f} / "
                             f"{float(account.get('stop_loss_price', 0.0)):.4f}"
+                        ),
+                        (
+                            f"- Protection Logic: {str(protection_profile.get('regime', 'normal'))} | "
+                            f"ATR {float(protection_profile.get('atr_pct', 0.0)):.2f}% | "
+                            f"range {float(protection_profile.get('range_pct', 0.0)):.2f}% | "
+                            f"efficiency {float(protection_profile.get('efficiency', 0.0)):.2f}"
                         ),
                         (
                             f"- Position Risk: UPnL {float(account.get('unrealized_pnl_usdt', 0.0)):+.2f} USDT | "

@@ -1170,3 +1170,14 @@ What Changed:
 - Existing perp positions now retarget stale take-profit orders toward the tighter current intraday target instead of preserving the older, wider TP forever.
 - Daily review fallback analysis now explicitly flags cases where realized gains do not clear fees or where unrealized gains dominate realized results, and suggests tightening TP / first-stage profit-lock as a concrete next action.
 - Strategy reflection now records the same giveback pattern in its risk-adjustment output so future learning controls can respond to it instead of only reacting to raw PnL.
+
+# v0.11.29 - Make perp TP/SL regime-aware instead of one-size-fits-all
+
+Why:
+- Fixed-percent protection was still too blunt for `TradePulse`: quiet range days wanted closer targets, while clearer trend days could tolerate more room.
+- We also needed the report itself to explain *which* protection regime was active, so `TP/SL` changes would not look arbitrary.
+
+What Changed:
+- Perp protection targets now derive a simple intraday regime from recent ATR, 20-candle range, and net-move efficiency.
+- `quiet_range` profiles tighten both initial TP/SL and profit-lock triggers; `directional_trend` profiles allow slightly more room while still tightening giveback control; `normal` stays near the configured baseline.
+- Daily reports and latest-decision summaries now show the active protection logic profile (`regime`, ATR, range, efficiency) alongside TP/SL.
