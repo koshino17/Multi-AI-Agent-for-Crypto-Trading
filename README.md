@@ -227,11 +227,12 @@ http://127.0.0.1:8765
 
 意思是：
 
-- 每 `30` 秒監控一次市場 / 帳戶
+- 每 `30` 秒跑一次 monitor loop
+- monitor loop 會對觀察池中的每個標的抓一次「不含 microstructure 的 K 線快照」與一次帳戶狀態，不是只看單一 ticker price
 - 完整 decision cycle 主要由新 candle、帳戶變化或價格觸發
 - 不會每 30 秒都跑完整 LLM 重分析
 - 無持倉、低波動、低量能、且沒有明確區間邊緣的盤面，會先走 Python short-circuit，不喚醒 LLM
-- 高頻 monitor 只抓輕量價格快照；較重的 order book / recent trades 盤面特徵只在完整 decision cycle 載入
+- 高頻 monitor 不會抓較重的 `orderbook / recent trades` 盤面特徵；這些只在完整 decision cycle 載入
 
 ## Order Flow / Market Microstructure
 
