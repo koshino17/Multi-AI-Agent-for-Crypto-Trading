@@ -43,7 +43,16 @@
   - 新增 EMA / ATR 輔助計算，讓這些候選能真的跑 replay，不只是設定檔佔位
 - `README.md`
   - 補上目前 external benchmark 已支援的研究候選
+  - 補上 `Shadow Benchmark Watch` 的說明
   - 明確標記 `funding rate` 仍屬後續 research item，尚未接進 live 或 benchmark
+- `reporting.py` / `agents.py`
+  - daily report 與 `Strategy Review` 現在會新增 `Shadow Benchmark Watch`
+  - 會直接比較 live baseline 與指定 shadow candidate 在同標的上的：
+    - expectancy
+    - profit factor
+    - cumulative return
+    - trade count
+  - 並輸出 `keep_shadow_watch / promotion_candidate / no_upgrade_signal`
 
 ## v0.11.24 - Always-on launchd runner
 

@@ -16,6 +16,7 @@
   - `Donchian + ADX` 的 `10 / 14 / 20` 週期版本
   - `Keltner-filtered Donchian`
   - `ATR + Donchian midline exit` 版本
+- daily report 會額外產出 `Shadow Benchmark Watch`，把目前 live baseline 和指定 shadow candidate 做 head-to-head 對照，方便決定是否值得升級研究候選
 - full cycle 會額外接入基礎 `order flow / market microstructure` 特徵，而不再只看 15m K 線與 sentiment
 - daily report / Notion `Daily Review` 會自動產出 `Symbol Postmortem`，優先回顧單一重點標的的走勢、決策分布與主要卡點
 - 每筆決策現在都會記錄 `Decision Source`，區分 `base_strategy / fallback / fallback_guard / policy_exit`

@@ -1051,6 +1051,7 @@ class DailyReviewAgent:
         if symbol_postmortem.get("summary"):
             decision_summary += f" 單一標的檢討：{symbol_postmortem.get('summary')}"
         benchmark_for_review = focus_benchmark if focus_benchmark.get("candidate_id") else top_benchmark
+        shadow_watch = daily_summary.get("shadow_benchmark_watch") or {}
         if benchmark_for_review.get("candidate_id"):
             decision_summary += (
                 f" 最新外部 benchmark 目前以 {benchmark_for_review.get('candidate_id', 'n/a')} "
@@ -1121,6 +1122,14 @@ class DailyReviewAgent:
                 f"expectancy {float(benchmark_for_review.get('expectancy_pct', 0.0)):+.2f}% / "
                 f"profit factor {float(benchmark_for_review.get('profit_factor', 0.0)):.2f}。"
             )
+        if shadow_watch.get("status") == "ready":
+            benchmark_review += (
+                f" Shadow 對照中，`{shadow_watch.get('watch_candidate_id', 'n/a')}` 相對 "
+                f"`{shadow_watch.get('baseline_candidate_id', 'n/a')}` 的 expectancy 差值為 "
+                f"{float(shadow_watch.get('expectancy_delta_pct', 0.0)):+.2f}% 、"
+                f"profit factor 差值為 {float(shadow_watch.get('profit_factor_delta', 0.0)):+.2f}，"
+                f"目前判定為 `{shadow_watch.get('verdict', 'n/a')}`。"
+            )
 
         execution_review = (
             f"執行面共有 {daily_summary.get('submitted_orders', 0)} 次送單、"
@@ -1138,6 +1147,8 @@ class DailyReviewAgent:
             action_items.append(
                 f"將 `{benchmark_for_review.get('candidate_id')}` 與 live baseline 做同標的 attribution 對照。"
             )
+        if shadow_watch.get("status") == "ready":
+            action_items.append(str(shadow_watch.get("next_step", "")).strip())
         controls = strategy_memory.get("controls") or {}
         if controls:
             action_items.append(f"確認 learning controls 是否真的落地：{json.dumps(controls, ensure_ascii=False)}")
