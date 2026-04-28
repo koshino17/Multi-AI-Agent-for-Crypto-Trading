@@ -670,6 +670,7 @@ def _build_shadow_benchmark_watch(
     *,
     focus_symbol: str,
     watch_candidate_id: str = "donchian_adx_keltner_v1",
+    benchmark_reports_dir: Path | None = None,
 ) -> dict[str, Any]:
     payload = external_benchmarks or {}
     baseline_id = str(payload.get("baseline_strategy_id", "")).strip() or "donchian_adx_perp_v1"
@@ -709,24 +710,35 @@ def _build_shadow_benchmark_watch(
     cumulative_delta = float(watch.get("cumulative_return_pct", 0.0)) - float(baseline.get("cumulative_return_pct", 0.0))
     trade_count_delta = int(watch.get("trade_count", 0) or 0) - int(baseline.get("trade_count", 0) or 0)
     is_watch_leader = str(leader.get("candidate_id", "")).strip() == watch_candidate_id
-    promotion_ready = (
+    streak = _shadow_promotion_streak(
+        benchmark_reports_dir,
+        focus_symbol=focus_symbol,
+        baseline_id=baseline_id,
+        watch_candidate_id=watch_candidate_id,
+    )
+    current_snapshot_qualified = (
         is_watch_leader
         and expectancy_delta >= 0.03
         and profit_factor_delta >= 0.20
         and int(watch.get("trade_count", 0) or 0) >= 20
     )
+    promotion_ready = current_snapshot_qualified and streak >= 3
     verdict = (
         "promotion_candidate"
         if promotion_ready
+        else "watch_streak_building"
+        if current_snapshot_qualified
         else "keep_shadow_watch"
         if is_watch_leader and expectancy_delta > 0
         else "no_upgrade_signal"
     )
     next_step = (
-        f"將 `{watch_candidate_id}` 納入更正式的 shadow-vs-live 追蹤，並觀察是否連續多日維持領先。"
+        f"將 `{watch_candidate_id}` 納入更正式的 shadow-vs-live 追蹤，並觀察是否連續多次 benchmark 快照維持領先。"
         if verdict == "keep_shadow_watch"
-        else f"`{watch_candidate_id}` 已達初步升級條件，下一步應定義 live promotion gate。"
+        else f"`{watch_candidate_id}` 已連續 {streak} 次達到升級門檻，下一步應定義 live promotion gate。"
         if verdict == "promotion_candidate"
+        else f"`{watch_candidate_id}` 已開始累積升級 streak（目前 {streak} 次），先維持 shadow 並續看下一輪 benchmark。"
+        if verdict == "watch_streak_building"
         else "目前仍以 live baseline 為主，繼續觀察其他候選是否出現更穩定優勢。"
     )
     summary = (
@@ -747,10 +759,51 @@ def _build_shadow_benchmark_watch(
         "cumulative_return_delta_pct": round(cumulative_delta, 4),
         "trade_count_delta": trade_count_delta,
         "is_watch_leader": is_watch_leader,
+        "promotion_streak": streak,
+        "current_snapshot_qualified": current_snapshot_qualified,
         "verdict": verdict,
         "summary": summary,
         "next_step": next_step,
     }
+
+
+def _shadow_promotion_streak(
+    benchmark_reports_dir: Path | None,
+    *,
+    focus_symbol: str,
+    baseline_id: str,
+    watch_candidate_id: str,
+    limit: int = 6,
+) -> int:
+    if benchmark_reports_dir is None or not benchmark_reports_dir.exists() or not focus_symbol:
+        return 0
+    files = sorted(benchmark_reports_dir.glob("external-benchmark-*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    streak = 0
+    for path in files[:limit]:
+        try:
+            payload = json.loads(path.read_text())
+        except Exception:
+            continue
+        symbol_rows = ((payload.get("results") or {}).get(focus_symbol)) if isinstance(payload.get("results"), dict) else None
+        if not isinstance(symbol_rows, list) or not symbol_rows:
+            break
+        leader = symbol_rows[0] if isinstance(symbol_rows[0], dict) else {}
+        baseline = next((item for item in symbol_rows if isinstance(item, dict) and str(item.get("candidate_id", "")).strip() == baseline_id), {})
+        watch = next((item for item in symbol_rows if isinstance(item, dict) and str(item.get("candidate_id", "")).strip() == watch_candidate_id), {})
+        if not baseline or not watch:
+            break
+        expectancy_delta = float(watch.get("expectancy_pct", 0.0)) - float(baseline.get("expectancy_pct", 0.0))
+        profit_factor_delta = float(watch.get("profit_factor", 0.0)) - float(baseline.get("profit_factor", 0.0))
+        qualified = (
+            str(leader.get("candidate_id", "")).strip() == watch_candidate_id
+            and expectancy_delta >= 0.03
+            and profit_factor_delta >= 0.20
+            and int(watch.get("trade_count", 0) or 0) >= 20
+        )
+        if not qualified:
+            break
+        streak += 1
+    return streak
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -1994,6 +2047,7 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
     summary["shadow_benchmark_watch"] = _build_shadow_benchmark_watch(
         summary["external_benchmarks"],
         focus_symbol=focus_symbol or str(summary.get("symbol_postmortem", {}).get("symbol", "")).strip(),
+        benchmark_reports_dir=storage.benchmark_reports,
     )
     summary["executed_trade_timeline"] = _build_executed_trade_timeline(records)
     summary["daily_strategy_review"] = _load_daily_strategy_review(trade_logs_dir, date_label)
@@ -2316,6 +2370,10 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
             f"profit factor {float(shadow_benchmark_watch.get('profit_factor_delta', 0.0)):+.2f} | "
             f"cumulative {float(shadow_benchmark_watch.get('cumulative_return_delta_pct', 0.0)):+.2f}% | "
             f"trades {int(shadow_benchmark_watch.get('trade_count_delta', 0)):+d}"
+        )
+        lines.append(
+            f"- Promotion Streak: {int(shadow_benchmark_watch.get('promotion_streak', 0))} "
+            f"(qualified now={bool(shadow_benchmark_watch.get('current_snapshot_qualified', False))})"
         )
         lines.append(f"- Verdict: {shadow_benchmark_watch.get('verdict', 'n/a')}")
         if shadow_benchmark_watch.get("summary"):

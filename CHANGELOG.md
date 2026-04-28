@@ -52,7 +52,8 @@
     - profit factor
     - cumulative return
     - trade count
-  - 並輸出 `keep_shadow_watch / promotion_candidate / no_upgrade_signal`
+  - 並輸出 `keep_shadow_watch / watch_streak_building / promotion_candidate / no_upgrade_signal`
+  - promotion 判斷會看近期 benchmark 連續快照的 streak，而不是單日偶發領先
 
 ## v0.11.24 - Always-on launchd runner
 
