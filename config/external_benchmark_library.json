@@ -19,6 +19,82 @@
       }
     },
     {
+      "id": "donchian_adx_fast_14_v1",
+      "name": "Donchian + ADX Fast 14",
+      "kind": "rule_strategy",
+      "generator": "donchian_adx",
+      "source": "public_classic_variant",
+      "description": "Faster Donchian breakout benchmark for SOL-style intraday swings using a 14-bar channel and slightly stricter volume confirmation.",
+      "hold_bars": 5,
+      "take_profit_pct": 1.00,
+      "stop_loss_pct": 0.65,
+      "params": {
+        "channel_period": 14,
+        "adx_period": 14,
+        "adx_threshold": 19.0,
+        "volume_ratio_threshold": 1.10
+      }
+    },
+    {
+      "id": "donchian_adx_fast_10_v1",
+      "name": "Donchian + ADX Fast 10",
+      "kind": "rule_strategy",
+      "generator": "donchian_adx",
+      "source": "public_classic_variant",
+      "description": "Aggressive fast-channel Donchian benchmark for high-beta intraday momentum days using a 10-bar breakout window.",
+      "hold_bars": 4,
+      "take_profit_pct": 0.90,
+      "stop_loss_pct": 0.60,
+      "params": {
+        "channel_period": 10,
+        "adx_period": 14,
+        "adx_threshold": 18.0,
+        "volume_ratio_threshold": 1.15
+      }
+    },
+    {
+      "id": "donchian_adx_keltner_v1",
+      "name": "Donchian + ADX + Keltner Filter",
+      "kind": "rule_strategy",
+      "generator": "donchian_adx_keltner",
+      "source": "public_classic_variant",
+      "description": "Donchian breakout benchmark filtered by Keltner Channel expansion so only stronger SOL-style breakouts qualify.",
+      "hold_bars": 5,
+      "take_profit_pct": 1.10,
+      "stop_loss_pct": 0.65,
+      "params": {
+        "channel_period": 14,
+        "adx_period": 14,
+        "adx_threshold": 19.0,
+        "volume_ratio_threshold": 1.15,
+        "keltner_period": 20,
+        "keltner_atr_period": 14,
+        "keltner_atr_multiplier": 1.40
+      }
+    },
+    {
+      "id": "donchian_adx_atr_midline_exit_v1",
+      "name": "Donchian + ADX ATR Midline Exit",
+      "kind": "rule_strategy",
+      "generator": "donchian_adx",
+      "source": "public_classic_variant",
+      "description": "Donchian breakout benchmark with ATR-aware initial risk and Donchian midline exit logic for quicker intraday profit capture.",
+      "hold_bars": 6,
+      "take_profit_pct": 1.00,
+      "stop_loss_pct": 0.60,
+      "params": {
+        "channel_period": 14,
+        "adx_period": 14,
+        "adx_threshold": 19.0,
+        "volume_ratio_threshold": 1.10,
+        "exit_mode": "atr_midline",
+        "midline_period": 10,
+        "atr_period": 14,
+        "atr_target_multiplier": 1.80,
+        "atr_stop_multiplier": 1.20
+      }
+    },
+    {
       "id": "grid_range_reversion_v1",
       "name": "Grid Range Reversion",
       "kind": "rule_strategy",

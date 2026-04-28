@@ -16,6 +16,35 @@
 
 ---
 
+## v0.11.26 - SOL-focused external benchmark variants
+
+### Why
+
+- 使用者希望把 Gemini 對 `SOL/USDT` 的 Donchian 優化建議，收進 `TradePulse` 的研究流程，但不要直接污染 live 主策略
+- 現有 external benchmark library 只有單一 `Donchian 20 + ADX` 基線，還不夠拿來比較：
+  - `10 / 14 / 20` channel period
+  - `Keltner-filtered breakout`
+  - `ATR + midline` 型出場
+- 需要把這些候選正式做成 benchmark candidates，讓 daily report / shadow research 能用真實 replay 結果討論，而不是停留在口頭建議
+
+### What Changed
+
+- `config/external_benchmark_library.json`
+  - 新增：
+    - `donchian_adx_fast_14_v1`
+    - `donchian_adx_fast_10_v1`
+    - `donchian_adx_keltner_v1`
+    - `donchian_adx_atr_midline_exit_v1`
+- `trading_agents/external_benchmarks.py`
+  - benchmark engine 現在支援：
+    - `Donchian + ADX` 的快速週期變體
+    - `Keltner Channel` 過濾 breakout
+    - `ATR + Donchian midline` 的研究型 exit profile
+  - 新增 EMA / ATR 輔助計算，讓這些候選能真的跑 replay，不只是設定檔佔位
+- `README.md`
+  - 補上目前 external benchmark 已支援的研究候選
+  - 明確標記 `funding rate` 仍屬後續 research item，尚未接進 live 或 benchmark
+
 ## v0.11.24 - Always-on launchd runner
 
 ### Why

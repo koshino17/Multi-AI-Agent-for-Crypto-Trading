@@ -138,6 +138,7 @@ def refresh_external_benchmark_suite(
                     hold_bars=candidate.hold_bars,
                     take_profit_pct=candidate.take_profit_pct,
                     stop_loss_pct=candidate.stop_loss_pct,
+                    candidate=None,
                 )
                 for key, result in grouped_results.items():
                     model_name = key.split("::", 1)[-1]
@@ -181,6 +182,7 @@ def refresh_external_benchmark_suite(
                 hold_bars=candidate.hold_bars,
                 take_profit_pct=candidate.take_profit_pct,
                 stop_loss_pct=candidate.stop_loss_pct,
+                candidate=candidate,
             ).get(candidate.id)
             if result is None:
                 continue
@@ -250,6 +252,7 @@ def benchmark_signal_groups(
     hold_bars: int,
     take_profit_pct: float,
     stop_loss_pct: float,
+    candidate: ExternalBenchmarkCandidate | None = None,
 ) -> dict[str, AlphaArenaBacktestResult]:
     timestamps = [int(item["timestamp_ms"]) for item in candles]
     opens = [float(item["open"]) for item in candles]
@@ -275,6 +278,7 @@ def benchmark_signal_groups(
                 hold_bars=hold_bars,
                 take_profit_pct=take_profit_pct,
                 stop_loss_pct=stop_loss_pct,
+                candidate=candidate,
             )
             returns.append(realized)
         results[group_key] = _aggregate_returns(signal_count=len(signals), returns=returns)
@@ -396,13 +400,27 @@ def _simulate_signal_return_ohlc(
     hold_bars: int,
     take_profit_pct: float,
     stop_loss_pct: float,
+    candidate: ExternalBenchmarkCandidate | None = None,
 ) -> float:
     entry_price = float(closes[entry_index])
     if entry_price <= 0:
         return 0.0
     direction = 1.0 if action == "buy" else -1.0
+    profile = _resolve_benchmark_exit_profile(
+        candidate=candidate,
+        highs=highs,
+        lows=lows,
+        closes=closes,
+        entry_index=entry_index,
+        take_profit_pct=take_profit_pct,
+        stop_loss_pct=stop_loss_pct,
+    )
+    take_profit_pct = profile["take_profit_pct"]
+    stop_loss_pct = profile["stop_loss_pct"]
     take_level = entry_price * (1.0 + (take_profit_pct * direction))
     stop_level = entry_price * (1.0 - (stop_loss_pct * direction))
+    exit_mode = str(profile.get("exit_mode", "fixed")).strip() or "fixed"
+    midline_period = int(profile.get("midline_period", 0) or 0)
     last_return = 0.0
     for offset in range(1, max(hold_bars, 1) + 1):
         next_index = entry_index + offset
@@ -419,6 +437,13 @@ def _simulate_signal_return_ohlc(
         else:
             hit_stop = stop_loss_pct > 0 and high >= stop_level
             hit_take = take_profit_pct > 0 and low <= take_level
+        if exit_mode == "atr_midline" and midline_period > 1:
+            midline = _compute_donchian_midline(highs, lows, next_index, midline_period)
+            if midline > 0:
+                if action == "buy" and low <= midline < entry_price:
+                    return (midline - entry_price) / entry_price
+                if action == "sell" and high >= midline > entry_price:
+                    return (entry_price - midline) / entry_price
         if hit_stop and hit_take:
             return -stop_loss_pct
         if hit_stop:
@@ -438,6 +463,93 @@ def _rolling_std(values: list[float]) -> float:
     mean = _rolling_mean(values)
     variance = sum((value - mean) ** 2 for value in values) / max(len(values), 1)
     return variance ** 0.5
+
+
+def _compute_ema(values: list[float], period: int) -> list[float]:
+    if not values:
+        return []
+    period = max(period, 1)
+    multiplier = 2.0 / (period + 1.0)
+    ema_values = [float(values[0])]
+    for value in values[1:]:
+        ema_values.append((float(value) * multiplier) + (ema_values[-1] * (1.0 - multiplier)))
+    return ema_values
+
+
+def _compute_atr_series(highs: list[float], lows: list[float], closes: list[float], period: int = 14) -> list[float]:
+    if not highs or not lows or not closes:
+        return []
+    period = max(period, 1)
+    true_ranges: list[float] = []
+    prev_close = float(closes[0])
+    for high, low, close in zip(highs, lows, closes):
+        high = float(high)
+        low = float(low)
+        close = float(close)
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        true_ranges.append(tr)
+        prev_close = close
+    atr_values: list[float] = []
+    rolling: list[float] = []
+    atr = 0.0
+    for tr in true_ranges:
+        rolling.append(tr)
+        if len(rolling) < period:
+            atr = fmean(rolling)
+        elif len(rolling) == period:
+            atr = fmean(rolling)
+        else:
+            atr = ((atr * (period - 1)) + tr) / period
+        atr_values.append(atr)
+    return atr_values
+
+
+def _compute_donchian_midline(highs: list[float], lows: list[float], index: int, period: int) -> float:
+    if period <= 1 or index < 0:
+        return 0.0
+    start_index = max(0, index - period + 1)
+    high_window = highs[start_index : index + 1]
+    low_window = lows[start_index : index + 1]
+    if not high_window or not low_window:
+        return 0.0
+    return (max(high_window) + min(low_window)) / 2.0
+
+
+def _resolve_benchmark_exit_profile(
+    *,
+    candidate: ExternalBenchmarkCandidate | None,
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    entry_index: int,
+    take_profit_pct: float,
+    stop_loss_pct: float,
+) -> dict[str, float | str]:
+    profile = {
+        "exit_mode": "fixed",
+        "take_profit_pct": take_profit_pct,
+        "stop_loss_pct": stop_loss_pct,
+        "midline_period": 0,
+    }
+    if candidate is None or not candidate.params:
+        return profile
+    exit_mode = str(candidate.params.get("exit_mode", "fixed")).strip() or "fixed"
+    profile["exit_mode"] = exit_mode
+    if exit_mode != "atr_midline":
+        return profile
+    atr_period = int(candidate.params.get("atr_period", 14) or 14)
+    atr_target_multiplier = float(candidate.params.get("atr_target_multiplier", 1.8) or 1.8)
+    atr_stop_multiplier = float(candidate.params.get("atr_stop_multiplier", 1.2) or 1.2)
+    midline_period = int(candidate.params.get("midline_period", 10) or 10)
+    atr_values = _compute_atr_series(highs[: entry_index + 1], lows[: entry_index + 1], closes[: entry_index + 1], atr_period)
+    atr_value = float(atr_values[-1]) if atr_values else 0.0
+    entry_price = float(closes[entry_index]) if entry_index < len(closes) else 0.0
+    atr_pct = (atr_value / entry_price) if entry_price > 0 else 0.0
+    if atr_pct > 0:
+        profile["take_profit_pct"] = min(max(atr_pct * atr_target_multiplier, atr_pct * 0.9), max(take_profit_pct, atr_pct * 1.1))
+        profile["stop_loss_pct"] = min(max(atr_pct * atr_stop_multiplier, atr_pct * 0.8), max(stop_loss_pct, atr_pct * 1.05))
+    profile["midline_period"] = midline_period
+    return profile
 
 
 def _compute_rsi(closes: list[float], period: int = 14) -> list[float]:
@@ -507,6 +619,66 @@ def _generate_donchian_adx_signals(
                 action=normalized_action,
                 confidence=min(max(float(metrics.get("adx", adx_threshold)) / max(adx_threshold, 1.0), 0.0), 1.0),
                 commentary=f"donchian/adx signal at bar {index}",
+            )
+        )
+    return signals
+
+
+def _generate_donchian_adx_keltner_signals(
+    candles: list[dict[str, float | int]],
+    *,
+    symbol: str,
+    candidate: ExternalBenchmarkCandidate,
+) -> list[AlphaArenaSignal]:
+    closes = [float(item["close"]) for item in candles]
+    highs = [float(item["high"]) for item in candles]
+    lows = [float(item["low"]) for item in candles]
+    volumes = [float(item["volume"]) for item in candles]
+    channel_period = int(candidate.params.get("channel_period", 14) or 14)
+    adx_period = int(candidate.params.get("adx_period", 14) or 14)
+    adx_threshold = float(candidate.params.get("adx_threshold", 19.0) or 19.0)
+    volume_ratio_threshold = float(candidate.params.get("volume_ratio_threshold", 1.15) or 1.15)
+    keltner_period = int(candidate.params.get("keltner_period", 20) or 20)
+    keltner_atr_period = int(candidate.params.get("keltner_atr_period", 14) or 14)
+    keltner_atr_multiplier = float(candidate.params.get("keltner_atr_multiplier", 1.4) or 1.4)
+    ema_values = _compute_ema(closes, keltner_period)
+    atr_values = _compute_atr_series(highs, lows, closes, keltner_atr_period)
+    signals: list[AlphaArenaSignal] = []
+    start_index = max(channel_period + 1, adx_period * 2, keltner_period, keltner_atr_period)
+    for index in range(start_index, len(closes)):
+        action, metrics = donchian_adx_signal(
+            highs=highs[: index + 1],
+            lows=lows[: index + 1],
+            closes=closes[: index + 1],
+            volumes=volumes[: index + 1],
+            index=index,
+            channel_period=channel_period,
+            adx_period=adx_period,
+            adx_threshold=adx_threshold,
+            volume_ratio_threshold=volume_ratio_threshold,
+        )
+        if action not in {"long", "short"}:
+            continue
+        ema_value = float(ema_values[index]) if index < len(ema_values) else 0.0
+        atr_value = float(atr_values[index]) if index < len(atr_values) else 0.0
+        if ema_value <= 0 or atr_value <= 0:
+            continue
+        keltner_upper = ema_value + (atr_value * keltner_atr_multiplier)
+        keltner_lower = ema_value - (atr_value * keltner_atr_multiplier)
+        close = closes[index]
+        if action == "long" and close <= keltner_upper:
+            continue
+        if action == "short" and close >= keltner_lower:
+            continue
+        normalized_action = "buy" if action == "long" else "sell"
+        signals.append(
+            AlphaArenaSignal(
+                timestamp_ms=int(candles[index]["timestamp_ms"]),
+                symbol=symbol,
+                model=candidate.id,
+                action=normalized_action,
+                confidence=min(max(float(metrics.get("adx", adx_threshold)) / max(adx_threshold, 1.0), 0.0), 1.0),
+                commentary=f"donchian/adx + keltner filter signal at bar {index}",
             )
         )
     return signals
@@ -624,6 +796,7 @@ def _generate_bollinger_rsi_signals(
 
 _RULE_GENERATORS: dict[str, Callable[..., list[AlphaArenaSignal]]] = {
     "donchian_adx": _generate_donchian_adx_signals,
+    "donchian_adx_keltner": _generate_donchian_adx_keltner_signals,
     "grid_range_reversion": _generate_grid_range_reversion_signals,
     "bollinger_rsi_mean_reversion": _generate_bollinger_rsi_signals,
 }

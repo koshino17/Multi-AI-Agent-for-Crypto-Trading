@@ -12,6 +12,10 @@
 - 目前策略方向已收斂為 `USDT perpetual intraday long/short` 優先，而不是中長線配置系統
 - 會持續累積資金曲線（equity curve），產生本地 SVG 折線圖，並同步摘要到 Notion
 - `Grid / Alpha Arena / 其他外部策略候選` 現在先走 research-only benchmark，不直接覆蓋 live trading
+- external benchmark research 現在已能比較：
+  - `Donchian + ADX` 的 `10 / 14 / 20` 週期版本
+  - `Keltner-filtered Donchian`
+  - `ATR + Donchian midline exit` 版本
 - full cycle 會額外接入基礎 `order flow / market microstructure` 特徵，而不再只看 15m K 線與 sentiment
 - daily report / Notion `Daily Review` 會自動產出 `Symbol Postmortem`，優先回顧單一重點標的的走勢、決策分布與主要卡點
 - 每筆決策現在都會記錄 `Decision Source`，區分 `base_strategy / fallback / fallback_guard / policy_exit`
@@ -23,6 +27,7 @@
 若要看 `Alpha Arena` 如何作為 benchmark / research 來源接進目前架構，請看 `ALPHA_ARENA_INTEGRATION_PLAN.md`。
 若你已經有一份公開 Alpha Arena / 類 Alpha Arena 訊號 JSON 匯出，可以直接用 `scripts/alpha_arena_import_and_backtest.py` 做第一階段 research benchmark。
 若你要一次重跑目前所有外部 benchmark 候選，請用 `scripts/run_external_strategy_benchmarks.py`。
+目前 `funding rate` 仍未接進 live 或 benchmark，暫時只列為下一階段 research item。
 
 ## Repo 目標
 
