@@ -84,6 +84,25 @@ def _write_daily_strategy_review(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
+def _load_recent_daily_review_history(storage, current_date_label: str, lookback_days: int = 4) -> list[dict[str, object]]:
+    history: list[dict[str, object]] = []
+    for label in _recent_local_date_labels(max(lookback_days, 1)):
+        if label == current_date_label:
+            continue
+        payload = _read_json_file(_daily_strategy_review_path(storage, label))
+        if not isinstance(payload, dict) or not payload:
+            continue
+        history.append(
+            {
+                "date_label": label,
+                "improvement_directions": payload.get("improvement_directions", []),
+                "action_items": payload.get("action_items", []),
+                "consensus_summary": payload.get("consensus_summary", ""),
+            }
+        )
+    return history
+
+
 def _load_trade_cooldowns(path: Path) -> dict[str, float]:
     raw = _read_json_file(path)
     cooldowns: dict[str, float] = {}
@@ -1140,6 +1159,7 @@ def _finalize_reporting(
     daily_report_path = write_daily_summary(storage.daily_reports, date_label, daily_content)
     report["daily_report"] = str(daily_report_path)
     daily_summary = load_daily_summary_data(storage.trade_logs, date_label, storage.runner_log)
+    daily_summary["review_history"] = _load_recent_daily_review_history(storage, date_label)
     equity_history_path = mode_scoped_path(storage.equity_curve_history_state, mode)
     equity_chart_path = mode_scoped_path(storage.equity_curve_svg, mode)
     equity_curve = update_equity_curve(

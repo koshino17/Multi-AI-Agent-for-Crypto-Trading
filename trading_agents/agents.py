@@ -1026,6 +1026,7 @@ class DailyReviewAgent:
         focus_benchmark = benchmark_by_symbol.get(focus_symbol) if focus_symbol else {}
         if not isinstance(focus_benchmark, dict):
             focus_benchmark = {}
+        review_history = daily_summary.get("review_history") or []
 
         operations_summary = (
             f"目前總資產約 {float(financial.get('total_portfolio_value_usdt', 0.0)):.2f} USDT，"
@@ -1143,6 +1144,9 @@ class DailyReviewAgent:
         if not action_items:
             action_items.append("繼續追蹤基準策略、風控、exit 與 benchmark 的責任歸屬。")
 
+        improvements = self._promote_repeated_review_items(improvements, review_history)
+        action_items = self._promote_repeated_action_items(action_items, review_history)
+
         consensus_summary = (
             f"綜合策略、風控、benchmark 與執行四個角度，"
             f"目前最值得追的不是新增更多策略，而是確認 {top_block[0] if top_block[0] != 'none' else '進場/出場品質'} "
@@ -1160,6 +1164,73 @@ class DailyReviewAgent:
             execution_review=execution_review,
             consensus_summary=consensus_summary,
             action_items=action_items[:4],
+        )
+
+    def _promote_repeated_review_items(self, items: list[str], review_history: list[dict]) -> list[str]:
+        promoted: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            normalized = str(item).strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            streak = self._history_repeat_count(review_history, normalized, field="improvement_directions")
+            if streak >= 2:
+                promoted.append(
+                    f"此問題已連續 {streak + 1} 天出現：{normalized} 這代表它不是單日噪音，下一步應升級成明確參數/策略調整，而不是只持續觀察。"
+                )
+            else:
+                promoted.append(normalized)
+        return promoted
+
+    def _promote_repeated_action_items(self, items: list[str], review_history: list[dict]) -> list[str]:
+        promoted: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            normalized = str(item).strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            streak = self._history_repeat_count(review_history, normalized, field="action_items")
+            if streak >= 2:
+                promoted.append(self._escalate_repeated_action_item(normalized, streak + 1))
+            else:
+                promoted.append(normalized)
+        return promoted
+
+    def _history_repeat_count(self, review_history: list[dict], text: str, *, field: str) -> int:
+        target = str(text).strip()
+        if not target:
+            return 0
+        count = 0
+        for review in reversed(review_history):
+            values = review.get(field) or []
+            normalized_values = [str(item).strip() for item in values if str(item).strip()]
+            if target in normalized_values:
+                count += 1
+            else:
+                break
+        return count
+
+    def _escalate_repeated_action_item(self, item: str, streak_days: int) -> str:
+        if "fees outweighed realized trading edge" in item:
+            return (
+                f"`fees outweighed realized trading edge` 已連續 {streak_days} 天出現；"
+                "下一步不要只驗證，直接比較「減少同 episode entries」與「更早鎖利」對淨利的影響。"
+            )
+        if "grid_range_reversion_v1" in item and "attribution" in item:
+            return (
+                f"`grid_range_reversion_v1` 已連續 {streak_days} 天被點名；"
+                "下一步應建立同標的 shadow-vs-live 對照與明確升級門檻，而不是只持續追蹤。"
+            )
+        if "learning controls" in item:
+            return (
+                f"learning controls 已連續 {streak_days} 天需要人工確認；"
+                "下一步應在報表直接顯示哪些 controls 真的影響了 accepted / blocked / PnL，而不是只提醒檢查。"
+            )
+        return (
+            f"這個 action item 已連續 {streak_days} 天重複：{item} "
+            "下一步應把它升級成更具體的參數變更、shadow test，或明確的升級/淘汰判準。"
         )
 
 
