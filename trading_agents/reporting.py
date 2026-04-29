@@ -157,6 +157,25 @@ def _trade_timestamp_local(item: dict[str, Any]) -> str:
     return parsed.astimezone(LOCAL_TZ).isoformat()
 
 
+def _parse_timestamp_local(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(LOCAL_TZ)
+
+
+def _record_timestamp_local(item: dict[str, Any]) -> str:
+    raw = item.get("__record_timestamp_local") or item.get("timestamp") or _accepted_trade_timestamp(item)
+    parsed = _parse_timestamp_local(raw)
+    return parsed.isoformat() if parsed is not None else "n/a"
+
+
 def _perp_trade_label(side: str, reduce_only: bool) -> str:
     normalized = str(side or "").strip().lower()
     if reduce_only:
@@ -217,11 +236,139 @@ def _load_daily_strategy_review(trade_logs_dir: Path, date_label: str) -> dict[s
     return payload if isinstance(payload, dict) else {}
 
 
+def _build_market_path_review(records: list[dict[str, Any]], *, focus_symbol: str = "") -> dict[str, Any]:
+    symbol_counts = Counter(str(item.get("selected_symbol", "")).strip() for item in records if item.get("selected_symbol"))
+    symbol_counts = Counter({symbol: count for symbol, count in symbol_counts.items() if symbol})
+    chosen_symbol = focus_symbol.strip() or (symbol_counts.most_common(1)[0][0] if symbol_counts else "")
+    if not chosen_symbol:
+        return {}
+
+    samples: list[dict[str, Any]] = []
+    for item in records:
+        symbol = str(item.get("selected_symbol", "")).strip()
+        if symbol != chosen_symbol:
+            continue
+        price = _safe_float(item.get("last_price"))
+        timestamp_local = _record_timestamp_local(item)
+        timestamp_dt = _parse_timestamp_local(
+            item.get("__record_timestamp_local") or item.get("timestamp") or _accepted_trade_timestamp(item)
+        )
+        if price <= 0 or timestamp_dt is None:
+            continue
+        samples.append(
+            {
+                "timestamp_local": timestamp_local,
+                "timestamp_dt": timestamp_dt,
+                "price": price,
+                "action": str(item.get("idea", {}).get("action", "hold")).strip().lower(),
+                "source": _decision_source(item),
+            }
+        )
+    if len(samples) < 2:
+        return {}
+
+    samples.sort(key=lambda item: item["timestamp_dt"])
+    first_sample = samples[0]
+    last_sample = samples[-1]
+    high_sample = max(samples, key=lambda item: item["price"])
+    low_sample = min(samples, key=lambda item: item["price"])
+    first_price = float(first_sample["price"])
+    last_price = float(last_sample["price"])
+    high_price = float(high_sample["price"])
+    low_price = float(low_sample["price"])
+    net_move_pct = (((last_price - first_price) / first_price) * 100.0) if first_price > 0 else 0.0
+    range_pct = (((high_price - low_price) / first_price) * 100.0) if first_price > 0 else 0.0
+
+    running_peak = samples[0]
+    max_drawdown_pct = 0.0
+    max_drawdown_start = samples[0]
+    max_drawdown_end = samples[0]
+    running_trough = samples[0]
+    max_rebound_pct = 0.0
+    max_rebound_start = samples[0]
+    max_rebound_end = samples[0]
+    for sample in samples[1:]:
+        if sample["price"] > running_peak["price"]:
+            running_peak = sample
+        drawdown_pct = ((sample["price"] - running_peak["price"]) / running_peak["price"]) * 100.0 if running_peak["price"] > 0 else 0.0
+        if drawdown_pct < max_drawdown_pct:
+            max_drawdown_pct = drawdown_pct
+            max_drawdown_start = running_peak
+            max_drawdown_end = sample
+
+        if sample["price"] < running_trough["price"]:
+            running_trough = sample
+        rebound_pct = ((sample["price"] - running_trough["price"]) / running_trough["price"]) * 100.0 if running_trough["price"] > 0 else 0.0
+        if rebound_pct > max_rebound_pct:
+            max_rebound_pct = rebound_pct
+            max_rebound_start = running_trough
+            max_rebound_end = sample
+
+    def _window_action_counts(start_dt: datetime, end_dt: datetime) -> dict[str, int]:
+        counts: Counter[str] = Counter()
+        for sample in samples:
+            if start_dt <= sample["timestamp_dt"] <= end_dt:
+                counts[sample["action"]] += 1
+        return dict(counts)
+
+    drawdown_actions = _window_action_counts(max_drawdown_start["timestamp_dt"], max_drawdown_end["timestamp_dt"])
+    rebound_actions = _window_action_counts(max_rebound_start["timestamp_dt"], max_rebound_end["timestamp_dt"])
+
+    summary = (
+        f"{chosen_symbol} 在此報告窗口的採樣盤面由 {first_sample['timestamp_local']} {first_price:.4f} "
+        f"走到 {last_sample['timestamp_local']} {last_price:.4f} ({net_move_pct:+.2f}%)。"
+        f" 採樣高點出現在 {high_sample['timestamp_local']} @ {high_price:.4f}，"
+        f"低點出現在 {low_sample['timestamp_local']} @ {low_price:.4f}，"
+        f"採樣區間約 {range_pct:.2f}%。"
+    )
+    if max_drawdown_pct < -0.2:
+        summary += (
+            f" 最大下跌段是 {max_drawdown_start['timestamp_local']} {float(max_drawdown_start['price']):.4f} "
+            f"-> {max_drawdown_end['timestamp_local']} {float(max_drawdown_end['price']):.4f} "
+            f"({max_drawdown_pct:+.2f}%)。"
+        )
+    if max_rebound_pct > 0.2:
+        summary += (
+            f" 最大反彈段是 {max_rebound_start['timestamp_local']} {float(max_rebound_start['price']):.4f} "
+            f"-> {max_rebound_end['timestamp_local']} {float(max_rebound_end['price']):.4f} "
+            f"({max_rebound_pct:+.2f}%)。"
+        )
+
+    return {
+        "symbol": chosen_symbol,
+        "sample_count": len(samples),
+        "first_price": round(first_price, 6),
+        "first_timestamp_local": str(first_sample["timestamp_local"]),
+        "last_price": round(last_price, 6),
+        "last_timestamp_local": str(last_sample["timestamp_local"]),
+        "high_price": round(high_price, 6),
+        "high_timestamp_local": str(high_sample["timestamp_local"]),
+        "low_price": round(low_price, 6),
+        "low_timestamp_local": str(low_sample["timestamp_local"]),
+        "net_move_pct": round(net_move_pct, 4),
+        "range_pct": round(range_pct, 4),
+        "max_drawdown_pct": round(max_drawdown_pct, 4),
+        "max_drawdown_start_local": str(max_drawdown_start["timestamp_local"]),
+        "max_drawdown_end_local": str(max_drawdown_end["timestamp_local"]),
+        "max_drawdown_start_price": round(float(max_drawdown_start["price"]), 6),
+        "max_drawdown_end_price": round(float(max_drawdown_end["price"]), 6),
+        "max_drawdown_action_counts": drawdown_actions,
+        "max_rebound_pct": round(max_rebound_pct, 4),
+        "max_rebound_start_local": str(max_rebound_start["timestamp_local"]),
+        "max_rebound_end_local": str(max_rebound_end["timestamp_local"]),
+        "max_rebound_start_price": round(float(max_rebound_start["price"]), 6),
+        "max_rebound_end_price": round(float(max_rebound_end["price"]), 6),
+        "max_rebound_action_counts": rebound_actions,
+        "summary": summary,
+    }
+
+
 def _build_symbol_postmortem(
     records: list[dict[str, Any]],
     *,
     focus_symbol: str = "",
     external_benchmarks: dict[str, Any] | None = None,
+    market_path_review: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     symbol_counts = Counter(str(item.get("selected_symbol", "")).strip() for item in records if item.get("selected_symbol"))
     symbol_counts = Counter({symbol: count for symbol, count in symbol_counts.items() if symbol})
@@ -234,12 +381,13 @@ def _build_symbol_postmortem(
         return {}
 
     prices = [_safe_float(item.get("last_price")) for item in symbol_records if _safe_float(item.get("last_price")) > 0]
-    first_price = prices[0] if prices else 0.0
-    last_price = prices[-1] if prices else 0.0
-    low_price = min(prices) if prices else 0.0
-    high_price = max(prices) if prices else 0.0
+    path = market_path_review or {}
+    first_price = _safe_float(path.get("first_price")) or (prices[0] if prices else 0.0)
+    last_price = _safe_float(path.get("last_price")) or (prices[-1] if prices else 0.0)
+    low_price = _safe_float(path.get("low_price")) or (min(prices) if prices else 0.0)
+    high_price = _safe_float(path.get("high_price")) or (max(prices) if prices else 0.0)
     net_move_pct = (((last_price - first_price) / first_price) * 100.0) if first_price > 0 else 0.0
-    intraday_range_pct = (((high_price - low_price) / first_price) * 100.0) if first_price > 0 else 0.0
+    intraday_range_pct = _safe_float(path.get("range_pct")) or ((((high_price - low_price) / first_price) * 100.0) if first_price > 0 else 0.0)
 
     action_counts = Counter(str(item.get("idea", {}).get("action", "hold")).strip().lower() for item in symbol_records)
     holds = action_counts.get("hold", 0)
@@ -276,8 +424,17 @@ def _build_symbol_postmortem(
             f"expectancy {float(benchmark_payload.get('expectancy_pct', 0.0)):+.2f}%。"
         )
 
+    max_drawdown_pct = _safe_float(path.get("max_drawdown_pct"))
+    max_rebound_pct = _safe_float(path.get("max_rebound_pct"))
+    drawdown_actions = path.get("max_drawdown_action_counts") if isinstance(path.get("max_drawdown_action_counts"), dict) else {}
+    rebound_actions = path.get("max_rebound_action_counts") if isinstance(path.get("max_rebound_action_counts"), dict) else {}
+
     regime_hint = "directional down day" if net_move_pct <= -1.0 else "directional up day" if net_move_pct >= 1.0 else "range / mixed day"
-    if net_move_pct <= -1.0 and sells <= max(1, holds // 4):
+    if max_drawdown_pct <= -1.0 and int(drawdown_actions.get("sell", 0)) <= max(1, int(drawdown_actions.get("hold", 0)) // 3):
+        takeaway = "採樣盤面出現明顯下跌段，但那段期間系統沒有有效轉成 sell/short，代表 long failure -> short flip 仍偏慢。"
+    elif max_rebound_pct >= 1.0 and int(rebound_actions.get("buy", 0)) <= max(1, int(rebound_actions.get("hold", 0)) // 3):
+        takeaway = "採樣盤面出現明顯反彈段，但那段期間系統沒有有效轉成 buy/long，代表 continuation long 仍偏保守。"
+    elif net_move_pct <= -1.0 and sells <= max(1, holds // 4):
         takeaway = "價格明顯走弱，但系統大部分時間停在 hold，代表 continuation short 參與度仍不足。"
     elif net_move_pct >= 1.0 and buys <= max(1, holds // 4):
         takeaway = "價格明顯走強，但系統大部分時間停在 hold，代表 continuation long 參與度仍不足。"
@@ -291,6 +448,8 @@ def _build_symbol_postmortem(
     summary = (
         f"{chosen_symbol} 今日屬於 {regime_hint}；價格由 {first_price:.4f} 走到 {last_price:.4f} "
         f"({net_move_pct:+.2f}%)，日內區間約 {intraday_range_pct:.2f}%。"
+        f" 採樣高點 {path.get('high_timestamp_local', 'n/a')} @ {high_price:.4f}，"
+        f"低點 {path.get('low_timestamp_local', 'n/a')} @ {low_price:.4f}。"
         f" 系統共聚焦此標的 {len(symbol_records)} 次，"
         f"buy={buys} / sell={sells} / hold={holds}，"
         f"source(base={source_counts.get('base_strategy', 0)}, fallback={source_counts.get('fallback', 0)}, "
@@ -302,6 +461,10 @@ def _build_symbol_postmortem(
     )
 
     improvements: list[str] = []
+    if max_drawdown_pct <= -1.0 and int(drawdown_actions.get("sell", 0)) == 0:
+        improvements.append("針對明顯下跌段補強 long 失效後的快速翻空判斷，避免只會平倉卻跟不上後續跌勢。")
+    if max_rebound_pct >= 1.0 and int(rebound_actions.get("buy", 0)) == 0:
+        improvements.append("針對明顯反彈段補強 continuation long 或再進場邏輯，避免整段走強只剩 hold。")
     if net_move_pct <= -1.0 and holds > sells:
         improvements.append("在明顯下行日加強 continuation short 條件，避免整段趨勢中後段只剩 hold。")
     if net_move_pct >= 1.0 and holds > buys:
@@ -369,18 +532,20 @@ def _build_trade_review(records: list[dict[str, Any]]) -> dict[str, Any]:
             direction = account_side
         else:
             direction = "long" if side == "sell" else "short"
-        close_time = _accepted_trade_timestamp(close_record)
+        close_time = _trade_timestamp_local(close_record)
         avg_entry = _safe_float(account.get("entry_price"))
         close_price = _safe_float(order.get("price")) or _safe_float(close_record.get("last_price"))
         quantity = _safe_float(order.get("quantity")) or _safe_float((close_record.get("result") or {}).get("submitted_qty"))
         hold_minutes = _safe_float(account.get("hold_minutes"))
-        opened_at = ""
-        if close_time and hold_minutes > 0:
-            try:
-                opened_dt = datetime.fromisoformat(close_time) - timedelta(minutes=hold_minutes)
-                opened_at = opened_dt.isoformat()
-            except ValueError:
-                opened_at = ""
+        opened_at = str(account.get("opened_at_local", "")).strip()
+        if not opened_at:
+            opened_epoch = _safe_float(account.get("opened_at_epoch"))
+            if opened_epoch > 0:
+                opened_at = _epoch_to_local_iso(opened_epoch)
+        if not opened_at and close_time and hold_minutes > 0:
+            parsed_close = _parse_timestamp_local(close_time)
+            if parsed_close is not None:
+                opened_at = (parsed_close - timedelta(minutes=hold_minutes)).isoformat()
         edge_pct = 0.0
         if avg_entry > 0 and close_price > 0:
             if direction == "long":
@@ -412,7 +577,7 @@ def _build_trade_review(records: list[dict[str, Any]]) -> dict[str, Any]:
             return
         order = _order_payload(close_record)
         close_price = _safe_float(order.get("price")) or _safe_float(close_record.get("last_price"))
-        close_time = _accepted_trade_timestamp(close_record)
+        close_time = _trade_timestamp_local(close_record)
         direction = episode["direction"]
         avg_entry = _safe_float(episode.get("avg_entry_price"))
         edge_pct = 0.0
@@ -443,7 +608,7 @@ def _build_trade_review(records: list[dict[str, Any]]) -> dict[str, Any]:
         reduce_only = bool(order.get("reduce_only"))
         quantity = _safe_float(order.get("quantity")) or _safe_float(item.get("result", {}).get("submitted_qty"))
         price = _safe_float(order.get("price")) or _safe_float(item.get("last_price"))
-        timestamp = _accepted_trade_timestamp(item)
+        timestamp = _trade_timestamp_local(item)
         source = _decision_source(item)
 
         if reduce_only:
@@ -2129,10 +2294,15 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
     summary["trade_review"] = _build_trade_review(records)
     summary["policy_exit_diagnostics"] = _build_policy_exit_diagnostics(records, summary["trade_review"])
     focus_symbol = settings.observation_pool[0] if len(settings.observation_pool) == 1 else ""
+    summary["market_path_review"] = _build_market_path_review(
+        records,
+        focus_symbol=focus_symbol,
+    )
     summary["symbol_postmortem"] = _build_symbol_postmortem(
         records,
         focus_symbol=focus_symbol,
         external_benchmarks=summary["external_benchmarks"],
+        market_path_review=summary["market_path_review"],
     )
     summary["loss_attribution"] = _build_loss_attribution(
         records,
@@ -2197,6 +2367,7 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
     top_benchmark = (external_benchmarks.get("top_candidates") or [{}])[0]
     top_alpha_benchmark = (external_benchmarks.get("top_alpha_arena_candidates") or [{}])[0]
     symbol_postmortem = summary.get("symbol_postmortem") or {}
+    market_path_review = summary.get("market_path_review") or {}
     loss_attribution = summary.get("loss_attribution") or {}
     shadow_benchmark_watch = summary.get("shadow_benchmark_watch") or {}
     daily_strategy_review = summary.get("daily_strategy_review") or {}
@@ -2600,6 +2771,41 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
             lines.append(f"- External Action Item: {item}")
 
     if symbol_postmortem:
+        if market_path_review:
+            lines.extend(["", "## Market Path Review", ""])
+            lines.append(f"- Focus Symbol: {market_path_review.get('symbol', 'n/a')}")
+            lines.append(f"- Summary: {market_path_review.get('summary', '')}")
+            lines.append(
+                f"- Sampled Path: start {market_path_review.get('first_timestamp_local', 'n/a')} @ "
+                f"{float(market_path_review.get('first_price', 0.0)):.4f} | "
+                f"high {market_path_review.get('high_timestamp_local', 'n/a')} @ {float(market_path_review.get('high_price', 0.0)):.4f} | "
+                f"low {market_path_review.get('low_timestamp_local', 'n/a')} @ {float(market_path_review.get('low_price', 0.0)):.4f} | "
+                f"end {market_path_review.get('last_timestamp_local', 'n/a')} @ {float(market_path_review.get('last_price', 0.0)):.4f}"
+            )
+            lines.append(
+                f"- Largest Down Leg: {market_path_review.get('max_drawdown_start_local', 'n/a')} "
+                f"{float(market_path_review.get('max_drawdown_start_price', 0.0)):.4f} -> "
+                f"{market_path_review.get('max_drawdown_end_local', 'n/a')} {float(market_path_review.get('max_drawdown_end_price', 0.0)):.4f} "
+                f"({float(market_path_review.get('max_drawdown_pct', 0.0)):+.2f}%)"
+            )
+            lines.append(
+                f"- Largest Rebound: {market_path_review.get('max_rebound_start_local', 'n/a')} "
+                f"{float(market_path_review.get('max_rebound_start_price', 0.0)):.4f} -> "
+                f"{market_path_review.get('max_rebound_end_local', 'n/a')} {float(market_path_review.get('max_rebound_end_price', 0.0)):.4f} "
+                f"({float(market_path_review.get('max_rebound_pct', 0.0)):+.2f}%)"
+            )
+            if market_path_review.get("max_drawdown_action_counts"):
+                counts = market_path_review.get("max_drawdown_action_counts") or {}
+                lines.append(
+                    "- Actions During Down Leg: "
+                    + " | ".join(f"{key}={int(value)}" for key, value in counts.items())
+                )
+            if market_path_review.get("max_rebound_action_counts"):
+                counts = market_path_review.get("max_rebound_action_counts") or {}
+                lines.append(
+                    "- Actions During Rebound: "
+                    + " | ".join(f"{key}={int(value)}" for key, value in counts.items())
+                )
         lines.extend(["", "## Symbol Postmortem", ""])
         lines.append(f"- Focus Symbol: {symbol_postmortem.get('symbol', 'n/a')}")
         lines.append(f"- Summary: {symbol_postmortem.get('summary', '')}")

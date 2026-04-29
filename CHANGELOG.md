@@ -1250,3 +1250,14 @@ What Changed:
 - Perp protection targets now derive a simple intraday regime from recent ATR, 20-candle range, and net-move efficiency.
 - `quiet_range` profiles tighten both initial TP/SL and profit-lock triggers; `directional_trend` profiles allow slightly more room while still tightening giveback control; `normal` stays near the configured baseline.
 - Daily reports and latest-decision summaries now show the active protection logic profile (`regime`, ATR, range, efficiency) alongside TP/SL.
+
+# v0.11.30 - Make postmortems market-path aware and align episode times to local time
+
+Why:
+- Review and postmortem sections still leaned too heavily on decision counts and could miss what the actual sampled market path was doing inside the noon-to-noon window.
+- Carry-in episodes could also show UTC-style opened timestamps, which made manual replay against local charts unnecessarily confusing.
+
+What Changed:
+- Daily reports now include a `Market Path Review` section that summarizes the sampled start/high/low/end path for the focus symbol, plus the largest down-leg and rebound inside the report window.
+- `Symbol Postmortem` now references those sampled market moves directly, so reviews can call out things like "there was a clear down-leg and TradePulse still failed to flip short" instead of only restating `buy/sell/hold` counts.
+- Carry-in and accepted-trade episode times are now normalized to Asia/Taipei local time in `Trade Review`, reducing the mismatch between report timestamps and what you see on local charts.
