@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 
 LOCAL_TZ = ZoneInfo("Asia/Taipei")
+REPORT_WINDOW_ANCHOR_HOUR_LOCAL = 12
 STAGE_DISPLAY_ORDER = (
     "market_collector",
     "sentiment_collector",
@@ -359,9 +360,55 @@ def _build_trade_review(records: list[dict[str, Any]]) -> dict[str, Any]:
     episodes: list[dict[str, Any]] = []
     active: dict[str, dict[str, Any]] = {}
 
+    def _carry_in_episode(symbol: str, close_record: dict[str, Any]) -> dict[str, Any]:
+        order = _order_payload(close_record)
+        account = close_record.get("account") or {}
+        side = str(order.get("side", "")).strip().lower()
+        account_side = str(account.get("position_side", "")).strip().lower()
+        if account_side in {"long", "short"}:
+            direction = account_side
+        else:
+            direction = "long" if side == "sell" else "short"
+        close_time = _accepted_trade_timestamp(close_record)
+        avg_entry = _safe_float(account.get("entry_price"))
+        close_price = _safe_float(order.get("price")) or _safe_float(close_record.get("last_price"))
+        quantity = _safe_float(order.get("quantity")) or _safe_float((close_record.get("result") or {}).get("submitted_qty"))
+        hold_minutes = _safe_float(account.get("hold_minutes"))
+        opened_at = ""
+        if close_time and hold_minutes > 0:
+            try:
+                opened_dt = datetime.fromisoformat(close_time) - timedelta(minutes=hold_minutes)
+                opened_at = opened_dt.isoformat()
+            except ValueError:
+                opened_at = ""
+        edge_pct = 0.0
+        if avg_entry > 0 and close_price > 0:
+            if direction == "long":
+                edge_pct = ((close_price - avg_entry) / avg_entry) * 100.0
+            else:
+                edge_pct = ((avg_entry - close_price) / avg_entry) * 100.0
+        return {
+            "symbol": symbol,
+            "direction": direction,
+            "opened_at": opened_at or "carry-in from prior records",
+            "entries": max(1, int(round(_safe_float(account.get("entry_count", 1))))),
+            "entry_quantity": quantity,
+            "avg_entry_price": avg_entry,
+            "entry_source": "carry_in",
+            "latest_entry_reason": "position was already open before the first accepted trade in this report window",
+            "carry_in": True,
+            "closed_at": close_time,
+            "close_price": round(close_price, 6),
+            "estimated_edge_pct": round(edge_pct, 4),
+            "status": "win" if edge_pct > 0 else "loss" if edge_pct < 0 else "flat",
+            "close_reason": str(close_record.get("idea", {}).get("rationale", "")).strip(),
+            "close_source": _decision_source(close_record),
+        }
+
     def close_episode(symbol: str, close_record: dict[str, Any]) -> None:
         episode = active.pop(symbol, None)
         if not episode:
+            episodes.append(_carry_in_episode(symbol, close_record))
             return
         order = _order_payload(close_record)
         close_price = _safe_float(order.get("price")) or _safe_float(close_record.get("last_price"))
@@ -382,6 +429,7 @@ def _build_trade_review(records: list[dict[str, Any]]) -> dict[str, Any]:
                 "status": "win" if edge_pct > 0 else "loss" if edge_pct < 0 else "flat",
                 "close_reason": str(close_record.get("idea", {}).get("rationale", "")).strip(),
                 "close_source": _decision_source(close_record),
+                "carry_in": bool(episode.get("carry_in")),
             }
         )
         episodes.append(episode)
@@ -431,6 +479,7 @@ def _build_trade_review(records: list[dict[str, Any]]) -> dict[str, Any]:
                 "avg_entry_price": price,
                 "entry_source": source,
                 "latest_entry_reason": str(item.get("idea", {}).get("rationale", "")).strip(),
+                "carry_in": False,
             }
             continue
 
@@ -471,6 +520,7 @@ def _build_trade_review(records: list[dict[str, Any]]) -> dict[str, Any]:
                 "status": "open",
                 "close_reason": "still open at report cutoff",
                 "close_source": "",
+                "carry_in": bool(episode.get("carry_in")),
             }
         )
         episodes.append(episode)
@@ -539,6 +589,8 @@ def _build_loss_attribution(
     open_episodes = [item for item in episodes if str(item.get("status", "")).lower() == "open"]
     losing_episodes = [item for item in closed_episodes if str(item.get("status", "")).lower() == "loss"]
     winning_episodes = [item for item in closed_episodes if str(item.get("status", "")).lower() == "win"]
+    carry_in_closed = [item for item in closed_episodes if bool(item.get("carry_in"))]
+    new_closed = [item for item in closed_episodes if not bool(item.get("carry_in"))]
 
     losing_by_source: Counter[str] = Counter()
     winning_by_source: Counter[str] = Counter()
@@ -603,6 +655,8 @@ def _build_loss_attribution(
     primary_driver = ""
     if total_accepted == 0:
         primary_driver = "no-trade day; no validated edge passed entry filters"
+    elif carry_in_closed and not new_closed and accepted_source_counts.get("policy_exit", 0) >= 1:
+        primary_driver = "carry-in position was closed in this window; fees dominated the net result"
     elif accepted_source_counts.get("fallback", 0) > max(accepted_source_counts.get("base_strategy", 0), 1):
         primary_driver = "fallback dominated accepted trades"
     elif total_losing_episodes == 0 and abs(realized_after_fees) <= 0.05:
@@ -619,6 +673,12 @@ def _build_loss_attribution(
     observations: list[str] = []
     if total_accepted == 0:
         observations.append("no orders were accepted; today was primarily an observe-only session")
+    if carry_in_closed:
+        observations.append(
+            f"{len(carry_in_closed)} carry-in episode(s) were closed during this report window"
+        )
+    if carry_in_closed and not new_closed:
+        observations.append("the window's realized result came from managing an existing position, not from new entries")
     if accepted_source_counts.get("fallback", 0) > max(accepted_source_counts.get("base_strategy", 0), 1):
         observations.append("accepted trades were still fallback-heavy")
     if losing_by_direction.get("long", 0) > losing_by_direction.get("short", 0):
@@ -650,6 +710,8 @@ def _build_loss_attribution(
     return {
         "primary_driver": primary_driver,
         "accepted_source_counts": dict(accepted_source_counts.most_common()),
+        "carry_in_closed_count": len(carry_in_closed),
+        "new_closed_count": len(new_closed),
         "losing_episode_source_counts": dict(losing_by_source.most_common()),
         "winning_episode_source_counts": dict(winning_by_source.most_common()),
         "open_episode_source_counts": dict(open_by_source.most_common()),
@@ -1002,6 +1064,37 @@ def _local_now() -> datetime:
     return datetime.now(LOCAL_TZ)
 
 
+def _window_label_to_bounds(date_label: str, anchor_hour: int = REPORT_WINDOW_ANCHOR_HOUR_LOCAL) -> tuple[datetime, datetime]:
+    window_end_date = datetime.strptime(date_label, "%Y-%m-%d").date()
+    window_end = datetime(
+        window_end_date.year,
+        window_end_date.month,
+        window_end_date.day,
+        anchor_hour,
+        0,
+        0,
+        tzinfo=LOCAL_TZ,
+    )
+    window_start = window_end - timedelta(days=1)
+    return window_start, window_end
+
+
+def active_report_date_label(now: datetime | None = None, anchor_hour: int = REPORT_WINDOW_ANCHOR_HOUR_LOCAL) -> str:
+    local_now = now.astimezone(LOCAL_TZ) if now is not None else _local_now()
+    anchor_today = local_now.replace(hour=anchor_hour, minute=0, second=0, microsecond=0)
+    if local_now >= anchor_today:
+        return (anchor_today + timedelta(days=1)).strftime("%Y-%m-%d")
+    return anchor_today.strftime("%Y-%m-%d")
+
+
+def completed_report_date_label(now: datetime | None = None, anchor_hour: int = REPORT_WINDOW_ANCHOR_HOUR_LOCAL) -> str:
+    local_now = now.astimezone(LOCAL_TZ) if now is not None else _local_now()
+    anchor_today = local_now.replace(hour=anchor_hour, minute=0, second=0, microsecond=0)
+    if local_now >= anchor_today:
+        return anchor_today.strftime("%Y-%m-%d")
+    return (anchor_today - timedelta(days=1)).strftime("%Y-%m-%d")
+
+
 def _stamp() -> str:
     return _utc_now().strftime("%Y%m%dT%H%M%S%fZ")
 
@@ -1258,13 +1351,15 @@ def write_human_report(path: Path, symbol: str, mode: str, content: str) -> Path
 
 
 def _load_daily_records(trade_logs_dir: Path, date_label: str) -> list[dict[str, Any]]:
+    window_start, window_end = _window_label_to_bounds(date_label)
     files = sorted(trade_logs_dir.glob("*.json"), key=_path_sort_key)
     today_files = []
     for path in files:
         timestamp = _path_timestamp(path)
         if timestamp is None:
             continue
-        if timestamp.astimezone(LOCAL_TZ).strftime("%Y-%m-%d") == date_label:
+        local_timestamp = timestamp.astimezone(LOCAL_TZ)
+        if window_start <= local_timestamp < window_end:
             today_files.append(path)
     records: list[dict[str, Any]] = []
     for path in today_files:
@@ -1690,7 +1785,7 @@ def _build_financial_snapshot(
             "initial_capital_usdt": initial_balance_usdt,
             "day_start_portfolio_value_usdt": start_value,
             "day_start_timestamp_local": start_timestamp_local,
-            "daily_pnl_basis": "vs first portfolio snapshot for this Taiwan date",
+            "daily_pnl_basis": "vs first portfolio snapshot for this report window",
             "total_portfolio_value_usdt": total_portfolio_value,
             "cumulative_pnl_usdt": cumulative_pnl,
             "cumulative_pnl_pct": (cumulative_pnl / initial_balance_usdt * 100) if initial_balance_usdt > 0 else 0.0,
@@ -1800,7 +1895,7 @@ def _build_financial_snapshot(
         "initial_capital_usdt": initial_balance_usdt,
         "day_start_portfolio_value_usdt": start_value,
         "day_start_timestamp_local": start_timestamp_local,
-        "daily_pnl_basis": "vs first portfolio snapshot for this Taiwan date",
+        "daily_pnl_basis": "vs first portfolio snapshot for this report window",
         "total_portfolio_value_usdt": total_portfolio_value,
         "cumulative_pnl_usdt": cumulative_pnl,
         "cumulative_pnl_pct": (cumulative_pnl / initial_balance_usdt * 100) if initial_balance_usdt > 0 else 0.0,
@@ -1823,6 +1918,7 @@ def _build_financial_snapshot(
 def _load_runner_event_counts(runner_log_path: Path | None, date_label: str) -> dict[str, float]:
     if runner_log_path is None or not runner_log_path.exists():
         return {"monitor_heartbeats": 0, "avg_decision_latency_seconds": 0.0}
+    window_start, window_end = _window_label_to_bounds(date_label)
     monitor_heartbeats = 0
     cycle_started_at: datetime | None = None
     cycle_latencies: list[float] = []
@@ -1841,7 +1937,8 @@ def _load_runner_event_counts(runner_log_path: Path | None, date_label: str) -> 
                 continue
             if event_time.tzinfo is None:
                 event_time = event_time.replace(tzinfo=timezone.utc)
-            if event_time.astimezone(LOCAL_TZ).strftime("%Y-%m-%d") != date_label:
+            local_time = event_time.astimezone(LOCAL_TZ)
+            if not (window_start <= local_time < window_end):
                 continue
             if payload.get("event") == "monitor":
                 monitor_heartbeats += 1
@@ -2061,6 +2158,7 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
 
 def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: Path | None = None) -> str:
     summary = load_daily_summary_data(trade_logs_dir, date_label, runner_log_path)
+    window_start, window_end = _window_label_to_bounds(date_label)
     summary_mode = str(summary.get("mode", ""))
     total = summary["total"]
     proposals = summary["proposals"]
@@ -2107,6 +2205,7 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
     lines = [f"# Daily Summary: {date_label}", ""]
     if summary_mode:
         lines.extend([f"- Mode: {summary_mode}", ""])
+    lines.extend([f"- Window: {window_start.isoformat()} -> {window_end.isoformat()}", ""])
     lines.extend(
         [
             "## Financial Snapshot",
@@ -2129,6 +2228,10 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
                 f"+ unrealized change {float(financial.get('unrealized_change_usdt', 0.0)):+.2f} "
                 f"+ residual {float(financial.get('pnl_bridge_residual_usdt', 0.0)):+.2f} "
                 f"= daily {float(financial.get('daily_pnl_usdt', 0.0)):+.2f} USDT"
+            ),
+            (
+                f"- Window Contribution: carry-in closes={int((loss_attribution.get('carry_in_closed_count') or 0))} | "
+                f"new closed episodes={int((loss_attribution.get('new_closed_count') or 0))}"
             ),
             f"- Realized PnL: {float(financial.get('realized_pnl_usdt', 0.0)):+.2f} USDT",
             (
@@ -2399,6 +2502,7 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
                 f"edge={float(item.get('estimated_edge_pct', 0.0)):+.2f}% | "
                 f"status={item.get('status', 'n/a')} | "
                 f"entry_source={item.get('entry_source', 'unknown')}"
+                f"{' | carry_in=yes' if item.get('carry_in') else ''}"
             )
             if item.get("close_reason"):
                 lines.append(f"  close_reason: {item.get('close_reason')}")
@@ -2609,4 +2713,4 @@ def write_daily_summary(path: Path, date_label: str, content: str) -> Path:
 
 
 def local_date_label() -> str:
-    return _local_now().strftime("%Y-%m-%d")
+    return active_report_date_label()

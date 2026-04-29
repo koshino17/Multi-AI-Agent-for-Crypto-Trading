@@ -16,6 +16,36 @@
 
 ---
 
+## v0.11.30 - Noon-to-noon report windows and carry-in attribution
+
+### Why
+
+- Daily reports were still published around Taiwan noon, but the underlying statistics were cut on calendar days (`00:00 -> now`), which made the report window mismatch the intended review cycle.
+- This caused post-noon trades to look like they belonged to the wrong daily report.
+- When a position was already open before the first accepted trade in a report window, `Trade Review` and `Loss Attribution` could miss that carry-in context and make a close look like an isolated trade.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - daily report windows now use **Taiwan time `12:00 -> next day 12:00`** for:
+    - trade-log aggregation
+    - runner heartbeat counts
+    - daily PnL basis labeling
+  - daily reports now print the active report window explicitly at the top
+  - `Trade Review` can now reconstruct `carry_in` episodes when a reduce-only close appears without a matching opening trade inside the same report window
+  - `Loss Attribution` now distinguishes:
+    - `carry-in` closes
+    - newly opened-and-closed episodes
+- `trading_agents/main.py`
+  - daily review / strategy reflection flow now uses the completed noon-window summary, instead of accidentally mixing it with the active in-progress window
+- `README.md`
+  - 補上 noon-to-noon daily report 規則與 `carry-in` 倉位說明
+
+### Notes
+
+- `2026-04-29` 現在代表 `2026-04-28 12:00 -> 2026-04-29 12:00`
+- `2026-04-30` 則代表 `2026-04-29 12:00 -> 2026-04-30 12:00`
+
 ## v0.11.26 - SOL-focused external benchmark variants
 
 ### Why

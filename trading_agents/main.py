@@ -56,6 +56,7 @@ from trading_agents.reporting import (
     LOCAL_TZ,
     build_human_report,
     build_daily_summary,
+    completed_report_date_label,
     load_daily_summary_data,
     local_date_label,
     update_equity_curve,
@@ -1154,12 +1155,13 @@ def _finalize_reporting(
         human_content,
     )
     report["human_report"] = str(human_report_path)
-    date_label = local_date_label()
-    daily_content = build_daily_summary(storage.trade_logs, date_label, storage.runner_log)
-    daily_report_path = write_daily_summary(storage.daily_reports, date_label, daily_content)
+    active_date_label = local_date_label()
+    completed_date_label = completed_report_date_label()
+    daily_content = build_daily_summary(storage.trade_logs, active_date_label, storage.runner_log)
+    daily_report_path = write_daily_summary(storage.daily_reports, active_date_label, daily_content)
     report["daily_report"] = str(daily_report_path)
-    daily_summary = load_daily_summary_data(storage.trade_logs, date_label, storage.runner_log)
-    daily_summary["review_history"] = _load_recent_daily_review_history(storage, date_label)
+    daily_summary = load_daily_summary_data(storage.trade_logs, active_date_label, storage.runner_log)
+    daily_summary["review_history"] = _load_recent_daily_review_history(storage, active_date_label)
     equity_history_path = mode_scoped_path(storage.equity_curve_history_state, mode)
     equity_chart_path = mode_scoped_path(storage.equity_curve_svg, mode)
     equity_curve = update_equity_curve(
@@ -1195,22 +1197,25 @@ def _finalize_reporting(
     report["notion_sync"] = notion_sync
 
     daily_review_sync = {"status": "disabled", "reason": "outside noon window or missing runner heartbeat"}
-    daily_strategy_review_path = _daily_strategy_review_path(storage, date_label)
-    external_review_path = external_ai_review_path(storage, date_label)
+    daily_strategy_review_path = _daily_strategy_review_path(storage, completed_date_label)
+    external_review_path = external_ai_review_path(storage, completed_date_label)
     runner_heartbeat = _load_runner_heartbeat(storage)
+    completed_daily_summary: dict | None = None
     if runner_heartbeat.get("timestamp") and datetime.now().astimezone().hour >= int(settings.notion_daily_review_hour):
         try:
+            completed_daily_summary = load_daily_summary_data(storage.trade_logs, completed_date_label, storage.runner_log)
+            completed_daily_summary["review_history"] = _load_recent_daily_review_history(storage, completed_date_label)
             stored_review = _read_json_file(daily_strategy_review_path)
-            if not stored_review or stored_review.get("date_label") != date_label:
-                daily_review = daily_reviewer.evaluate(date_label, daily_summary)
-                stored_review = {"date_label": date_label, **daily_review.__dict__}
+            if not stored_review or stored_review.get("date_label") != completed_date_label:
+                daily_review = daily_reviewer.evaluate(completed_date_label, completed_daily_summary)
+                stored_review = {"date_label": completed_date_label, **daily_review.__dict__}
                 _write_daily_strategy_review(daily_strategy_review_path, stored_review)
             daily_review_payload = {key: value for key, value in stored_review.items() if key != "date_label"}
-            if _daily_review_already_published(storage.notion_daily_review_state, date_label):
+            if _daily_review_already_published(storage.notion_daily_review_state, completed_date_label):
                 state = _read_json_file(storage.notion_daily_review_state)
                 daily_review_sync = {
                     "status": "skipped",
-                    "reason": "daily review already published for this Taiwan date",
+                    "reason": "daily review already published for this report window",
                     "page_id": state.get("page_id", ""),
                     "mode": "daily_review",
                 }
@@ -1218,10 +1223,10 @@ def _finalize_reporting(
                 daily_review_sync = sync_notion_daily_review(
                     token=settings.notion_api_token,
                     parent_page_id=settings.notion_daily_review_parent_page_id,
-                    date_label=date_label,
+                    date_label=completed_date_label,
                     page_title_prefix=settings.notion_daily_review_title_prefix,
                     daily_review=daily_review_payload,
-                    daily_summary=daily_summary,
+                    daily_summary=completed_daily_summary,
                     state_path=storage.notion_daily_review_state,
                     lock_path=storage.notion_sync_lock,
                 )
@@ -1239,7 +1244,7 @@ def _finalize_reporting(
             stored_external_review = load_external_ai_review(external_review_path)
             should_refresh_external_review = (
                 not stored_external_review
-                or stored_external_review.get("date_label") != date_label
+                or stored_external_review.get("date_label") != completed_date_label
                 or (
                     getattr(settings, "external_ai_review_enabled", False)
                     and str(stored_external_review.get("status", "")).lower() in {"disabled", "error"}
@@ -1247,12 +1252,12 @@ def _finalize_reporting(
             )
             if should_refresh_external_review:
                 generated_external_review = generate_external_ai_review(
-                    date_label=date_label,
-                    daily_summary=daily_summary,
+                    date_label=completed_date_label,
+                    daily_summary=completed_daily_summary,
                     daily_review=daily_review_payload if 'daily_review_payload' in locals() else (stored_review or {}),
                     settings=settings,
                 )
-                stored_external_review = {"date_label": date_label, **generated_external_review}
+                stored_external_review = {"date_label": completed_date_label, **generated_external_review}
                 save_external_ai_review(external_review_path, stored_external_review)
             external_ai_review_sync = {key: value for key, value in stored_external_review.items() if key != "date_label"}
         except Exception as exc:
@@ -1260,10 +1265,12 @@ def _finalize_reporting(
         report["external_ai_review_sync"] = external_ai_review_sync
     report["daily_review_sync"] = daily_review_sync
     if daily_strategy_review_path.exists():
-        daily_content = build_daily_summary(storage.trade_logs, date_label, storage.runner_log)
-        daily_report_path = write_daily_summary(storage.daily_reports, date_label, daily_content)
+        completed_daily_content = build_daily_summary(storage.trade_logs, completed_date_label, storage.runner_log)
+        write_daily_summary(storage.daily_reports, completed_date_label, completed_daily_content)
+        daily_content = build_daily_summary(storage.trade_logs, active_date_label, storage.runner_log)
+        daily_report_path = write_daily_summary(storage.daily_reports, active_date_label, daily_content)
         report["daily_report"] = str(daily_report_path)
-        daily_summary = load_daily_summary_data(storage.trade_logs, date_label, storage.runner_log)
+        daily_summary = load_daily_summary_data(storage.trade_logs, active_date_label, storage.runner_log)
         daily_summary["equity_curve"] = equity_curve
 
     strategy_memory_sync = {"status": "skipped", "reason": "12h reflection already up to date"}
@@ -1272,14 +1279,15 @@ def _finalize_reporting(
         strategy_memory = load_strategy_memory(storage.strategy_memory_state)
         controls_missing = not isinstance(strategy_memory.get("controls"), dict) or not strategy_memory.get("controls")
         if strategy_memory.get("slot") != current_slot or controls_missing:
+            reflection_summary = completed_daily_summary or daily_summary
             reflection_context = _build_strategy_reflection_context(
                 settings,
                 storage,
-                date_label,
-                daily_summary,
+                completed_date_label,
+                reflection_summary,
                 strategy_memory,
             )
-            reflection = strategy_reflector.evaluate(current_slot, daily_summary, reflection_context=reflection_context)
+            reflection = strategy_reflector.evaluate(current_slot, reflection_summary, reflection_context=reflection_context)
             payload = {
                 "slot": reflection.slot,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
