@@ -1261,3 +1261,14 @@ What Changed:
 - Daily reports now include a `Market Path Review` section that summarizes the sampled start/high/low/end path for the focus symbol, plus the largest down-leg and rebound inside the report window.
 - `Symbol Postmortem` now references those sampled market moves directly, so reviews can call out things like "there was a clear down-leg and TradePulse still failed to flip short" instead of only restating `buy/sell/hold` counts.
 - Carry-in and accepted-trade episode times are now normalized to Asia/Taipei local time in `Trade Review`, reducing the mismatch between report timestamps and what you see on local charts.
+
+# v0.11.31 - Let shadow promotion watch follow the strongest eligible candidate
+
+Why:
+- Shadow promotion tracking was still hard-wired to `donchian_adx_keltner_v1`, which meant the whole watch could degrade into a `partial` state whenever that candidate was missing or not the most relevant one.
+- In recent `SOL/USDT` windows, the actual standout candidate was often `grid_range_reversion_v1`, so the shadow watch needed to track the best eligible candidate instead of staying pinned to an older hypothesis.
+
+What Changed:
+- Shadow benchmark watch now auto-selects its watch candidate from a trusted candidate list, preferring the current symbol leader when it is not the live baseline.
+- This allows `grid_range_reversion_v1` to enter the same formal promotion-streak flow as `donchian_adx_keltner_v1` instead of living only in benchmark commentary.
+- Daily reports now stay in `ready` mode more often and can accumulate a meaningful promotion streak for the candidate that is actually winning on the focused symbol.

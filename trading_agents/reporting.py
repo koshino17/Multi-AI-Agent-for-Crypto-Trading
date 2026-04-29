@@ -896,7 +896,7 @@ def _build_shadow_benchmark_watch(
     external_benchmarks: dict[str, Any] | None,
     *,
     focus_symbol: str,
-    watch_candidate_id: str = "donchian_adx_keltner_v1",
+    watch_candidate_id: str = "",
     benchmark_reports_dir: Path | None = None,
 ) -> dict[str, Any]:
     payload = external_benchmarks or {}
@@ -919,14 +919,38 @@ def _build_shadow_benchmark_watch(
         return {}
 
     baseline = _find(baseline_id)
-    watch = _find(watch_candidate_id)
     leader = symbol_rows[0] if symbol_rows and isinstance(symbol_rows[0], dict) else {}
+    allowed_shadow_candidates = [
+        "grid_range_reversion_v1",
+        "donchian_adx_keltner_v1",
+        "donchian_adx_atr_midline_exit_v1",
+        "bollinger_rsi_mean_reversion_v1",
+        "donchian_adx_fast_14_v1",
+        "donchian_adx_fast_10_v1",
+    ]
+    requested_watch = str(watch_candidate_id or "").strip()
+    if requested_watch:
+        chosen_watch_id = requested_watch
+    else:
+        leader_id = str(leader.get("candidate_id", "")).strip()
+        if leader_id and leader_id != baseline_id and leader_id in allowed_shadow_candidates:
+            chosen_watch_id = leader_id
+        else:
+            chosen_watch_id = next(
+                (
+                    candidate_id
+                    for candidate_id in allowed_shadow_candidates
+                    if candidate_id != baseline_id and _find(candidate_id)
+                ),
+                "",
+            )
+    watch = _find(chosen_watch_id)
     if not baseline or not watch:
         return {
             "status": "partial",
             "focus_symbol": focus_symbol,
             "baseline_candidate_id": baseline_id,
-            "watch_candidate_id": watch_candidate_id,
+            "watch_candidate_id": chosen_watch_id,
             "baseline": baseline,
             "watch": watch,
             "leader": leader,
@@ -936,12 +960,12 @@ def _build_shadow_benchmark_watch(
     profit_factor_delta = float(watch.get("profit_factor", 0.0)) - float(baseline.get("profit_factor", 0.0))
     cumulative_delta = float(watch.get("cumulative_return_pct", 0.0)) - float(baseline.get("cumulative_return_pct", 0.0))
     trade_count_delta = int(watch.get("trade_count", 0) or 0) - int(baseline.get("trade_count", 0) or 0)
-    is_watch_leader = str(leader.get("candidate_id", "")).strip() == watch_candidate_id
+    is_watch_leader = str(leader.get("candidate_id", "")).strip() == chosen_watch_id
     streak = _shadow_promotion_streak(
         benchmark_reports_dir,
         focus_symbol=focus_symbol,
         baseline_id=baseline_id,
-        watch_candidate_id=watch_candidate_id,
+        watch_candidate_id=chosen_watch_id,
     )
     current_snapshot_qualified = (
         is_watch_leader
@@ -960,16 +984,16 @@ def _build_shadow_benchmark_watch(
         else "no_upgrade_signal"
     )
     next_step = (
-        f"將 `{watch_candidate_id}` 納入更正式的 shadow-vs-live 追蹤，並觀察是否連續多次 benchmark 快照維持領先。"
+        f"將 `{chosen_watch_id}` 納入更正式的 shadow-vs-live 追蹤，並觀察是否連續多次 benchmark 快照維持領先。"
         if verdict == "keep_shadow_watch"
-        else f"`{watch_candidate_id}` 已連續 {streak} 次達到升級門檻，下一步應定義 live promotion gate。"
+        else f"`{chosen_watch_id}` 已連續 {streak} 次達到升級門檻，下一步應定義 live promotion gate。"
         if verdict == "promotion_candidate"
-        else f"`{watch_candidate_id}` 已開始累積升級 streak（目前 {streak} 次），先維持 shadow 並續看下一輪 benchmark。"
+        else f"`{chosen_watch_id}` 已開始累積升級 streak（目前 {streak} 次），先維持 shadow 並續看下一輪 benchmark。"
         if verdict == "watch_streak_building"
         else "目前仍以 live baseline 為主，繼續觀察其他候選是否出現更穩定優勢。"
     )
     summary = (
-        f"{focus_symbol} 上，shadow 候選 `{watch_candidate_id}` 對 live baseline `{baseline_id}` "
+        f"{focus_symbol} 上，shadow 候選 `{chosen_watch_id}` 對 live baseline `{baseline_id}` "
         f"的 expectancy 差值為 {expectancy_delta:+.2f}% 、profit factor 差值為 {profit_factor_delta:+.2f}，"
         f"trade count 差值 {trade_count_delta:+d}。"
     )
@@ -977,7 +1001,7 @@ def _build_shadow_benchmark_watch(
         "status": "ready",
         "focus_symbol": focus_symbol,
         "baseline_candidate_id": baseline_id,
-        "watch_candidate_id": watch_candidate_id,
+        "watch_candidate_id": chosen_watch_id,
         "baseline": baseline,
         "watch": watch,
         "leader": leader,
