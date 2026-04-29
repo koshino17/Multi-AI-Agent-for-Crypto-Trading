@@ -1080,7 +1080,10 @@ class DailyReviewAgent:
             improvements.append("在 executor 前補一層交易所最小單與最終下單 notional 檢查，避免把 rejected 當成有效成交。")
         if top_block[0] != "none" and top_block[1] > 0:
             improvements.append(f"優先處理 `{top_block[0]}`，降低可執行候選被風控或交易所門檻擋下的比例。")
-        if len(selected_symbol_counts) <= 2 and sum(selected_symbol_counts.values()) > 20:
+        focused_symbols = [symbol for symbol, count in selected_symbol_counts.items() if int(count) > 0]
+        if len(focused_symbols) == 1 and sum(selected_symbol_counts.values()) > 20:
+            improvements.append("目前是單一標的專注模式，優先檢查同一標的上的進場品質、續抱節奏與再進場能力，而不是增加分散與輪動。")
+        elif len(selected_symbol_counts) <= 2 and sum(selected_symbol_counts.values()) > 20:
             improvements.append("檢查 selector 是否過度集中在單一標的，必要時加入更明確的分散與輪動規則。")
         if daily_summary.get("accepted_orders", 0) == 0:
             improvements.append("盤中已有訊號但沒有實際成交時，優先檢查 sizing、最小單額與資金切分邏輯。")
