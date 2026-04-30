@@ -812,7 +812,31 @@ def _build_loss_attribution(
 
     realized_pnl = _safe_float(financial_snapshot.get("realized_pnl_usdt"))
     fees = _safe_float(financial_snapshot.get("daily_fees_usdt"))
+    funding_fee = _safe_float(financial_snapshot.get("daily_funding_fee_usdt"))
     realized_after_fees = realized_pnl - fees
+
+    closed_edges = [_safe_float(item.get("estimated_edge_pct")) for item in closed_episodes]
+    positive_edges = [edge for edge in closed_edges if edge > 0]
+    negative_edges = [edge for edge in closed_edges if edge < 0]
+    win_rate_pct = (len(winning_episodes) / len(closed_episodes) * 100.0) if closed_episodes else 0.0
+    avg_win_edge_pct = (sum(positive_edges) / len(positive_edges)) if positive_edges else 0.0
+    avg_loss_edge_pct = (sum(negative_edges) / len(negative_edges)) if negative_edges else 0.0
+    expectancy_pct = (sum(closed_edges) / len(closed_edges)) if closed_edges else 0.0
+    gross_profit_edge_pct = sum(positive_edges)
+    gross_loss_edge_pct = abs(sum(negative_edges))
+    if gross_loss_edge_pct > 0:
+        live_profit_factor = gross_profit_edge_pct / gross_loss_edge_pct
+    elif gross_profit_edge_pct > 0:
+        live_profit_factor = None
+    else:
+        live_profit_factor = 0.0
+    fees_and_funding = fees + funding_fee
+    cost_impact_ratio = None
+    if abs(realized_pnl) >= 0.05:
+        cost_impact_ratio = fees_and_funding / abs(realized_pnl)
+    fees_to_gross_profit_ratio = None
+    if gross_profit_edge_pct > 0:
+        fees_to_gross_profit_ratio = fees / gross_profit_edge_pct
 
     total_accepted = sum(int(value) for value in accepted_source_counts.values())
     total_losing_episodes = sum(int(value) for value in losing_by_source.values())
@@ -861,6 +885,13 @@ def _build_loss_attribution(
             f"worst episode was {worst_episode.get('symbol', 'n/a')} {worst_episode.get('direction', 'n/a')} "
             f"from {worst_episode.get('entry_source', 'unknown')} at {float(worst_episode.get('estimated_edge_pct', 0.0)):+.2f}%"
         )
+    if closed_episodes:
+        observations.append(
+            f"closed-episode expectancy was {expectancy_pct:+.2f}% with win rate {win_rate_pct:.1f}% "
+            f"({len(winning_episodes)}W/{len(losing_episodes)}L/{len(closed_episodes) - len(winning_episodes) - len(losing_episodes)} flat)"
+        )
+    if cost_impact_ratio is not None and cost_impact_ratio >= 0.30:
+        observations.append("cost impact ratio exceeded 30%; fees are likely eating too much of the realized edge")
 
     avg_loss_by_source = {
         source: (sum(edges) / len(edges) if edges else 0.0)
@@ -884,7 +915,24 @@ def _build_loss_attribution(
         "winning_episode_direction_counts": dict(winning_by_direction.most_common()),
         "avg_loss_edge_by_source_pct": avg_loss_by_source,
         "avg_loss_edge_by_direction_pct": avg_loss_by_direction,
+        "closed_episode_count": len(closed_episodes),
+        "winning_episode_count": len(winning_episodes),
+        "losing_episode_count": len(losing_episodes),
+        "flat_episode_count": max(len(closed_episodes) - len(winning_episodes) - len(losing_episodes), 0),
+        "live_trade_expectancy_pct": round(expectancy_pct, 4),
+        "live_trade_win_rate_pct": round(win_rate_pct, 4),
+        "avg_win_edge_pct": round(avg_win_edge_pct, 4),
+        "avg_loss_edge_pct": round(avg_loss_edge_pct, 4),
+        "gross_profit_edge_pct": round(gross_profit_edge_pct, 4),
+        "gross_loss_edge_pct": round(gross_loss_edge_pct, 4),
+        "live_profit_factor": round(live_profit_factor, 4) if isinstance(live_profit_factor, float) else None,
+        "live_profit_factor_infinite": gross_loss_edge_pct == 0 and gross_profit_edge_pct > 0,
         "realized_after_fees_usdt": round(realized_after_fees, 4),
+        "fees_plus_funding_usdt": round(fees_and_funding, 4),
+        "funding_fee_usdt": round(funding_fee, 4),
+        "cost_impact_ratio": round(cost_impact_ratio, 4) if cost_impact_ratio is not None else None,
+        "cost_impact_ratio_basis": "fees+funding over absolute realized pnl" if funding_fee > 0 else "fees over absolute realized pnl (funding not integrated)",
+        "fees_to_gross_profit_ratio": round(fees_to_gross_profit_ratio, 4) if fees_to_gross_profit_ratio is not None else None,
         "focus_symbol": focus_symbol,
         "focus_symbol_benchmark": symbol_benchmark,
         "worst_episode": worst_episode or {},
@@ -2717,12 +2765,42 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
         lines.append(
             f"- Realized After Fees: {float(loss_attribution.get('realized_after_fees_usdt', 0.0)):+.2f} USDT"
         )
+        lines.append(
+            f"- Live Trade Expectancy: {float(loss_attribution.get('live_trade_expectancy_pct', 0.0)):+.2f}% "
+            f"(win rate {float(loss_attribution.get('live_trade_win_rate_pct', 0.0)):.1f}% | "
+            f"avg win {float(loss_attribution.get('avg_win_edge_pct', 0.0)):+.2f}% | "
+            f"avg loss {float(loss_attribution.get('avg_loss_edge_pct', 0.0)):+.2f}%)"
+        )
+        live_pf = loss_attribution.get("live_profit_factor")
+        if loss_attribution.get("live_profit_factor_infinite"):
+            lines.append("- Live Profit Factor: inf (no closed losing episodes in this window)")
+        elif live_pf is not None:
+            lines.append(f"- Live Profit Factor: {float(live_pf):.2f}")
+        else:
+            lines.append("- Live Profit Factor: n/a")
+        cost_ratio = loss_attribution.get("cost_impact_ratio")
+        if cost_ratio is not None:
+            lines.append(
+                f"- Cost Impact Ratio: {float(cost_ratio):.2f} "
+                f"({loss_attribution.get('cost_impact_ratio_basis', 'fees over realized pnl')})"
+            )
+        else:
+            lines.append(
+                f"- Cost Impact Ratio: n/a "
+                f"({loss_attribution.get('cost_impact_ratio_basis', 'realized pnl too small to assess')})"
+            )
         accepted = loss_attribution.get("accepted_source_counts") or {}
         if accepted:
             lines.append(
                 "- Accepted by Source: "
                 + " | ".join(f"{k}={int(v)}" for k, v in accepted.items())
             )
+        lines.append(
+            f"- Closed Episodes: {int(loss_attribution.get('closed_episode_count', 0))} "
+            f"(wins={int(loss_attribution.get('winning_episode_count', 0))} | "
+            f"losses={int(loss_attribution.get('losing_episode_count', 0))} | "
+            f"flat={int(loss_attribution.get('flat_episode_count', 0))})"
+        )
         losing_sources = loss_attribution.get("losing_episode_source_counts") or {}
         if losing_sources:
             lines.append(

@@ -16,6 +16,34 @@
 
 ---
 
+## v0.11.32 - Live expectancy and cost diagnostics
+
+### Why
+
+- 使用者希望 `TradePulse` 的每日 postmortem 不只描述成敗，還要直接顯示策略最核心的概率與成本指標。
+- 既有報表雖然有 benchmark 的 `expectancy` / `profit factor`，但 live 策略自己的 daily review 仍缺少：
+  - 單筆期望值（expectancy）
+  - live profit factor
+  - 成本侵蝕比例（Cost Impact Ratio）
+- 若沒有這些指標，就很難快速判斷：
+  - 是策略本身沒 edge
+  - 還是 fees 把 edge 吃掉
+  - 或只是短期運氣噪音
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - `Loss Attribution` 現在會新增 live closed-episode 指標：
+    - `Live Trade Expectancy`
+    - `Live Profit Factor`
+    - `Cost Impact Ratio`
+    - `Closed Episodes`
+    - `win rate / avg win / avg loss`
+  - 這些指標目前以 **已平倉 episode** 為口徑，避免和 benchmark 或單筆 accepted orders 混在一起
+  - `Cost Impact Ratio` 目前先採 **fees-only** 版本；funding fee 尚未接進 accounting 時，報表會明確標示 funding 尚未整合
+- `trading_agents/notion_sync.py`
+  - Notion `Daily Review` 的 `Loss Attribution` 區塊同步補上上述 live 指標，避免本地與 Notion 報表口徑分裂
+
 ## v0.11.30 - Noon-to-noon report windows and carry-in attribution
 
 ### Why

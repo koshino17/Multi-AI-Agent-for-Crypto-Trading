@@ -888,13 +888,49 @@ def _build_daily_review_blocks(
                 _bullet(
                     f"Realized After Fees: {float(loss_attribution.get('realized_after_fees_usdt', 0.0)):+.2f} USDT"
                 ),
+                _bullet(
+                    f"Live Trade Expectancy: {float(loss_attribution.get('live_trade_expectancy_pct', 0.0)):+.2f}% "
+                    f"(win rate {float(loss_attribution.get('live_trade_win_rate_pct', 0.0)):.1f}% | "
+                    f"avg win {float(loss_attribution.get('avg_win_edge_pct', 0.0)):+.2f}% | "
+                    f"avg loss {float(loss_attribution.get('avg_loss_edge_pct', 0.0)):+.2f}%)"
+                ),
             ]
         )
+        live_pf = loss_attribution.get("live_profit_factor")
+        if loss_attribution.get("live_profit_factor_infinite"):
+            blocks.append(_bullet("Live Profit Factor: inf (no closed losing episodes in this window)"))
+        elif live_pf is not None:
+            blocks.append(_bullet(f"Live Profit Factor: {float(live_pf):.2f}"))
+        else:
+            blocks.append(_bullet("Live Profit Factor: n/a"))
+        cost_ratio = loss_attribution.get("cost_impact_ratio")
+        if cost_ratio is not None:
+            blocks.append(
+                _bullet(
+                    f"Cost Impact Ratio: {float(cost_ratio):.2f} "
+                    f"({loss_attribution.get('cost_impact_ratio_basis', 'fees over realized pnl')})"
+                )
+            )
+        else:
+            blocks.append(
+                _bullet(
+                    f"Cost Impact Ratio: n/a "
+                    f"({loss_attribution.get('cost_impact_ratio_basis', 'realized pnl too small to assess')})"
+                )
+            )
         accepted = loss_attribution.get("accepted_source_counts") or {}
         if accepted:
             blocks.append(
                 _bullet("Accepted by Source: " + " | ".join(f"{k}={int(v)}" for k, v in accepted.items()))
             )
+        blocks.append(
+            _bullet(
+                f"Closed Episodes: {int(loss_attribution.get('closed_episode_count', 0))} "
+                f"(wins={int(loss_attribution.get('winning_episode_count', 0))} | "
+                f"losses={int(loss_attribution.get('losing_episode_count', 0))} | "
+                f"flat={int(loss_attribution.get('flat_episode_count', 0))})"
+            )
+        )
         losing_sources = loss_attribution.get("losing_episode_source_counts") or {}
         if losing_sources:
             blocks.append(
