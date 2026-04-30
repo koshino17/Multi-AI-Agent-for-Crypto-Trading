@@ -54,6 +54,7 @@ from trading_agents.models import (
 from trading_agents.notion_sync import sync_notion_daily_review, sync_notion_status
 from trading_agents.reporting import (
     LOCAL_TZ,
+    REPORT_WINDOW_ANCHOR_HOUR_LOCAL,
     build_human_report,
     build_daily_summary,
     completed_report_date_label,
@@ -155,11 +156,25 @@ def _build_strategy_reflection_context(settings, storage, current_date_label: st
         if not isinstance(summary, dict):
             continue
         financial = summary.get("financial_snapshot") or {}
+        loss_attribution = summary.get("loss_attribution") or {}
+        policy_exit_diagnostics = summary.get("policy_exit_diagnostics") or {}
+        external_benchmarks = summary.get("external_benchmarks") or {}
+        top_by_symbol = external_benchmarks.get("top_by_symbol") or {}
+        if not isinstance(top_by_symbol, dict):
+            top_by_symbol = {}
+        live_symbol_benchmark = top_by_symbol.get(current_live_symbol, {}) if current_live_symbol else {}
+        if not isinstance(live_symbol_benchmark, dict):
+            live_symbol_benchmark = {}
         recent_windows.append(
             {
                 "date": label,
                 "daily_pnl_usdt": float(financial.get("daily_pnl_usdt", 0.0) or 0.0),
                 "total_portfolio_value_usdt": float(financial.get("total_portfolio_value_usdt", 0.0) or 0.0),
+                "carry_in_closed_count": int(loss_attribution.get("carry_in_closed_count", 0) or 0),
+                "new_closed_count": int(loss_attribution.get("new_closed_count", 0) or 0),
+                "primary_driver": str(loss_attribution.get("primary_driver", "") or "").strip(),
+                "stagnation_exit_count": int(policy_exit_diagnostics.get("stagnation_exit_count", 0) or 0),
+                "benchmark_candidate_id": str(live_symbol_benchmark.get("candidate_id", "") or "").strip(),
             }
         )
 
@@ -170,10 +185,52 @@ def _build_strategy_reflection_context(settings, storage, current_date_label: st
         previous_equity = current_equity if current_equity > 0 else previous_equity
 
     negative_day_count = sum(1 for item in recent_windows if float(item.get("equity_delta_usdt", 0.0) or 0.0) < 0)
+    negative_streak = 0
+    for item in reversed(recent_windows):
+        if float(item.get("equity_delta_usdt", 0.0) or 0.0) < 0:
+            negative_streak += 1
+        else:
+            break
     positive_streak = 0
     for item in reversed(recent_windows):
         if float(item.get("equity_delta_usdt", 0.0) or 0.0) > 0:
             positive_streak += 1
+        else:
+            break
+    carry_in_loss_window_count = sum(
+        1
+        for item in recent_windows
+        if int(item.get("carry_in_closed_count", 0) or 0) > 0 and float(item.get("daily_pnl_usdt", 0.0) or 0.0) < 0
+    )
+    carry_in_loss_streak = 0
+    for item in reversed(recent_windows):
+        if int(item.get("carry_in_closed_count", 0) or 0) > 0 and float(item.get("daily_pnl_usdt", 0.0) or 0.0) < 0:
+            carry_in_loss_streak += 1
+        else:
+            break
+    stagnation_exit_window_count = sum(
+        1
+        for item in recent_windows
+        if int(item.get("stagnation_exit_count", 0) or 0) > 0 and float(item.get("daily_pnl_usdt", 0.0) or 0.0) <= 0
+    )
+    stagnation_exit_streak = 0
+    for item in reversed(recent_windows):
+        if int(item.get("stagnation_exit_count", 0) or 0) > 0 and float(item.get("daily_pnl_usdt", 0.0) or 0.0) <= 0:
+            stagnation_exit_streak += 1
+        else:
+            break
+    repeated_benchmark_leader_id = ""
+    benchmark_leader_streak = 0
+    for item in reversed(recent_windows):
+        candidate_id = str(item.get("benchmark_candidate_id", "") or "").strip()
+        if not candidate_id or candidate_id == "donchian_adx_perp_v1":
+            break
+        if not repeated_benchmark_leader_id:
+            repeated_benchmark_leader_id = candidate_id
+            benchmark_leader_streak = 1
+            continue
+        if candidate_id == repeated_benchmark_leader_id:
+            benchmark_leader_streak += 1
         else:
             break
 
@@ -219,7 +276,14 @@ def _build_strategy_reflection_context(settings, storage, current_date_label: st
         "lookback_days": lookback_days,
         "recent_windows": recent_windows,
         "negative_day_count": negative_day_count,
+        "negative_streak": negative_streak,
         "positive_streak": positive_streak,
+        "carry_in_loss_window_count": carry_in_loss_window_count,
+        "carry_in_loss_streak": carry_in_loss_streak,
+        "stagnation_exit_window_count": stagnation_exit_window_count,
+        "stagnation_exit_streak": stagnation_exit_streak,
+        "repeated_benchmark_leader_id": repeated_benchmark_leader_id,
+        "benchmark_leader_streak": benchmark_leader_streak,
         "multi_day_pnl_usdt": round(multi_day_pnl_usdt, 4),
         "current_equity_usdt": round(current_equity_usdt, 4),
         "configured_initial_usdt": round(configured_initial_usdt, 4),
@@ -234,6 +298,19 @@ def _build_strategy_reflection_context(settings, storage, current_date_label: st
         "previous_controls": previous_controls if isinstance(previous_controls, dict) else {},
         "current_date_label": current_date_label,
     }
+
+
+def _current_report_window_start_epoch(now: datetime | None = None) -> float:
+    local_now = now.astimezone(LOCAL_TZ) if now is not None else datetime.now(LOCAL_TZ)
+    anchor = local_now.replace(
+        hour=int(REPORT_WINDOW_ANCHOR_HOUR_LOCAL),
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    if local_now < anchor:
+        anchor -= timedelta(days=1)
+    return anchor.astimezone(timezone.utc).timestamp()
 
 
 def _mark_trade_cooldown(path: Path, mode: str, symbol: str, cooldown_seconds: float) -> None:
@@ -1051,6 +1128,7 @@ def _intraday_policy_exit(
     account,
     position_context: dict[str, float | str | bool],
     settings,
+    strategy_memory: dict | None = None,
 ) -> TradeIdea | None:
     if getattr(account, "market_type", "spot") != "perp":
         return None
@@ -1064,15 +1142,41 @@ def _intraday_policy_exit(
 
     hold_bars = float(position_context.get("hold_bars", 0.0) or 0.0)
     hold_minutes = float(position_context.get("hold_minutes", 0.0) or 0.0)
+    opened_at_epoch = float(position_context.get("opened_at_epoch", 0.0) or 0.0)
     pnl_pct = _perp_position_return_pct(account)
     short_avg = fmean(closes[-5:])
     long_avg = fmean(closes[-20:])
     momentum_pct = ((short_avg - long_avg) / long_avg) * 100.0 if long_avg else 0.0
     last_move_pct = _pct(abs((closes[-1] - closes[-2]) / closes[-2])) if len(closes) >= 2 and closes[-2] else 0.0
+    controls = _strategy_memory_controls(strategy_memory)
+    try:
+        hold_bars_scale = float(controls.get("hold_bars_scale", 1.0) or 1.0)
+    except (TypeError, ValueError):
+        hold_bars_scale = 1.0
+    try:
+        stagnation_bars_scale = float(controls.get("stagnation_bars_scale", 1.0) or 1.0)
+    except (TypeError, ValueError):
+        stagnation_bars_scale = 1.0
+    try:
+        stagnation_pnl_scale = float(controls.get("stagnation_pnl_scale", 1.0) or 1.0)
+    except (TypeError, ValueError):
+        stagnation_pnl_scale = 1.0
+    hold_bars_scale = max(0.5, min(hold_bars_scale, 1.0))
+    stagnation_bars_scale = max(0.5, min(stagnation_bars_scale, 1.0))
+    stagnation_pnl_scale = max(0.75, min(stagnation_pnl_scale, 1.5))
+    carry_in_mode = str(controls.get("carry_in_mode", "normal") or "normal").strip().lower()
+    carry_in_position = opened_at_epoch > 0 and opened_at_epoch < _current_report_window_start_epoch()
+    if carry_in_mode == "de_risk" and carry_in_position:
+        hold_bars_scale = min(hold_bars_scale, 0.75)
+        stagnation_bars_scale = min(stagnation_bars_scale, 0.75)
+        stagnation_pnl_scale = max(stagnation_pnl_scale, 1.25)
+    effective_stagnation_bars = float(settings.intraday_stagnation_bars) * stagnation_bars_scale
+    effective_stagnation_pnl_pct = float(settings.intraday_stagnation_pnl_pct) * stagnation_pnl_scale
+    effective_max_hold_bars = float(settings.intraday_max_hold_bars) * hold_bars_scale
 
     stale_trade = (
-        hold_bars >= float(settings.intraday_stagnation_bars)
-        and abs(pnl_pct) <= float(settings.intraday_stagnation_pnl_pct)
+        hold_bars >= effective_stagnation_bars
+        and abs(pnl_pct) <= effective_stagnation_pnl_pct
         and last_move_pct < 0.35
     )
     trend_has_reversed = (
@@ -1080,7 +1184,7 @@ def _intraday_policy_exit(
         or (position_side == "short" and momentum_pct >= 0.08)
     )
     overheld_without_edge = (
-        hold_bars >= float(settings.intraday_max_hold_bars)
+        hold_bars >= effective_max_hold_bars
         and (pnl_pct <= 0.35 or trend_has_reversed)
     )
 
@@ -1103,6 +1207,8 @@ def _intraday_policy_exit(
             f"intraday stagnation exit after {hold_bars:.1f} bars / {hold_minutes:.0f}m; "
             f"pnl={pnl_pct:+.2f}% and price follow-through is weak"
         )
+        if carry_in_mode == "de_risk" and carry_in_position:
+            reason += "; carry-in de-risk mode tightened the exit window"
     elif flatten_due:
         reason = (
             f"intraday end-of-day de-risk after {hold_bars:.1f} bars; "
@@ -1113,6 +1219,8 @@ def _intraday_policy_exit(
             f"intraday hold window exceeded ({hold_bars:.1f} bars / {hold_minutes:.0f}m); "
             f"pnl={pnl_pct:+.2f}% and momentum no longer justifies extension"
         )
+        if carry_in_mode == "de_risk" and carry_in_position:
+            reason += "; carry-in de-risk mode shortened the allowed hold window"
 
     return TradeIdea(
         action="sell" if position_side == "long" else "buy",
@@ -1555,6 +1663,7 @@ def execute_cycle(
             account=account,
             position_context=position_context,
             settings=settings,
+            strategy_memory=strategy_memory,
         )
         progress(
             "strategist",

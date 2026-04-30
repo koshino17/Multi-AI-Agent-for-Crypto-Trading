@@ -1272,3 +1272,15 @@ What Changed:
 - Shadow benchmark watch now auto-selects its watch candidate from a trusted candidate list, preferring the current symbol leader when it is not the live baseline.
 - This allows `grid_range_reversion_v1` to enter the same formal promotion-streak flow as `donchian_adx_keltner_v1` instead of living only in benchmark commentary.
 - Daily reports now stay in `ready` mode more often and can accumulate a meaningful promotion streak for the candidate that is actually winning on the focused symbol.
+
+# v0.11.32 - Make learning controls react to repeated carry-in losses
+
+Why:
+- Recent noon windows showed the same unhealthy pattern repeating: carry-in positions were getting closed by `stagnation exit`, the window would still finish negative, and `TradePulse` would largely just preserve `fallback_entry_mode=base_only` without changing how long it tolerated weak carry-in exposure.
+- That created the exact feeling the user called out: the system could describe losses, but it was not obviously growing or tightening its own behavior after repeated failures.
+
+What Changed:
+- Strategy reflection now looks at multi-window carry-in loss counts, stagnation-exit streaks, and repeated benchmark leadership instead of only fallback usage and cooldown blocks.
+- New learning controls can switch on a `carry_in_mode=de_risk` posture and tighten `hold_bars_scale`, `stagnation_bars_scale`, and `stagnation_pnl_scale` when carry-in losses repeat.
+- Intraday policy exits now consume those controls, so repeated carry-in failures lead to earlier de-risking in live behavior rather than remaining a report-only observation.
+- Daily review text now explicitly calls out repeated carry-in drag and asks whether the new de-risk controls are actually reducing that pattern.

@@ -1015,6 +1015,7 @@ class DailyReviewAgent:
         loss_attribution = daily_summary.get("loss_attribution") or {}
         policy_exit_diagnostics = daily_summary.get("policy_exit_diagnostics") or {}
         strategy_memory = daily_summary.get("latest", {}).get("strategy_memory") or {}
+        learning_controls = strategy_memory.get("controls") or {}
         action_line = ", ".join(f"{key}={value}" for key, value in action_counts.items()) or "no actions"
         symbol_line = ", ".join(f"{key}={value}" for key, value in selected_symbol_counts.items()) or "no symbol focus"
         top_block = next(iter(blocked_reason_counts.items()), ("none", 0))
@@ -1074,6 +1075,9 @@ class DailyReviewAgent:
         if accepted_orders > 0 and daily_fees_usdt > max(realized_pnl_usdt, 0.0):
             improvements.append("已實現毛利不足以覆蓋手續費時，優先檢查止盈是否過遠，以及第一段 profit-lock 是否低於來回費用門檻。")
             action_items.append("回看當日交易：若浮盈常落在 +0.8%~+1.8% 後回吐，優先收緊 TP 與第一段鎖利。")
+        if int(loss_attribution.get("carry_in_closed_count", 0) or 0) > 0 and float(financial.get("daily_pnl_usdt", 0.0) or 0.0) < 0:
+            improvements.append("carry-in 倉位在最近窗口持續拖累績效時，應優先縮短持有容忍度，而不是只在事後用 stagnation exit 收尾。")
+            action_items.append("檢查 carry-in 倉位是否反覆以 stagnation exit 收掉；若是，應維持更短的 hold/stagnation 規則直到 carry-in 不再主導虧損。")
         if unrealized_pnl_usdt > max(realized_pnl_usdt, 0.0) * 2 and daily_fees_usdt > 0:
             improvements.append("若帳面浮盈明顯大於已實現獲利，代表趨勢有抓到，但落袋節奏仍偏慢。")
         if daily_summary.get("rejected_orders", 0) > 0:
@@ -1152,9 +1156,10 @@ class DailyReviewAgent:
             )
         if shadow_watch.get("status") == "ready":
             action_items.append(str(shadow_watch.get("next_step", "")).strip())
-        controls = strategy_memory.get("controls") or {}
-        if controls:
-            action_items.append(f"確認 learning controls 是否真的落地：{json.dumps(controls, ensure_ascii=False)}")
+        if learning_controls:
+            action_items.append(f"確認 learning controls 是否真的落地：{json.dumps(learning_controls, ensure_ascii=False)}")
+            if str(learning_controls.get("carry_in_mode", "") or "").strip().lower() == "de_risk":
+                action_items.append("目前已啟用 carry-in de-risk；明天優先驗證提早退場是否有減少 carry-in 對損益的拖累。")
         if not action_items:
             action_items.append("繼續追蹤基準策略、風控、exit 與 benchmark 的責任歸屬。")
 
@@ -1320,7 +1325,14 @@ class StrategyReflectionAgent:
         total_blocked = int(daily_summary.get("blocked", 0) or 0)
         lookback_days = int(reflection_context.get("lookback_days", 0) or 0)
         negative_day_count = int(reflection_context.get("negative_day_count", 0) or 0)
+        negative_streak = int(reflection_context.get("negative_streak", 0) or 0)
         positive_streak = int(reflection_context.get("positive_streak", 0) or 0)
+        carry_in_loss_window_count = int(reflection_context.get("carry_in_loss_window_count", 0) or 0)
+        carry_in_loss_streak = int(reflection_context.get("carry_in_loss_streak", 0) or 0)
+        stagnation_exit_window_count = int(reflection_context.get("stagnation_exit_window_count", 0) or 0)
+        stagnation_exit_streak = int(reflection_context.get("stagnation_exit_streak", 0) or 0)
+        repeated_benchmark_leader_id = str(reflection_context.get("repeated_benchmark_leader_id", "") or "").strip()
+        benchmark_leader_streak = int(reflection_context.get("benchmark_leader_streak", 0) or 0)
         multi_day_pnl_usdt = float(reflection_context.get("multi_day_pnl_usdt", 0.0) or 0.0)
         current_equity_usdt = float(reflection_context.get("current_equity_usdt", 0.0) or 0.0)
         configured_initial_usdt = float(reflection_context.get("configured_initial_usdt", 0.0) or 0.0)
@@ -1331,6 +1343,20 @@ class StrategyReflectionAgent:
         live_symbol_benchmark = reflection_context.get("live_symbol_benchmark") or {}
         current_live_symbol = str(reflection_context.get("current_live_symbol", "") or "").strip()
         previous_controls = reflection_context.get("previous_controls") or {}
+        def _tighten_control_max(key: str, target: float) -> None:
+            try:
+                current = float(controls.get(key, 1.0) or 1.0)
+            except (TypeError, ValueError):
+                current = 1.0
+            controls[key] = min(current, target)
+
+        def _raise_control_min(key: str, target: float) -> None:
+            try:
+                current = float(controls.get(key, 1.0) or 1.0)
+            except (TypeError, ValueError):
+                current = 1.0
+            controls[key] = max(current, target)
+
         if top_reject[1] > 0:
             biases.append("prefer execution-valid setups over raw signal frequency until rejection counts normalize")
             risk_adjustments.append(f"treat `{top_reject[0]}` as a first-class constraint in the next 12h window")
@@ -1350,12 +1376,45 @@ class StrategyReflectionAgent:
             biases.append("cooldown blocked too many valid opportunities in the last window")
             risk_adjustments.append("shorten cooldown in the next 12h window and re-check if fee bleed stays contained")
             controls["cooldown_scale"] = 0.5
+        if carry_in_loss_window_count >= 2:
+            biases.append("carry-in positions have repeatedly turned prior-window exposure into PnL drag")
+            risk_adjustments.append(
+                "tighten hold/stagnation windows for carry-in positions and prefer faster post-exit reassessment until carry-in losses stop repeating"
+            )
+            controls["carry_in_mode"] = "de_risk"
+            _tighten_control_max("hold_bars_scale", 0.67)
+            _tighten_control_max("stagnation_bars_scale", 0.75)
+            _raise_control_min("stagnation_pnl_scale", 1.25)
+        if stagnation_exit_window_count >= 2:
+            biases.append("repeated stagnation exits show that too many entries are failing to earn fast follow-through")
+            risk_adjustments.append(
+                "shorten the allowed hold window and exit nearer flat when continuation fails, rather than letting weak carry-in positions linger"
+            )
+            _tighten_control_max("hold_bars_scale", 0.75)
+            _tighten_control_max("stagnation_bars_scale", 0.75)
+            _raise_control_min("stagnation_pnl_scale", 1.15)
+        if repeated_benchmark_leader_id and benchmark_leader_streak >= 2:
+            biases.append(
+                f"`{repeated_benchmark_leader_id}` has led the same live symbol for {benchmark_leader_streak} consecutive windows"
+            )
+            risk_adjustments.append(
+                "treat the repeated benchmark leader as a formal shadow promotion candidate with explicit gate tracking, not just a note in the report"
+            )
+            controls["benchmark_watch_candidate"] = repeated_benchmark_leader_id
+            if current_live_symbol:
+                controls["benchmark_watch_symbol"] = current_live_symbol
         if force_base_only:
             biases.append("multi-day drawdown remains active, so fallback entries stay in restricted mode")
             risk_adjustments.append(
                 "only restore normal fallback mode after consecutive positive reflection windows and partial equity recovery"
             )
             controls["fallback_entry_mode"] = "base_only"
+        previous_carry_in_mode = str(previous_controls.get("carry_in_mode", "") or "").strip().lower()
+        if previous_carry_in_mode == "de_risk" and not bool(reflection_context.get("restore_ready")) and negative_streak > 0:
+            controls["carry_in_mode"] = "de_risk"
+            _tighten_control_max("hold_bars_scale", 0.75)
+            _tighten_control_max("stagnation_bars_scale", 0.75)
+            _raise_control_min("stagnation_pnl_scale", 1.15)
         if preserve_cooldown_scale is not None:
             try:
                 controls["cooldown_scale"] = min(
@@ -1391,13 +1450,25 @@ class StrategyReflectionAgent:
         ]
         if lookback_days > 0:
             summary_parts.append(
-                f"lookback={lookback_days}d multi_day_pnl={multi_day_pnl_usdt:+.2f} negative_days={negative_day_count}"
+                f"lookback={lookback_days}d multi_day_pnl={multi_day_pnl_usdt:+.2f} negative_days={negative_day_count} negative_streak={negative_streak}"
+            )
+        if carry_in_loss_window_count > 0:
+            summary_parts.append(
+                f"carry_in_loss_windows={carry_in_loss_window_count} carry_in_loss_streak={carry_in_loss_streak}"
+            )
+        if stagnation_exit_window_count > 0:
+            summary_parts.append(
+                f"stagnation_exit_windows={stagnation_exit_window_count} stagnation_exit_streak={stagnation_exit_streak}"
             )
         if configured_initial_usdt > 0 and current_equity_usdt > 0:
             summary_parts.append(f"equity={current_equity_usdt:.2f}/{configured_initial_usdt:.2f}")
         if force_base_only:
             summary_parts.append(
                 f"fallback locked until positive_streak>={restore_positive_days} and equity>={restore_equity_floor_usdt:.2f}"
+            )
+        if repeated_benchmark_leader_id and benchmark_leader_streak > 0:
+            summary_parts.append(
+                f"benchmark_streak={repeated_benchmark_leader_id}x{benchmark_leader_streak}"
             )
         summary = "; ".join(summary_parts) + "."
         return StrategyReflectionSnapshot(
@@ -1422,11 +1493,25 @@ class StrategyReflectionAgent:
         if mode not in {"normal", "base_only"}:
             mode = "normal"
         normalized["fallback_entry_mode"] = mode
+        carry_in_mode = str(raw.get("carry_in_mode", normalized.get("carry_in_mode", "normal")) or "normal").strip().lower()
+        if carry_in_mode not in {"normal", "de_risk"}:
+            carry_in_mode = "normal"
+        normalized["carry_in_mode"] = carry_in_mode
         try:
             cooldown_scale = float(raw.get("cooldown_scale", normalized.get("cooldown_scale", 1.0)) or 1.0)
         except (TypeError, ValueError):
             cooldown_scale = 1.0
         normalized["cooldown_scale"] = max(0.25, min(cooldown_scale, 1.0))
+        for key, default, lower, upper in (
+            ("hold_bars_scale", 1.0, 0.5, 1.0),
+            ("stagnation_bars_scale", 1.0, 0.5, 1.0),
+            ("stagnation_pnl_scale", 1.0, 0.75, 1.5),
+        ):
+            try:
+                value = float(raw.get(key, normalized.get(key, default)) or default)
+            except (TypeError, ValueError):
+                value = default
+            normalized[key] = max(lower, min(value, upper))
         for key in ("benchmark_watch_candidate", "benchmark_watch_symbol"):
             value = str(raw.get(key, normalized.get(key, "")) or "").strip()
             if value:
@@ -1435,6 +1520,12 @@ class StrategyReflectionAgent:
                 normalized.pop(key, None)
         if bool(reflection_context.get("force_fallback_base_only")):
             normalized["fallback_entry_mode"] = "base_only"
+        if str((reflection_context.get("previous_controls") or {}).get("carry_in_mode", "") or "").strip().lower() == "de_risk":
+            if not bool(reflection_context.get("restore_ready")) and int(reflection_context.get("negative_streak", 0) or 0) > 0:
+                normalized["carry_in_mode"] = "de_risk"
+                normalized["hold_bars_scale"] = min(float(normalized.get("hold_bars_scale", 1.0) or 1.0), 0.75)
+                normalized["stagnation_bars_scale"] = min(float(normalized.get("stagnation_bars_scale", 1.0) or 1.0), 0.75)
+                normalized["stagnation_pnl_scale"] = max(float(normalized.get("stagnation_pnl_scale", 1.0) or 1.0), 1.15)
         preserve_cooldown_scale = reflection_context.get("preserve_cooldown_scale")
         if preserve_cooldown_scale is not None:
             try:
