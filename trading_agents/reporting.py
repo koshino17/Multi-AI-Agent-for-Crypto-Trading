@@ -508,10 +508,15 @@ def _accepted_trade_timestamp(item: dict[str, Any]) -> str:
     return str(result.get("timestamp") or item.get("timestamp") or "")
 
 
-def _build_trade_review(records: list[dict[str, Any]]) -> dict[str, Any]:
+def _build_trade_review(
+    records: list[dict[str, Any]],
+    *,
+    financial_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    financial_snapshot = financial_snapshot or {}
     accepted_records = [item for item in records if _result_status(item) == "accepted"]
     if not accepted_records:
-        return {
+        summary = {
             "episodes": [],
             "long_episodes": 0,
             "short_episodes": 0,
@@ -519,6 +524,15 @@ def _build_trade_review(records: list[dict[str, Any]]) -> dict[str, Any]:
             "closed_losers": 0,
             "open_episodes": 0,
         }
+        open_holdings = financial_snapshot.get("holdings") or []
+        if isinstance(open_holdings, list):
+            inferred_open_episodes = _open_position_episodes_from_holdings(open_holdings)
+            if inferred_open_episodes:
+                summary["episodes"] = inferred_open_episodes
+                summary["long_episodes"] = sum(1 for item in inferred_open_episodes if item.get("direction") == "long")
+                summary["short_episodes"] = sum(1 for item in inferred_open_episodes if item.get("direction") == "short")
+                summary["open_episodes"] = len(inferred_open_episodes)
+        return summary
 
     episodes: list[dict[str, Any]] = []
     active: dict[str, dict[str, Any]] = {}
@@ -690,6 +704,14 @@ def _build_trade_review(records: list[dict[str, Any]]) -> dict[str, Any]:
         )
         episodes.append(episode)
 
+    open_holdings = financial_snapshot.get("holdings") or []
+    if isinstance(open_holdings, list):
+        tracked_symbols = {str(item.get("symbol", "")).strip() for item in episodes if str(item.get("symbol", "")).strip()}
+        for episode in _open_position_episodes_from_holdings(open_holdings):
+            if str(episode.get("symbol", "")).strip() in tracked_symbols:
+                continue
+            episodes.append(episode)
+
     episodes.sort(key=lambda item: str(item.get("opened_at", "")))
     long_episodes = sum(1 for item in episodes if item.get("direction") == "long")
     short_episodes = sum(1 for item in episodes if item.get("direction") == "short")
@@ -704,6 +726,53 @@ def _build_trade_review(records: list[dict[str, Any]]) -> dict[str, Any]:
         "closed_losers": closed_losers,
         "open_episodes": open_episodes,
     }
+
+
+def _open_position_episodes_from_holdings(holdings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    episodes: list[dict[str, Any]] = []
+    for item in holdings:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("market_type", "")).strip().lower() != "perp":
+            continue
+        direction = str(item.get("position_side", "")).strip().lower()
+        if direction not in {"long", "short"}:
+            continue
+        quantity = abs(_safe_float(item.get("quantity")))
+        if quantity <= 0:
+            continue
+        symbol = str(item.get("symbol", "")).strip()
+        if not symbol:
+            continue
+        opened_at = str(item.get("opened_at_local", "")).strip() or "carry-in from prior records"
+        entry_source = str(item.get("entry_source", "")).strip() or "carry_in_unlogged"
+        entry_reason = str(item.get("entry_reason", "")).strip()
+        if not entry_reason and entry_source == "carry_in_unlogged":
+            entry_reason = "position exists in account state but no accepted opening trade was found in local logs for this window"
+        entry_count = max(_safe_int(item.get("entry_count", 0)), 1)
+        avg_entry = _safe_float(item.get("entry_price"))
+        close_or_mark = _safe_float(item.get("price"))
+        edge_pct = _safe_float(item.get("unrealized_pnl_pct"))
+        episodes.append(
+            {
+                "symbol": symbol,
+                "direction": direction,
+                "opened_at": opened_at,
+                "entries": entry_count,
+                "entry_quantity": quantity,
+                "avg_entry_price": avg_entry,
+                "entry_source": entry_source,
+                "latest_entry_reason": entry_reason,
+                "carry_in": True,
+                "closed_at": "",
+                "close_price": round(close_or_mark, 6) if close_or_mark > 0 else 0.0,
+                "estimated_edge_pct": round(edge_pct, 4),
+                "status": "open",
+                "close_reason": "still open at report cutoff",
+                "close_source": "",
+            }
+        )
+    return episodes
 
 
 def _build_policy_exit_diagnostics(records: list[dict[str, Any]], trade_review: dict[str, Any]) -> dict[str, Any]:
@@ -1015,11 +1084,12 @@ def _build_shadow_benchmark_watch(
         baseline_id=baseline_id,
         watch_candidate_id=chosen_watch_id,
     )
-    current_snapshot_qualified = (
-        is_watch_leader
-        and expectancy_delta >= 0.03
-        and profit_factor_delta >= 0.20
-        and int(watch.get("trade_count", 0) or 0) >= 20
+    current_snapshot_qualified = _shadow_snapshot_qualified(
+        watch_candidate_id=chosen_watch_id,
+        is_watch_leader=is_watch_leader,
+        expectancy_delta=expectancy_delta,
+        profit_factor_delta=profit_factor_delta,
+        trade_count=int(watch.get("trade_count", 0) or 0),
     )
     promotion_ready = current_snapshot_qualified and streak >= 3
     verdict = (
@@ -1093,16 +1163,42 @@ def _shadow_promotion_streak(
             break
         expectancy_delta = float(watch.get("expectancy_pct", 0.0)) - float(baseline.get("expectancy_pct", 0.0))
         profit_factor_delta = float(watch.get("profit_factor", 0.0)) - float(baseline.get("profit_factor", 0.0))
-        qualified = (
-            str(leader.get("candidate_id", "")).strip() == watch_candidate_id
-            and expectancy_delta >= 0.03
-            and profit_factor_delta >= 0.20
-            and int(watch.get("trade_count", 0) or 0) >= 20
+        qualified = _shadow_snapshot_qualified(
+            watch_candidate_id=watch_candidate_id,
+            is_watch_leader=str(leader.get("candidate_id", "")).strip() == watch_candidate_id,
+            expectancy_delta=expectancy_delta,
+            profit_factor_delta=profit_factor_delta,
+            trade_count=int(watch.get("trade_count", 0) or 0),
         )
         if not qualified:
             break
         streak += 1
     return streak
+
+
+def _shadow_snapshot_qualified(
+    *,
+    watch_candidate_id: str,
+    is_watch_leader: bool,
+    expectancy_delta: float,
+    profit_factor_delta: float,
+    trade_count: int,
+) -> bool:
+    if not is_watch_leader:
+        return False
+    candidate_id = str(watch_candidate_id or "").strip()
+    min_expectancy_delta = 0.03
+    min_pf_delta = 0.20
+    min_trades = 20
+    if candidate_id == "grid_range_reversion_v1":
+        min_expectancy_delta = 0.05
+        min_pf_delta = 0.50
+        min_trades = 12
+    return (
+        expectancy_delta >= min_expectancy_delta
+        and profit_factor_delta >= min_pf_delta
+        and trade_count >= min_trades
+    )
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -1975,6 +2071,11 @@ def _build_financial_snapshot(
                 symbol=str(item.get("symbol", "")).strip(),
                 position_side=side,
             )
+            opening_source = _decision_source(opening_record) if opening_record else "carry_in_unlogged"
+            opening_reason = str((opening_record.get("idea") or {}).get("rationale", "")).strip() if opening_record else ""
+            if not opening_reason and opening_source == "carry_in_unlogged":
+                opening_reason = "position exists in account state but no accepted opening trade was found in local logs for this window"
+            opening_trade_time = _trade_timestamp_local(opening_record) if opening_record else ""
             base_pct = 0.0
             if position_value > 0 and current_price > 0:
                 base_pct = unrealized / position_value * 100
@@ -2006,9 +2107,9 @@ def _build_financial_snapshot(
                     "entry_count": _safe_int(
                         (position_policy_metadata.get(str(item.get("symbol", "")).strip()) or {}).get("entry_count")
                     ),
-                    "entry_source": _decision_source(opening_record) if opening_record else "",
-                    "entry_reason": str((opening_record.get("idea") or {}).get("rationale", "")).strip() if opening_record else "",
-                    "entry_trade_timestamp_local": _trade_timestamp_local(opening_record) if opening_record else "",
+                    "entry_source": opening_source,
+                    "entry_reason": opening_reason,
+                    "entry_trade_timestamp_local": opening_trade_time,
                 }
             )
         holdings.sort(key=lambda item: float(item["value_usdt"]), reverse=True)
@@ -2363,7 +2464,10 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
         mode_scoped_path(storage.equity_curve_svg, settings.trading_mode),
     )
     summary["external_benchmarks"] = load_external_benchmark_summary(storage.external_benchmark_state)
-    summary["trade_review"] = _build_trade_review(records)
+    summary["trade_review"] = _build_trade_review(
+        records,
+        financial_snapshot=summary["financial_snapshot"],
+    )
     summary["policy_exit_diagnostics"] = _build_policy_exit_diagnostics(records, summary["trade_review"])
     focus_symbol = settings.observation_pool[0] if len(settings.observation_pool) == 1 else ""
     summary["market_path_review"] = _build_market_path_review(

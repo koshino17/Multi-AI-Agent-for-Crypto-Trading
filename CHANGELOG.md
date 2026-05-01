@@ -16,6 +16,22 @@
 
 ---
 
+## v0.11.33 - Make carry-in reporting explicit and relax grid shadow promotion gating
+
+### Why
+
+- `TradePulse` recently showed an unhealthy pattern where the daily report could display an open carry-in position in `Current Portfolio`, but `Trade Review` had no corresponding open episode in the same window.
+- That made it harder to tell whether the system had really opened a new position, or whether the position simply existed in account state without a matching accepted opening trade in local logs.
+- At the same time, `grid_range_reversion_v1` had been repeatedly outperforming the live baseline on `SOL/USDT`, but the shadow promotion logic was still too strict to let that evidence accumulate into a meaningful streak.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - `Trade Review` now accepts the `financial_snapshot` and can synthesize open carry-in episodes directly from live holdings when no accepted opening trade exists in the local window logs.
+  - `Current Portfolio` now labels these cases explicitly as `carry_in_unlogged`, with a plain-language reason instead of silently leaving the origin ambiguous.
+  - The shadow promotion gate now uses candidate-specific qualification thresholds.
+  - `grid_range_reversion_v1` can begin accumulating a promotion streak with a more realistic trade-count and edge threshold, instead of being held back by the same gate used for more active directional strategies.
+
 ## v0.11.32 - Live expectancy and cost diagnostics
 
 ### Why
