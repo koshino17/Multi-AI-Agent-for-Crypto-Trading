@@ -16,6 +16,27 @@
 
 ---
 
+## v0.11.34 - Tighten carry-in de-risk and add noon-handoff weak-position exits
+
+### Why
+
+- The daily automation had correctly diagnosed repeated carry-in drag, but some of its actual strategy-side changes were left behind in a worktree instead of making it into the live repo/runtime.
+- Recent noon windows kept showing the same unhealthy pattern: a weak carry-in position would survive into the next report window, then get closed by a familiar `stagnation exit` after already becoming PnL drag.
+- If TradePulse is really going to grow rather than just describe the same failure, it needs to become more aggressive about not carrying weak positions across the noon handoff.
+
+### What Changed
+
+- `trading_agents/agents.py`
+  - Strengthened the learning response to repeated carry-in losses by tightening `hold_bars_scale`, `stagnation_bars_scale`, and `stagnation_pnl_scale` more aggressively when `carry_in_mode=de_risk` is triggered.
+  - Preserved a stricter de-risk posture while the negative streak is still active instead of relaxing too early.
+- `trading_agents/config.py`
+  - Added explicit settings for a noon report-window handoff exit:
+    - `INTRADAY_REPORT_HANDOFF_EXIT_ENABLED`
+    - `INTRADAY_REPORT_HANDOFF_EXIT_MINUTES`
+    - `INTRADAY_REPORT_HANDOFF_MAX_PNL_PCT`
+- `trading_agents/main.py`
+  - Added a new policy-exit path that proactively closes weak carry-in positions inside the final minutes before the noon anchor, instead of letting them drift into the next report window by default.
+
 ## v0.11.33 - Make carry-in reporting explicit and relax grid shadow promotion gating
 
 ### Why

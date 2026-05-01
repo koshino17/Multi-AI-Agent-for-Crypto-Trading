@@ -1382,9 +1382,9 @@ class StrategyReflectionAgent:
                 "tighten hold/stagnation windows for carry-in positions and prefer faster post-exit reassessment until carry-in losses stop repeating"
             )
             controls["carry_in_mode"] = "de_risk"
-            _tighten_control_max("hold_bars_scale", 0.67)
-            _tighten_control_max("stagnation_bars_scale", 0.75)
-            _raise_control_min("stagnation_pnl_scale", 1.25)
+            _tighten_control_max("hold_bars_scale", 0.5)
+            _tighten_control_max("stagnation_bars_scale", 0.5)
+            _raise_control_min("stagnation_pnl_scale", 1.35)
         if stagnation_exit_window_count >= 2:
             biases.append("repeated stagnation exits show that too many entries are failing to earn fast follow-through")
             risk_adjustments.append(
@@ -1412,9 +1412,9 @@ class StrategyReflectionAgent:
         previous_carry_in_mode = str(previous_controls.get("carry_in_mode", "") or "").strip().lower()
         if previous_carry_in_mode == "de_risk" and not bool(reflection_context.get("restore_ready")) and negative_streak > 0:
             controls["carry_in_mode"] = "de_risk"
-            _tighten_control_max("hold_bars_scale", 0.75)
-            _tighten_control_max("stagnation_bars_scale", 0.75)
-            _raise_control_min("stagnation_pnl_scale", 1.15)
+            _tighten_control_max("hold_bars_scale", 0.67)
+            _tighten_control_max("stagnation_bars_scale", 0.67)
+            _raise_control_min("stagnation_pnl_scale", 1.25)
         if preserve_cooldown_scale is not None:
             try:
                 controls["cooldown_scale"] = min(
@@ -1523,9 +1523,9 @@ class StrategyReflectionAgent:
         if str((reflection_context.get("previous_controls") or {}).get("carry_in_mode", "") or "").strip().lower() == "de_risk":
             if not bool(reflection_context.get("restore_ready")) and int(reflection_context.get("negative_streak", 0) or 0) > 0:
                 normalized["carry_in_mode"] = "de_risk"
-                normalized["hold_bars_scale"] = min(float(normalized.get("hold_bars_scale", 1.0) or 1.0), 0.75)
-                normalized["stagnation_bars_scale"] = min(float(normalized.get("stagnation_bars_scale", 1.0) or 1.0), 0.75)
-                normalized["stagnation_pnl_scale"] = max(float(normalized.get("stagnation_pnl_scale", 1.0) or 1.0), 1.15)
+                normalized["hold_bars_scale"] = min(float(normalized.get("hold_bars_scale", 1.0) or 1.0), 0.67)
+                normalized["stagnation_bars_scale"] = min(float(normalized.get("stagnation_bars_scale", 1.0) or 1.0), 0.67)
+                normalized["stagnation_pnl_scale"] = max(float(normalized.get("stagnation_pnl_scale", 1.0) or 1.0), 1.25)
         preserve_cooldown_scale = reflection_context.get("preserve_cooldown_scale")
         if preserve_cooldown_scale is not None:
             try:

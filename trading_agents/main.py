@@ -313,6 +313,19 @@ def _current_report_window_start_epoch(now: datetime | None = None) -> float:
     return anchor.astimezone(timezone.utc).timestamp()
 
 
+def _next_report_window_anchor(now: datetime | None = None) -> datetime:
+    local_now = now.astimezone(LOCAL_TZ) if now is not None else datetime.now(LOCAL_TZ)
+    anchor = local_now.replace(
+        hour=int(REPORT_WINDOW_ANCHOR_HOUR_LOCAL),
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    if local_now >= anchor:
+        anchor += timedelta(days=1)
+    return anchor
+
+
 def _mark_trade_cooldown(path: Path, mode: str, symbol: str, cooldown_seconds: float) -> None:
     if cooldown_seconds <= 0:
         return
@@ -1199,7 +1212,21 @@ def _intraday_policy_exit(
         and (pnl_pct <= 0.6 or trend_has_reversed)
     )
 
-    if not (stale_trade or overheld_without_edge or flatten_due):
+    handoff_exit_due = False
+    if carry_in_mode == "de_risk" and bool(getattr(settings, "intraday_report_handoff_exit_enabled", True)):
+        next_anchor = _next_report_window_anchor(now_local)
+        minutes_to_handoff = max((next_anchor - now_local).total_seconds() / 60.0, 0.0)
+        handoff_window_minutes = max(float(getattr(settings, "intraday_report_handoff_exit_minutes", 30.0) or 30.0), 0.0)
+        handoff_max_pnl_pct = float(getattr(settings, "intraday_report_handoff_max_pnl_pct", 0.45) or 0.45)
+        weak_handoff_edge = (
+            pnl_pct <= handoff_max_pnl_pct
+            or trend_has_reversed
+            or hold_bars >= max(1.5, effective_stagnation_bars * 0.5)
+        )
+        if minutes_to_handoff <= handoff_window_minutes and weak_handoff_edge:
+            handoff_exit_due = True
+
+    if not (stale_trade or overheld_without_edge or flatten_due or handoff_exit_due):
         return None
 
     if stale_trade:
@@ -1209,6 +1236,11 @@ def _intraday_policy_exit(
         )
         if carry_in_mode == "de_risk" and carry_in_position:
             reason += "; carry-in de-risk mode tightened the exit window"
+    elif handoff_exit_due:
+        reason = (
+            f"report-window handoff de-risk with {pnl_pct:+.2f}% pnl and {hold_bars:.1f} bars held; "
+            "avoid carrying a weak position into the next noon window"
+        )
     elif flatten_due:
         reason = (
             f"intraday end-of-day de-risk after {hold_bars:.1f} bars; "
