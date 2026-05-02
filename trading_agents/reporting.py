@@ -1015,6 +1015,7 @@ def _build_shadow_benchmark_watch(
     focus_symbol: str,
     watch_candidate_id: str = "",
     benchmark_reports_dir: Path | None = None,
+    cutoff: datetime | None = None,
 ) -> dict[str, Any]:
     payload = external_benchmarks or {}
     baseline_id = str(payload.get("baseline_strategy_id", "")).strip() or "donchian_adx_perp_v1"
@@ -1083,6 +1084,7 @@ def _build_shadow_benchmark_watch(
         focus_symbol=focus_symbol,
         baseline_id=baseline_id,
         watch_candidate_id=chosen_watch_id,
+        cutoff=cutoff,
     )
     current_snapshot_qualified = _shadow_snapshot_qualified(
         watch_candidate_id=chosen_watch_id,
@@ -1142,11 +1144,12 @@ def _shadow_promotion_streak(
     focus_symbol: str,
     baseline_id: str,
     watch_candidate_id: str,
+    cutoff: datetime | None = None,
     limit: int = 6,
 ) -> int:
     if benchmark_reports_dir is None or not benchmark_reports_dir.exists() or not focus_symbol:
         return 0
-    files = sorted(benchmark_reports_dir.glob("external-benchmark-*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    files = _sorted_benchmark_report_files(benchmark_reports_dir, cutoff=cutoff)
     streak = 0
     for path in files[:limit]:
         try:
@@ -1199,6 +1202,64 @@ def _shadow_snapshot_qualified(
         and profit_factor_delta >= min_pf_delta
         and trade_count >= min_trades
     )
+
+
+def _benchmark_generated_at(payload: dict[str, Any]) -> datetime | None:
+    raw = str(payload.get("generated_at", "") or "").strip()
+    if not raw:
+        return None
+    try:
+        value = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _sorted_benchmark_report_files(
+    benchmark_reports_dir: Path | None,
+    *,
+    cutoff: datetime | None = None,
+) -> list[Path]:
+    if benchmark_reports_dir is None or not benchmark_reports_dir.exists():
+        return []
+    cutoff_utc = cutoff.astimezone(timezone.utc) if cutoff is not None else None
+    rows: list[tuple[datetime, Path]] = []
+    for path in benchmark_reports_dir.glob("external-benchmark-*.json"):
+        try:
+            payload = json.loads(path.read_text())
+        except Exception:
+            continue
+        generated_at = _benchmark_generated_at(payload)
+        if generated_at is None:
+            try:
+                generated_at = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            except OSError:
+                continue
+        if cutoff_utc is not None and generated_at > cutoff_utc:
+            continue
+        rows.append((generated_at, path))
+    rows.sort(key=lambda item: item[0], reverse=True)
+    return [path for _, path in rows]
+
+
+def _load_external_benchmark_summary_for_window(
+    state_path: Path,
+    *,
+    benchmark_reports_dir: Path | None,
+    window_end: datetime | None,
+) -> dict[str, Any]:
+    if window_end is not None:
+        files = _sorted_benchmark_report_files(benchmark_reports_dir, cutoff=window_end)
+        for path in files[:1]:
+            try:
+                payload = json.loads(path.read_text())
+            except Exception:
+                continue
+            if isinstance(payload, dict):
+                return payload
+    return load_external_benchmark_summary(state_path)
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -1837,6 +1898,108 @@ def _portfolio_from_record(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _stale_financial_snapshot_from_last_record(
+    last_record: dict[str, Any],
+    *,
+    initial_balance_usdt: float,
+    position_policy_metadata: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    position_policy_metadata = position_policy_metadata or {}
+    latest_snapshot = _portfolio_from_record(last_record)
+    latest_positions = latest_snapshot.get("positions", [])
+    latest_timestamp_local = str(last_record.get("__record_timestamp_local", "")).strip()
+    latest_timestamp_dt = _parse_timestamp_local(latest_timestamp_local)
+    stale_age_hours = 0.0
+    if latest_timestamp_dt is not None:
+        stale_age_hours = max((_local_now() - latest_timestamp_dt).total_seconds() / 3600.0, 0.0)
+    total_portfolio_value = _safe_float(latest_snapshot.get("total_value_usdt")) or initial_balance_usdt
+    invested_value = sum(abs(_safe_float(item.get("value_usdt"))) for item in latest_positions)
+    current_long_exposure = 0.0
+    current_short_exposure = 0.0
+    holdings: list[dict[str, Any]] = []
+    for item in latest_positions:
+        position_value = abs(_safe_float(item.get("value_usdt")))
+        signed_quantity = _safe_float(item.get("signed_quantity"))
+        unrealized_pnl = _safe_float(item.get("unrealized_pnl_usdt"))
+        if abs(signed_quantity) <= 1e-12 and position_value <= 1e-9 and abs(unrealized_pnl) <= 1e-9:
+            continue
+        side = str(item.get("position_side", "flat"))
+        if side == "long":
+            current_long_exposure += position_value
+        elif side == "short":
+            current_short_exposure += position_value
+        holdings.append(
+            {
+                "symbol": item.get("symbol"),
+                "asset": item.get("asset"),
+                "quantity": _safe_float(item.get("quantity")),
+                "signed_quantity": signed_quantity,
+                "price": _safe_float(item.get("price")),
+                "entry_price": _safe_float(item.get("entry_price")),
+                "value_usdt": position_value,
+                "weight_pct": (position_value / total_portfolio_value * 100) if total_portfolio_value > 0 else 0.0,
+                "unrealized_pnl_usdt": unrealized_pnl,
+                "unrealized_pnl_pct": ((unrealized_pnl / position_value * 100) if position_value > 0 else 0.0),
+                "position_side": side,
+                "market_type": str(item.get("market_type", "spot")),
+                "leverage": _safe_float(item.get("leverage")),
+                "liq_price": _safe_float(item.get("liq_price")),
+                "position_im_usdt": _safe_float(item.get("position_im_usdt")),
+                "position_mm_usdt": _safe_float(item.get("position_mm_usdt")),
+                "take_profit_price": _safe_float(item.get("take_profit_price")),
+                "stop_loss_price": _safe_float(item.get("stop_loss_price")),
+                "trailing_stop_distance": _safe_float(item.get("trailing_stop_distance")),
+                "liquidation_buffer_pct": _safe_float(item.get("liquidation_buffer_pct")),
+                "opened_at_local": _epoch_to_local_iso(
+                    (position_policy_metadata.get(str(item.get("symbol", "")).strip()) or {}).get("opened_at_epoch")
+                ),
+                "entry_count": _safe_int(
+                    (position_policy_metadata.get(str(item.get("symbol", "")).strip()) or {}).get("entry_count")
+                ),
+                "entry_source": "stale_runtime_snapshot",
+                "entry_reason": "no records landed inside this report window; carrying forward the last known portfolio snapshot",
+                "entry_trade_timestamp_local": latest_timestamp_local,
+            }
+        )
+    holdings.sort(key=lambda item: float(item["value_usdt"]), reverse=True)
+    cumulative_pnl = total_portfolio_value - initial_balance_usdt
+    return {
+        "initial_capital_usdt": initial_balance_usdt,
+        "day_start_portfolio_value_usdt": total_portfolio_value,
+        "day_start_timestamp_local": latest_timestamp_local or "n/a",
+        "daily_pnl_basis": "no local records inside this window; carrying forward last known portfolio snapshot",
+        "total_portfolio_value_usdt": total_portfolio_value,
+        "cumulative_pnl_usdt": cumulative_pnl,
+        "cumulative_pnl_pct": (cumulative_pnl / initial_balance_usdt * 100) if initial_balance_usdt > 0 else 0.0,
+        "daily_pnl_usdt": 0.0,
+        "daily_pnl_pct": 0.0,
+        "realized_pnl_usdt": 0.0,
+        "realized_long_pnl_usdt": 0.0,
+        "realized_short_pnl_usdt": 0.0,
+        "day_start_unrealized_pnl_usdt": sum(_safe_float(item.get("unrealized_pnl_usdt")) for item in latest_positions),
+        "unrealized_pnl_usdt": sum(_safe_float(item.get("unrealized_pnl_usdt")) for item in latest_positions),
+        "unrealized_change_usdt": 0.0,
+        "pnl_bridge_explained_usdt": 0.0,
+        "pnl_bridge_residual_usdt": 0.0,
+        "daily_fees_usdt": 0.0,
+        "cumulative_fees_usdt": 0.0,
+        "available_usdt": _safe_float(latest_snapshot.get("free_usdt")),
+        "available_balance_ratio_pct": (_safe_float(latest_snapshot.get("free_usdt")) / total_portfolio_value * 100)
+        if total_portfolio_value > 0
+        else 0.0,
+        "capital_utilization_pct": (invested_value / total_portfolio_value * 100) if total_portfolio_value > 0 else 0.0,
+        "gross_exposure_pct": (invested_value / total_portfolio_value * 100) if total_portfolio_value > 0 else 0.0,
+        "effective_leverage": (invested_value / total_portfolio_value) if total_portfolio_value > 0 else 0.0,
+        "current_long_exposure_usdt": current_long_exposure,
+        "current_short_exposure_usdt": current_short_exposure,
+        "holdings": holdings,
+        "data_freshness_status": "stale_runtime_snapshot",
+        "data_freshness_reason": "no local trade/decision records were found inside this report window",
+        "last_runtime_record_timestamp_local": latest_timestamp_local,
+        "stale_age_hours": round(stale_age_hours, 2),
+    }
+
+
 def _accepted_trade_rows(records: list[dict[str, Any]], taker_fee_pct: float) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for item in records:
@@ -1952,6 +2115,13 @@ def _build_financial_snapshot(
 ) -> dict[str, Any]:
     position_policy_metadata = position_policy_metadata or {}
     if not records:
+        latest_record = all_records[-1] if all_records else {}
+        if latest_record:
+            return _stale_financial_snapshot_from_last_record(
+                latest_record,
+                initial_balance_usdt=initial_balance_usdt,
+                position_policy_metadata=position_policy_metadata,
+            )
         return {
             "initial_capital_usdt": initial_balance_usdt,
             "total_portfolio_value_usdt": 0.0,
@@ -2446,6 +2616,7 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
 
     settings = load_settings()
     storage = build_storage_layout(settings.data_root)
+    _, window_end = _window_label_to_bounds(date_label)
     records = _filter_records_by_mode(_load_daily_records(trade_logs_dir, date_label), settings.trading_mode)
     all_records = _filter_records_by_mode(_load_all_records(trade_logs_dir), settings.trading_mode)
     runner_event_counts = _load_runner_event_counts(runner_log_path, date_label)
@@ -2463,7 +2634,11 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
         mode_scoped_path(storage.equity_curve_history_state, settings.trading_mode),
         mode_scoped_path(storage.equity_curve_svg, settings.trading_mode),
     )
-    summary["external_benchmarks"] = load_external_benchmark_summary(storage.external_benchmark_state)
+    summary["external_benchmarks"] = _load_external_benchmark_summary_for_window(
+        storage.external_benchmark_state,
+        benchmark_reports_dir=storage.benchmark_reports,
+        window_end=window_end,
+    )
     summary["trade_review"] = _build_trade_review(
         records,
         financial_snapshot=summary["financial_snapshot"],
@@ -2491,6 +2666,7 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
         summary["external_benchmarks"],
         focus_symbol=focus_symbol or str(summary.get("symbol_postmortem", {}).get("symbol", "")).strip(),
         benchmark_reports_dir=storage.benchmark_reports,
+        cutoff=window_end,
     )
     summary["executed_trade_timeline"] = _build_executed_trade_timeline(records)
     summary["daily_strategy_review"] = _load_daily_strategy_review(trade_logs_dir, date_label)
@@ -2553,6 +2729,19 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
     if summary_mode:
         lines.extend([f"- Mode: {summary_mode}", ""])
     lines.extend([f"- Window: {window_start.isoformat()} -> {window_end.isoformat()}", ""])
+    freshness_status = str(financial.get("data_freshness_status", "")).strip()
+    if freshness_status:
+        lines.extend(
+            [
+                (
+                    f"- Data Freshness: {freshness_status} | "
+                    f"last runtime record={str(financial.get('last_runtime_record_timestamp_local', 'n/a')) or 'n/a'} | "
+                    f"age={float(financial.get('stale_age_hours', 0.0)):.2f}h"
+                ),
+                f"- Freshness Note: {str(financial.get('data_freshness_reason', '')).strip() or 'n/a'}",
+                "",
+            ]
+        )
     lines.extend(
         [
             "## Financial Snapshot",

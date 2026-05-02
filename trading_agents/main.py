@@ -86,6 +86,34 @@ def _write_daily_strategy_review(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
+def _daily_review_fingerprint(daily_summary: dict) -> str:
+    financial = daily_summary.get("financial_snapshot") or {}
+    loss = daily_summary.get("loss_attribution") or {}
+    postmortem = daily_summary.get("symbol_postmortem") or {}
+    external_benchmarks = daily_summary.get("external_benchmarks") or {}
+    top_by_symbol = external_benchmarks.get("top_by_symbol") or {}
+    if not isinstance(top_by_symbol, dict):
+        top_by_symbol = {}
+    focus_symbol = str(postmortem.get("symbol", "") or "").strip()
+    focus_benchmark = top_by_symbol.get(focus_symbol, {}) if focus_symbol else {}
+    if not isinstance(focus_benchmark, dict):
+        focus_benchmark = {}
+    payload = {
+        "mode": daily_summary.get("mode"),
+        "date_label": daily_summary.get("date_label", ""),
+        "daily_pnl_usdt": round(float(financial.get("daily_pnl_usdt", 0.0) or 0.0), 4),
+        "realized_pnl_usdt": round(float(financial.get("realized_pnl_usdt", 0.0) or 0.0), 4),
+        "daily_fees_usdt": round(float(financial.get("daily_fees_usdt", 0.0) or 0.0), 4),
+        "carry_in_closed_count": int(loss.get("carry_in_closed_count", 0) or 0),
+        "new_closed_count": int(loss.get("new_closed_count", 0) or 0),
+        "primary_driver": str(loss.get("primary_driver", "") or ""),
+        "focus_symbol": focus_symbol,
+        "focus_benchmark_candidate": str(focus_benchmark.get("candidate_id", "") or ""),
+        "focus_benchmark_expectancy": round(float(focus_benchmark.get("expectancy_pct", 0.0) or 0.0), 4),
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
 def _load_recent_daily_review_history(storage, current_date_label: str, lookback_days: int = 4) -> list[dict[str, object]]:
     history: list[dict[str, object]] = []
     for label in _recent_local_date_labels(max(lookback_days, 1)):
@@ -1344,11 +1372,21 @@ def _finalize_reporting(
     if runner_heartbeat.get("timestamp") and datetime.now().astimezone().hour >= int(settings.notion_daily_review_hour):
         try:
             completed_daily_summary = load_daily_summary_data(storage.trade_logs, completed_date_label, storage.runner_log)
+            completed_daily_summary["date_label"] = completed_date_label
             completed_daily_summary["review_history"] = _load_recent_daily_review_history(storage, completed_date_label)
+            summary_fingerprint = _daily_review_fingerprint(completed_daily_summary)
             stored_review = _read_json_file(daily_strategy_review_path)
-            if not stored_review or stored_review.get("date_label") != completed_date_label:
+            if (
+                not stored_review
+                or stored_review.get("date_label") != completed_date_label
+                or stored_review.get("summary_fingerprint") != summary_fingerprint
+            ):
                 daily_review = daily_reviewer.evaluate(completed_date_label, completed_daily_summary)
-                stored_review = {"date_label": completed_date_label, **daily_review.__dict__}
+                stored_review = {
+                    "date_label": completed_date_label,
+                    "summary_fingerprint": summary_fingerprint,
+                    **daily_review.__dict__,
+                }
                 _write_daily_strategy_review(daily_strategy_review_path, stored_review)
             daily_review_payload = {key: value for key, value in stored_review.items() if key != "date_label"}
             if _daily_review_already_published(storage.notion_daily_review_state, completed_date_label):

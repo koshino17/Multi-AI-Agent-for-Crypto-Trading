@@ -16,6 +16,23 @@
 
 ---
 
+## v0.11.35 - Align daily benchmark reviews with the completed noon window
+
+### Why
+
+- The completed `Daily Summary` could still mix in a newer external benchmark snapshot generated **after** the report window ended.
+- That created confusing contradictions where `Strategy Review`, `strategy_memory`, `Shadow Benchmark Watch`, and `External Benchmarks` could appear to disagree about which candidate was actually leading.
+- The cached `daily_strategy_review-YYYY-MM-DD.json` also stayed frozen as long as the file existed, even after the underlying daily summary logic changed.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Completed daily summaries now load the most recent benchmark snapshot **at or before the window end**, instead of always using the latest state file.
+  - Shadow promotion streak tracking now respects that same cutoff, so completed reports no longer leak future benchmark evidence into past windows.
+- `trading_agents/main.py`
+  - Added a `daily_strategy_review` fingerprint so the stored review is regenerated whenever the underlying completed summary materially changes.
+  - This keeps `Strategy Review` aligned with the corrected report window instead of silently reusing stale conclusions.
+
 ## v0.11.34 - Tighten carry-in de-risk and add noon-handoff weak-position exits
 
 ### Why
