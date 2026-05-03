@@ -170,6 +170,26 @@ def _parse_timestamp_local(value: Any) -> datetime | None:
     return parsed.astimezone(LOCAL_TZ)
 
 
+def _report_window_start_local(moment: datetime) -> datetime:
+    anchor = moment.replace(
+        hour=int(REPORT_WINDOW_ANCHOR_HOUR_LOCAL),
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    if moment < anchor:
+        anchor -= timedelta(days=1)
+    return anchor
+
+
+def _is_carry_in_for_window(opened_at: Any, reference_at: Any) -> bool:
+    opened_dt = _parse_timestamp_local(opened_at)
+    reference_dt = _parse_timestamp_local(reference_at)
+    if opened_dt is None or reference_dt is None:
+        return True
+    return opened_dt < _report_window_start_local(reference_dt)
+
+
 def _record_timestamp_local(item: dict[str, Any]) -> str:
     raw = item.get("__record_timestamp_local") or item.get("timestamp") or _accepted_trade_timestamp(item)
     parsed = _parse_timestamp_local(raw)
@@ -560,6 +580,7 @@ def _build_trade_review(
             parsed_close = _parse_timestamp_local(close_time)
             if parsed_close is not None:
                 opened_at = (parsed_close - timedelta(minutes=hold_minutes)).isoformat()
+        carry_in = _is_carry_in_for_window(opened_at, close_time)
         edge_pct = 0.0
         if avg_entry > 0 and close_price > 0:
             if direction == "long":
@@ -573,9 +594,13 @@ def _build_trade_review(
             "entries": max(1, int(round(_safe_float(account.get("entry_count", 1))))),
             "entry_quantity": quantity,
             "avg_entry_price": avg_entry,
-            "entry_source": "carry_in",
-            "latest_entry_reason": "position was already open before the first accepted trade in this report window",
-            "carry_in": True,
+            "entry_source": "carry_in" if carry_in else "unlogged_in_window",
+            "latest_entry_reason": (
+                "position was already open before the first accepted trade in this report window"
+                if carry_in
+                else "position was opened in this report window but no accepted opening trade was found in local logs"
+            ),
+            "carry_in": carry_in,
             "closed_at": close_time,
             "close_price": round(close_price, 6),
             "estimated_edge_pct": round(edge_pct, 4),
@@ -745,10 +770,15 @@ def _open_position_episodes_from_holdings(holdings: list[dict[str, Any]]) -> lis
         if not symbol:
             continue
         opened_at = str(item.get("opened_at_local", "")).strip() or "carry-in from prior records"
-        entry_source = str(item.get("entry_source", "")).strip() or "carry_in_unlogged"
+        carry_in = _is_carry_in_for_window(opened_at, opened_at)
+        entry_source = str(item.get("entry_source", "")).strip()
+        if not entry_source:
+            entry_source = "carry_in_unlogged" if carry_in else "unlogged_in_window"
         entry_reason = str(item.get("entry_reason", "")).strip()
         if not entry_reason and entry_source == "carry_in_unlogged":
             entry_reason = "position exists in account state but no accepted opening trade was found in local logs for this window"
+        elif not entry_reason and entry_source == "unlogged_in_window":
+            entry_reason = "position was opened in this report window but no accepted opening trade was found in local logs"
         entry_count = max(_safe_int(item.get("entry_count", 0)), 1)
         avg_entry = _safe_float(item.get("entry_price"))
         close_or_mark = _safe_float(item.get("price"))
@@ -763,7 +793,7 @@ def _open_position_episodes_from_holdings(holdings: list[dict[str, Any]]) -> lis
                 "avg_entry_price": avg_entry,
                 "entry_source": entry_source,
                 "latest_entry_reason": entry_reason,
-                "carry_in": True,
+                "carry_in": carry_in,
                 "closed_at": "",
                 "close_price": round(close_or_mark, 6) if close_or_mark > 0 else 0.0,
                 "estimated_edge_pct": round(edge_pct, 4),
@@ -1250,6 +1280,8 @@ def _load_external_benchmark_summary_for_window(
     benchmark_reports_dir: Path | None,
     window_end: datetime | None,
 ) -> dict[str, Any]:
+    from trading_agents.external_benchmarks import load_external_benchmark_summary
+
     if window_end is not None:
         files = _sorted_benchmark_report_files(benchmark_reports_dir, cutoff=window_end)
         for path in files[:1]:
@@ -2241,10 +2273,16 @@ def _build_financial_snapshot(
                 symbol=str(item.get("symbol", "")).strip(),
                 position_side=side,
             )
-            opening_source = _decision_source(opening_record) if opening_record else "carry_in_unlogged"
+            opened_at_local = _epoch_to_local_iso(
+                (position_policy_metadata.get(str(item.get("symbol", "")).strip()) or {}).get("opened_at_epoch")
+            )
+            carry_in = _is_carry_in_for_window(opened_at_local, opened_at_local)
+            opening_source = _decision_source(opening_record) if opening_record else ("carry_in_unlogged" if carry_in else "unlogged_in_window")
             opening_reason = str((opening_record.get("idea") or {}).get("rationale", "")).strip() if opening_record else ""
             if not opening_reason and opening_source == "carry_in_unlogged":
                 opening_reason = "position exists in account state but no accepted opening trade was found in local logs for this window"
+            elif not opening_reason and opening_source == "unlogged_in_window":
+                opening_reason = "position was opened in this report window but no accepted opening trade was found in local logs"
             opening_trade_time = _trade_timestamp_local(opening_record) if opening_record else ""
             base_pct = 0.0
             if position_value > 0 and current_price > 0:
@@ -2271,9 +2309,7 @@ def _build_financial_snapshot(
                     "stop_loss_price": _safe_float(item.get("stop_loss_price")),
                     "trailing_stop_distance": _safe_float(item.get("trailing_stop_distance")),
                     "liquidation_buffer_pct": _safe_float(item.get("liquidation_buffer_pct")),
-                    "opened_at_local": _epoch_to_local_iso(
-                        (position_policy_metadata.get(str(item.get("symbol", "")).strip()) or {}).get("opened_at_epoch")
-                    ),
+                    "opened_at_local": opened_at_local,
                     "entry_count": _safe_int(
                         (position_policy_metadata.get(str(item.get("symbol", "")).strip()) or {}).get("entry_count")
                     ),
