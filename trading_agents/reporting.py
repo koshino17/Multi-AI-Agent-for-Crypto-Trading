@@ -3016,6 +3016,13 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
         lines.extend(["", "## External Benchmarks", ""])
         lines.append(f"- Refreshed at: {external_benchmarks.get('generated_at', 'n/a')}")
         lines.append(f"- Live baseline strategy: {external_benchmarks.get('baseline_strategy_id', 'n/a')}")
+        cost_model = external_benchmarks.get("cost_model") or {}
+        if isinstance(cost_model, dict) and cost_model:
+            lines.append(
+                f"- Cost Model: round-trip fee {float(cost_model.get('round_trip_fee_pct', 0.0)):.2f}% | "
+                f"round-trip slippage {float(cost_model.get('round_trip_slippage_pct', 0.0)):.2f}% | "
+                f"funding integrated={'yes' if bool(cost_model.get('funding_integrated', False)) else 'no'}"
+            )
         lines.append(
             f"- Top benchmark overall: {top_benchmark.get('candidate_id')} on {top_benchmark.get('symbol', 'n/a')} "
             f"(expectancy={float(top_benchmark.get('expectancy_pct', 0.0)):+.2f}% | "

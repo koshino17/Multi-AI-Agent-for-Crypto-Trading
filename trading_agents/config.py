@@ -82,6 +82,7 @@ class Settings:
     external_benchmark_refresh_hours: float = _float("EXTERNAL_BENCHMARK_REFRESH_HOURS", 4.0)
     external_benchmark_limit: int = _int("EXTERNAL_BENCHMARK_LIMIT", 320)
     external_benchmark_max_alpha_signals: int = _int("EXTERNAL_BENCHMARK_MAX_ALPHA_SIGNALS", 1000)
+    external_benchmark_slippage_pct: float = _float("EXTERNAL_BENCHMARK_SLIPPAGE_PCT", 0.0002)
     llm_timeout_seconds: float = _float("LLM_TIMEOUT_SECONDS", 18.0)
     sentiment_request_timeout_seconds: float = _float("SENTIMENT_REQUEST_TIMEOUT_SECONDS", 6.0)
     sentiment_cache_ttl_seconds: float = _float("SENTIMENT_CACHE_TTL_SECONDS", 120.0)

@@ -48,6 +48,17 @@ class ExternalBenchmarkResult:
     profit_factor: float
 
 
+@dataclass(frozen=True)
+class BenchmarkCostModel:
+    round_trip_fee_pct: float = 0.0
+    round_trip_slippage_pct: float = 0.0
+    funding_fee_pct: float = 0.0
+
+    @property
+    def total_round_trip_cost_pct(self) -> float:
+        return max(self.round_trip_fee_pct, 0.0) + max(self.round_trip_slippage_pct, 0.0) + max(self.funding_fee_pct, 0.0)
+
+
 def load_external_benchmark_library(path: str | Path) -> tuple[str, list[ExternalBenchmarkCandidate]]:
     payload = json.loads(Path(path).read_text())
     baseline = str(payload.get("baseline_strategy_id", "")).strip()
@@ -116,6 +127,13 @@ def refresh_external_benchmark_suite(
     all_results: list[ExternalBenchmarkResult] = []
     generated_at = datetime.now(timezone.utc)
     stamp = generated_at.strftime("%Y%m%dT%H%M%S")
+    taker_fee_pct = min(max(float(getattr(settings, "taker_fee_pct", 0.0) or 0.0), 0.0), 0.01)
+    slippage_pct = min(max(float(getattr(settings, "external_benchmark_slippage_pct", 0.0) or 0.0), 0.0), 0.01)
+    cost_model = BenchmarkCostModel(
+        round_trip_fee_pct=taker_fee_pct * 2.0,
+        round_trip_slippage_pct=slippage_pct * 2.0,
+        funding_fee_pct=0.0,
+    )
 
     for symbol in benchmark_symbols:
         candles = fetch_bybit_public_klines(symbol, settings.timeframe, limit=max(settings.external_benchmark_limit, 120))
@@ -139,6 +157,7 @@ def refresh_external_benchmark_suite(
                     take_profit_pct=candidate.take_profit_pct,
                     stop_loss_pct=candidate.stop_loss_pct,
                     candidate=None,
+                    cost_model=cost_model,
                 )
                 for key, result in grouped_results.items():
                     model_name = key.split("::", 1)[-1]
@@ -183,6 +202,7 @@ def refresh_external_benchmark_suite(
                 take_profit_pct=candidate.take_profit_pct,
                 stop_loss_pct=candidate.stop_loss_pct,
                 candidate=candidate,
+                cost_model=cost_model,
             ).get(candidate.id)
             if result is None:
                 continue
@@ -223,6 +243,13 @@ def refresh_external_benchmark_suite(
         "generated_at": generated_at.isoformat(),
         "timeframe": settings.timeframe,
         "baseline_strategy_id": baseline_strategy_id,
+        "cost_model": {
+            "round_trip_fee_pct": cost_model.round_trip_fee_pct * 100.0,
+            "round_trip_slippage_pct": cost_model.round_trip_slippage_pct * 100.0,
+            "funding_fee_pct": cost_model.funding_fee_pct * 100.0,
+            "total_round_trip_cost_pct": cost_model.total_round_trip_cost_pct * 100.0,
+            "funding_integrated": False,
+        },
         "symbols": benchmark_symbols,
         "normalized_outputs": normalized_outputs[-24:],
         "report_path": "",
@@ -253,6 +280,7 @@ def benchmark_signal_groups(
     take_profit_pct: float,
     stop_loss_pct: float,
     candidate: ExternalBenchmarkCandidate | None = None,
+    cost_model: BenchmarkCostModel | None = None,
 ) -> dict[str, AlphaArenaBacktestResult]:
     timestamps = [int(item["timestamp_ms"]) for item in candles]
     opens = [float(item["open"]) for item in candles]
@@ -279,6 +307,7 @@ def benchmark_signal_groups(
                 take_profit_pct=take_profit_pct,
                 stop_loss_pct=stop_loss_pct,
                 candidate=candidate,
+                cost_model=cost_model,
             )
             returns.append(realized)
         results[group_key] = _aggregate_returns(signal_count=len(signals), returns=returns)
@@ -401,6 +430,7 @@ def _simulate_signal_return_ohlc(
     take_profit_pct: float,
     stop_loss_pct: float,
     candidate: ExternalBenchmarkCandidate | None = None,
+    cost_model: BenchmarkCostModel | None = None,
 ) -> float:
     entry_price = float(closes[entry_index])
     if entry_price <= 0:
@@ -417,6 +447,7 @@ def _simulate_signal_return_ohlc(
     )
     take_profit_pct = profile["take_profit_pct"]
     stop_loss_pct = profile["stop_loss_pct"]
+    total_cost_pct = float((cost_model or BenchmarkCostModel()).total_round_trip_cost_pct)
     take_level = entry_price * (1.0 + (take_profit_pct * direction))
     stop_level = entry_price * (1.0 - (stop_loss_pct * direction))
     exit_mode = str(profile.get("exit_mode", "fixed")).strip() or "fixed"
@@ -441,16 +472,16 @@ def _simulate_signal_return_ohlc(
             midline = _compute_donchian_midline(highs, lows, next_index, midline_period)
             if midline > 0:
                 if action == "buy" and low <= midline < entry_price:
-                    return (midline - entry_price) / entry_price
+                    return ((midline - entry_price) / entry_price) - total_cost_pct
                 if action == "sell" and high >= midline > entry_price:
-                    return (entry_price - midline) / entry_price
+                    return ((entry_price - midline) / entry_price) - total_cost_pct
         if hit_stop and hit_take:
-            return -stop_loss_pct
+            return -stop_loss_pct - total_cost_pct
         if hit_stop:
-            return -stop_loss_pct
+            return -stop_loss_pct - total_cost_pct
         if hit_take:
-            return take_profit_pct
-    return last_return
+            return take_profit_pct - total_cost_pct
+    return last_return - total_cost_pct
 
 
 def _rolling_mean(values: list[float]) -> float:
