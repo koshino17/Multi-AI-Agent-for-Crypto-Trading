@@ -1056,11 +1056,20 @@ class DailyReviewAgent:
         benchmark_for_review = focus_benchmark if focus_benchmark.get("candidate_id") else top_benchmark
         shadow_watch = daily_summary.get("shadow_benchmark_watch") or {}
         if benchmark_for_review.get("candidate_id"):
-            decision_summary += (
-                f" 最新外部 benchmark 目前以 {benchmark_for_review.get('candidate_id', 'n/a')} "
-                f"@ {benchmark_for_review.get('symbol', 'n/a')} 領先，"
-                f"expectancy {float(benchmark_for_review.get('expectancy_pct', 0.0)):+.2f}%。"
-            )
+            benchmark_expectancy = float(benchmark_for_review.get("expectancy_pct", 0.0) or 0.0)
+            benchmark_profit_factor = float(benchmark_for_review.get("profit_factor", 0.0) or 0.0)
+            if benchmark_expectancy > 0.0 and benchmark_profit_factor > 1.0:
+                decision_summary += (
+                    f" 最新外部 benchmark 目前以 {benchmark_for_review.get('candidate_id', 'n/a')} "
+                    f"@ {benchmark_for_review.get('symbol', 'n/a')} 領先，"
+                    f"expectancy {benchmark_expectancy:+.2f}%。"
+                )
+            else:
+                decision_summary += (
+                    f" 最新外部 benchmark 雖然相對領先的是 {benchmark_for_review.get('candidate_id', 'n/a')} "
+                    f"@ {benchmark_for_review.get('symbol', 'n/a')}，但扣完成本後 expectancy {benchmark_expectancy:+.2f}% / "
+                    f"PF {benchmark_profit_factor:.2f}，仍未達正 edge。"
+                )
         if top_alpha.get("candidate_id"):
             decision_summary += (
                 f" Alpha Arena 對照組領先的是 {top_alpha.get('candidate_id', 'n/a')}。"
@@ -1281,7 +1290,7 @@ class StrategyReflectionAgent:
                     "You are the strategy reflection agent for a crypto trading system. "
                     "This reflection runs only once every 12 hours to avoid overfitting. "
                     "Return JSON with keys summary, biases, risk_adjustments, focus_symbols, controls. "
-                    "controls may include fallback_entry_mode (normal/base_only), cooldown_scale (0.25-1.0), "
+                    "controls may include fallback_entry_mode (normal/base_only), entry_mode (normal/capital_preservation), cooldown_scale (0.25-1.0), "
                     "and benchmark_watch_candidate / benchmark_watch_symbol. "
                     f"slot={slot}; daily_summary={json.dumps(daily_summary, ensure_ascii=False)}; "
                     f"reflection_context={json.dumps(reflection_context or {}, ensure_ascii=False)}"
@@ -1348,9 +1357,13 @@ class StrategyReflectionAgent:
         multi_day_pnl_usdt = float(reflection_context.get("multi_day_pnl_usdt", 0.0) or 0.0)
         current_equity_usdt = float(reflection_context.get("current_equity_usdt", 0.0) or 0.0)
         configured_initial_usdt = float(reflection_context.get("configured_initial_usdt", 0.0) or 0.0)
+        drawdown_pct = float(reflection_context.get("drawdown_pct", 0.0) or 0.0)
+        live_trade_expectancy_pct = float(reflection_context.get("live_trade_expectancy_pct", 0.0) or 0.0)
+        live_profit_factor = float(reflection_context.get("live_profit_factor", 0.0) or 0.0)
         restore_positive_days = int(reflection_context.get("restore_positive_days", 0) or 0)
         restore_equity_floor_usdt = float(reflection_context.get("restore_equity_floor_usdt", 0.0) or 0.0)
         force_base_only = bool(reflection_context.get("force_fallback_base_only"))
+        capital_preservation_mode = bool(reflection_context.get("capital_preservation_mode"))
         preserve_cooldown_scale = reflection_context.get("preserve_cooldown_scale")
         live_symbol_benchmark = reflection_context.get("live_symbol_benchmark") or {}
         current_live_symbol = str(reflection_context.get("current_live_symbol", "") or "").strip()
@@ -1421,6 +1434,14 @@ class StrategyReflectionAgent:
                 "only restore normal fallback mode after consecutive positive reflection windows and partial equity recovery"
             )
             controls["fallback_entry_mode"] = "base_only"
+        if capital_preservation_mode:
+            biases.append(
+                "multi-day drawdown and negative live expectancy triggered capital-preservation mode"
+            )
+            risk_adjustments.append(
+                "pause new live entries until either equity meaningfully recovers or a benchmark candidate proves positive after costs across consecutive windows"
+            )
+            controls["entry_mode"] = "capital_preservation"
         previous_carry_in_mode = str(previous_controls.get("carry_in_mode", "") or "").strip().lower()
         if previous_carry_in_mode == "de_risk" and not bool(reflection_context.get("restore_ready")) and negative_streak > 0:
             controls["carry_in_mode"] = "de_risk"
@@ -1482,6 +1503,10 @@ class StrategyReflectionAgent:
             summary_parts.append(
                 f"benchmark_streak={repeated_benchmark_leader_id}x{benchmark_leader_streak}"
             )
+        if capital_preservation_mode:
+            summary_parts.append(
+                f"capital_preservation=on drawdown={drawdown_pct:.2f}% expectancy={live_trade_expectancy_pct:+.2f}% pf={live_profit_factor:.2f}"
+            )
         summary = "; ".join(summary_parts) + "."
         return StrategyReflectionSnapshot(
             slot=slot,
@@ -1505,6 +1530,10 @@ class StrategyReflectionAgent:
         if mode not in {"normal", "base_only"}:
             mode = "normal"
         normalized["fallback_entry_mode"] = mode
+        entry_mode = str(raw.get("entry_mode", normalized.get("entry_mode", "normal")) or "normal").strip().lower()
+        if entry_mode not in {"normal", "capital_preservation"}:
+            entry_mode = "normal"
+        normalized["entry_mode"] = entry_mode
         carry_in_mode = str(raw.get("carry_in_mode", normalized.get("carry_in_mode", "normal")) or "normal").strip().lower()
         if carry_in_mode not in {"normal", "de_risk"}:
             carry_in_mode = "normal"
@@ -1532,6 +1561,8 @@ class StrategyReflectionAgent:
                 normalized.pop(key, None)
         if bool(reflection_context.get("force_fallback_base_only")):
             normalized["fallback_entry_mode"] = "base_only"
+        if bool(reflection_context.get("capital_preservation_mode")):
+            normalized["entry_mode"] = "capital_preservation"
         if str((reflection_context.get("previous_controls") or {}).get("carry_in_mode", "") or "").strip().lower() == "de_risk":
             if not bool(reflection_context.get("restore_ready")) and int(reflection_context.get("negative_streak", 0) or 0) > 0:
                 normalized["carry_in_mode"] = "de_risk"
@@ -1549,7 +1580,12 @@ class StrategyReflectionAgent:
                 pass
         live_symbol_benchmark = reflection_context.get("live_symbol_benchmark") or {}
         current_live_symbol = str(reflection_context.get("current_live_symbol", "") or "").strip()
-        if isinstance(live_symbol_benchmark, dict) and live_symbol_benchmark.get("candidate_id"):
+        live_benchmark_positive_edge = (
+            isinstance(live_symbol_benchmark, dict)
+            and float(live_symbol_benchmark.get("expectancy_pct", 0.0) or 0.0) > 0.0
+            and float(live_symbol_benchmark.get("profit_factor", 0.0) or 0.0) > 1.0
+        )
+        if live_benchmark_positive_edge and live_symbol_benchmark.get("candidate_id"):
             normalized["benchmark_watch_candidate"] = str(live_symbol_benchmark.get("candidate_id", "")).strip()
             normalized["benchmark_watch_symbol"] = str(live_symbol_benchmark.get("symbol", current_live_symbol)).strip()
         elif current_live_symbol:

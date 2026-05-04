@@ -153,6 +153,14 @@ class Settings:
     strategy_learning_lookback_days: int = _int("STRATEGY_LEARNING_LOOKBACK_DAYS", 5)
     strategy_learning_negative_day_threshold: int = _int("STRATEGY_LEARNING_NEGATIVE_DAY_THRESHOLD", 2)
     strategy_learning_restore_positive_days: int = _int("STRATEGY_LEARNING_RESTORE_POSITIVE_DAYS", 2)
+    strategy_learning_capital_preservation_drawdown_pct: float = _float(
+        "STRATEGY_LEARNING_CAPITAL_PRESERVATION_DRAWDOWN_PCT",
+        8.0,
+    )
+    strategy_learning_capital_preservation_negative_streak: int = _int(
+        "STRATEGY_LEARNING_CAPITAL_PRESERVATION_NEGATIVE_STREAK",
+        4,
+    )
     strategy_learning_restore_equity_recovery_ratio_pct: float = _float(
         "STRATEGY_LEARNING_RESTORE_EQUITY_RECOVERY_RATIO_PCT",
         99.0,

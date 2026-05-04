@@ -1128,15 +1128,23 @@ def _build_shadow_benchmark_watch(
         expectancy_delta=expectancy_delta,
         profit_factor_delta=profit_factor_delta,
         trade_count=int(watch.get("trade_count", 0) or 0),
+        watch_expectancy_pct=float(watch.get("expectancy_pct", 0.0) or 0.0),
+        watch_profit_factor=float(watch.get("profit_factor", 0.0) or 0.0),
     )
     promotion_ready = current_snapshot_qualified and streak >= 3
+    watch_positive_edge = (
+        float(watch.get("expectancy_pct", 0.0) or 0.0) > 0.0
+        and float(watch.get("profit_factor", 0.0) or 0.0) > 1.0
+    )
     verdict = (
         "promotion_candidate"
         if promotion_ready
         else "watch_streak_building"
         if current_snapshot_qualified
         else "keep_shadow_watch"
-        if is_watch_leader and expectancy_delta > 0
+        if is_watch_leader and expectancy_delta > 0 and watch_positive_edge
+        else "research_only_cost_limited"
+        if is_watch_leader and expectancy_delta > 0 and not watch_positive_edge
         else "no_upgrade_signal"
     )
     next_step = (
@@ -1146,6 +1154,8 @@ def _build_shadow_benchmark_watch(
         if verdict == "promotion_candidate"
         else f"`{chosen_watch_id}` 已開始累積升級 streak（目前 {streak} 次），先維持 shadow 並續看下一輪 benchmark。"
         if verdict == "watch_streak_building"
+        else f"`{chosen_watch_id}` 目前只是相對領先，但扣完成本後仍未達正 edge；維持 research-only，不要升成 live。"
+        if verdict == "research_only_cost_limited"
         else "目前仍以 live baseline 為主，繼續觀察其他候選是否出現更穩定優勢。"
     )
     summary = (
@@ -1208,6 +1218,8 @@ def _shadow_promotion_streak(
             expectancy_delta=expectancy_delta,
             profit_factor_delta=profit_factor_delta,
             trade_count=int(watch.get("trade_count", 0) or 0),
+            watch_expectancy_pct=float(watch.get("expectancy_pct", 0.0) or 0.0),
+            watch_profit_factor=float(watch.get("profit_factor", 0.0) or 0.0),
         )
         if not qualified:
             break
@@ -1222,6 +1234,8 @@ def _shadow_snapshot_qualified(
     expectancy_delta: float,
     profit_factor_delta: float,
     trade_count: int,
+    watch_expectancy_pct: float = 0.0,
+    watch_profit_factor: float = 0.0,
 ) -> bool:
     if not is_watch_leader:
         return False
@@ -1234,6 +1248,9 @@ def _shadow_snapshot_qualified(
         min_pf_delta = 0.50
         min_trades = 12
     return (
+        watch_expectancy_pct > 0.0
+        and watch_profit_factor > 1.0
+        and
         expectancy_delta >= min_expectancy_delta
         and profit_factor_delta >= min_pf_delta
         and trade_count >= min_trades

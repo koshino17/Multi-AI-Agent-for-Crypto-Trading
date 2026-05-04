@@ -203,6 +203,8 @@ def _build_strategy_reflection_context(settings, storage, current_date_label: st
                 "primary_driver": str(loss_attribution.get("primary_driver", "") or "").strip(),
                 "stagnation_exit_count": int(policy_exit_diagnostics.get("stagnation_exit_count", 0) or 0),
                 "benchmark_candidate_id": str(live_symbol_benchmark.get("candidate_id", "") or "").strip(),
+                "benchmark_expectancy_pct": float(live_symbol_benchmark.get("expectancy_pct", 0.0) or 0.0),
+                "benchmark_profit_factor": float(live_symbol_benchmark.get("profit_factor", 0.0) or 0.0),
             }
         )
 
@@ -251,7 +253,14 @@ def _build_strategy_reflection_context(settings, storage, current_date_label: st
     benchmark_leader_streak = 0
     for item in reversed(recent_windows):
         candidate_id = str(item.get("benchmark_candidate_id", "") or "").strip()
-        if not candidate_id or candidate_id == "donchian_adx_perp_v1":
+        benchmark_expectancy = float(item.get("benchmark_expectancy_pct", 0.0) or 0.0)
+        benchmark_profit_factor = float(item.get("benchmark_profit_factor", 0.0) or 0.0)
+        if (
+            not candidate_id
+            or candidate_id == "donchian_adx_perp_v1"
+            or benchmark_expectancy <= 0.0
+            or benchmark_profit_factor <= 1.0
+        ):
             break
         if not repeated_benchmark_leader_id:
             repeated_benchmark_leader_id = candidate_id
@@ -263,9 +272,17 @@ def _build_strategy_reflection_context(settings, storage, current_date_label: st
             break
 
     financial = daily_summary.get("financial_snapshot") or {}
+    loss_attribution = daily_summary.get("loss_attribution") or {}
     current_equity_usdt = float(financial.get("total_portfolio_value_usdt", 0.0) or 0.0)
     configured_initial_usdt = float(settings.initial_balance_usdt or 0.0)
     multi_day_pnl_usdt = current_equity_usdt - configured_initial_usdt if configured_initial_usdt > 0 else 0.0
+    drawdown_pct = (
+        max(configured_initial_usdt - current_equity_usdt, 0.0) / configured_initial_usdt * 100.0
+        if configured_initial_usdt > 0
+        else 0.0
+    )
+    live_trade_expectancy_pct = float(loss_attribution.get("live_trade_expectancy_pct", 0.0) or 0.0)
+    live_profit_factor = float(loss_attribution.get("live_profit_factor", 0.0) or 0.0)
     restore_equity_floor_usdt = configured_initial_usdt * float(
         settings.strategy_learning_restore_equity_recovery_ratio_pct or 0.0
     ) / 100.0
@@ -292,6 +309,19 @@ def _build_strategy_reflection_context(settings, storage, current_date_label: st
     )
     if previous_mode == "base_only" and not restore_ready:
         force_fallback_base_only = True
+    previous_entry_mode = ""
+    if isinstance(previous_controls, dict):
+        previous_entry_mode = str(previous_controls.get("entry_mode", "") or "").strip().lower()
+
+    capital_preservation_mode = bool(
+        configured_initial_usdt > 0
+        and drawdown_pct >= float(settings.strategy_learning_capital_preservation_drawdown_pct or 0.0)
+        and negative_streak >= int(settings.strategy_learning_capital_preservation_negative_streak or 0)
+        and live_trade_expectancy_pct < 0.0
+        and live_profit_factor < 1.0
+    )
+    if previous_entry_mode == "capital_preservation" and not restore_ready:
+        capital_preservation_mode = True
 
     preserve_cooldown_scale = None
     if previous_cooldown_scale is not None and previous_cooldown_scale < 1.0 and not restore_ready:
@@ -313,12 +343,16 @@ def _build_strategy_reflection_context(settings, storage, current_date_label: st
         "repeated_benchmark_leader_id": repeated_benchmark_leader_id,
         "benchmark_leader_streak": benchmark_leader_streak,
         "multi_day_pnl_usdt": round(multi_day_pnl_usdt, 4),
+        "drawdown_pct": round(drawdown_pct, 4),
         "current_equity_usdt": round(current_equity_usdt, 4),
         "configured_initial_usdt": round(configured_initial_usdt, 4),
+        "live_trade_expectancy_pct": round(live_trade_expectancy_pct, 4),
+        "live_profit_factor": round(live_profit_factor, 4),
         "restore_positive_days": int(settings.strategy_learning_restore_positive_days or 0),
         "restore_equity_floor_usdt": round(restore_equity_floor_usdt, 4),
         "restore_ready": restore_ready,
         "force_fallback_base_only": force_fallback_base_only,
+        "capital_preservation_mode": capital_preservation_mode,
         "preserve_cooldown_scale": preserve_cooldown_scale,
         "live_symbols": live_symbols,
         "current_live_symbol": current_live_symbol,
@@ -452,6 +486,35 @@ def _apply_strategy_memory_fallback_policy(
         holding_horizon="none",
     )
     return guarded, "strategy-memory guard: fallback new entries disabled for this 12h window after fallback-led losses"
+
+
+def _apply_strategy_memory_entry_policy(
+    *,
+    idea: TradeIdea,
+    position_side: str,
+    mode: str,
+    strategy_memory: dict | None,
+) -> tuple[TradeIdea, str]:
+    controls = _strategy_memory_controls(strategy_memory)
+    entry_mode = str(controls.get("entry_mode", "normal") or "normal").strip().lower()
+    if entry_mode != "capital_preservation":
+        return idea, ""
+    action = str(getattr(idea, "action", "hold") or "hold").lower()
+    if action not in {"buy", "sell"}:
+        return idea, ""
+    if not _opens_new_exposure(action, position_side=position_side, mode=mode):
+        return idea, ""
+    guarded = TradeIdea(
+        action="hold",
+        score=min(float(getattr(idea, "score", 0.40) or 0.40), 0.45),
+        rationale=(
+            f"{idea.rationale}; converted to hold because strategy memory activated capital-preservation mode "
+            f"after a multi-window drawdown with negative live expectancy"
+        ),
+        invalidation="wait for shadow benchmark promotion or a later reflection window with clear recovery evidence",
+        holding_horizon="none",
+    )
+    return guarded, "strategy-memory guard: capital-preservation mode disabled new live entries after a sustained drawdown"
 
 
 def _opens_new_exposure(action: str, *, position_side: str, mode: str) -> bool:
@@ -1772,6 +1835,13 @@ def execute_cycle(
             mode=mode,
             strategy_memory=strategy_memory,
         )
+        if not memory_guard_reason:
+            idea, memory_guard_reason = _apply_strategy_memory_entry_policy(
+                idea=idea,
+                position_side=position_side,
+                mode=mode,
+                strategy_memory=strategy_memory,
+            )
         idea, fallback_guard_reason = _guard_fallback_open_exposure(
             idea=idea,
             strategy_research=strategy_research,
