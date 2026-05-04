@@ -912,6 +912,7 @@ def _build_loss_attribution(
     realized_pnl = _safe_float(financial_snapshot.get("realized_pnl_usdt"))
     fees = _safe_float(financial_snapshot.get("daily_fees_usdt"))
     funding_fee = _safe_float(financial_snapshot.get("daily_funding_fee_usdt"))
+    pnl_bridge_residual_usdt = _safe_float(financial_snapshot.get("pnl_bridge_residual_usdt"))
     realized_after_fees = realized_pnl - fees
 
     closed_edges = [_safe_float(item.get("estimated_edge_pct")) for item in closed_episodes]
@@ -975,6 +976,10 @@ def _build_loss_attribution(
         observations.append("closed short episodes lost more often than longs")
     if fees > max(abs(realized_pnl), 0.01):
         observations.append("fees remained a meaningful drag versus realized PnL")
+    if abs(pnl_bridge_residual_usdt) >= max(fees, 0.25):
+        observations.append(
+            "PnL bridge residual is elevated; carry-in or unlogged positions can make window-based equity delta diverge from lifecycle realized PnL."
+        )
     if symbol_benchmark.get("candidate_id") and symbol_benchmark.get("candidate_id") != "donchian_adx_perp_v1":
         observations.append(
             f"{focus_symbol or 'focus symbol'} benchmark leader remained {symbol_benchmark.get('candidate_id')}"
@@ -1027,6 +1032,7 @@ def _build_loss_attribution(
         "live_profit_factor": round(live_profit_factor, 4) if isinstance(live_profit_factor, float) else None,
         "live_profit_factor_infinite": gross_loss_edge_pct == 0 and gross_profit_edge_pct > 0,
         "realized_after_fees_usdt": round(realized_after_fees, 4),
+        "pnl_bridge_residual_usdt": round(pnl_bridge_residual_usdt, 4),
         "fees_plus_funding_usdt": round(fees_and_funding, 4),
         "funding_fee_usdt": round(funding_fee, 4),
         "cost_impact_ratio": round(cost_impact_ratio, 4) if cost_impact_ratio is not None else None,
@@ -2513,6 +2519,8 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
     llm_wake_selected_enabled = 0
     decision_source_counts: Counter[str] = Counter()
     accepted_source_counts: Counter[str] = Counter()
+    projected_balance_blocked_while_exposed = 0
+    projected_balance_blocked_while_flat = 0
     long_proposals = 0
     short_proposals = 0
     long_accepted = 0
@@ -2539,6 +2547,13 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
         if idea.get("action") != "hold" and not approval.get("approved"):
             reason = _normalize_blocked_reason(str(approval.get("reason", "unknown reason")))
             blocked_reason_counts[reason] += 1
+            if reason == "projected available balance too low of equity":
+                account = item.get("account") or {}
+                position_notional = abs(_safe_float(account.get("position_notional_usdt")))
+                if position_notional > 1e-9:
+                    projected_balance_blocked_while_exposed += 1
+                else:
+                    projected_balance_blocked_while_flat += 1
         if _result_status(item) == "rejected":
             rejection_reason_counts[_result_reason(item)] += 1
         if _result_status(item) == "accepted":
@@ -2640,6 +2655,8 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
         "llm_selected_wake_rate_pct": llm_selected_wake_rate_pct,
         "decision_source_counts": dict(decision_source_counts.most_common()),
         "accepted_source_counts": dict(accepted_source_counts.most_common()),
+        "projected_balance_blocked_while_exposed": projected_balance_blocked_while_exposed,
+        "projected_balance_blocked_while_flat": projected_balance_blocked_while_flat,
         "latest": latest,
     }
 

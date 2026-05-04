@@ -1019,6 +1019,8 @@ class DailyReviewAgent:
         action_line = ", ".join(f"{key}={value}" for key, value in action_counts.items()) or "no actions"
         symbol_line = ", ".join(f"{key}={value}" for key, value in selected_symbol_counts.items()) or "no symbol focus"
         top_block = next(iter(blocked_reason_counts.items()), ("none", 0))
+        projected_balance_blocked_while_exposed = int(daily_summary.get("projected_balance_blocked_while_exposed", 0) or 0)
+        projected_balance_blocked_while_flat = int(daily_summary.get("projected_balance_blocked_while_flat", 0) or 0)
         top_reject = next(iter(rejection_reason_counts.items()), ("none", 0))
         top_benchmark = (external_benchmarks.get("top_candidates") or [{}])[0]
         top_alpha = (external_benchmarks.get("top_alpha_arena_candidates") or [{}])[0]
@@ -1083,7 +1085,12 @@ class DailyReviewAgent:
         if daily_summary.get("rejected_orders", 0) > 0:
             improvements.append("在 executor 前補一層交易所最小單與最終下單 notional 檢查，避免把 rejected 當成有效成交。")
         if top_block[0] != "none" and top_block[1] > 0:
-            improvements.append(f"優先處理 `{top_block[0]}`，降低可執行候選被風控或交易所門檻擋下的比例。")
+            if top_block[0] == "projected available balance too low of equity" and projected_balance_blocked_while_exposed > projected_balance_blocked_while_flat:
+                improvements.append(
+                    "多數 `projected available balance too low of equity` 發生在已有曝險倉位時；優先檢查加碼節奏與保證金預留是否過度保守，而不是把它當成空倉算式錯誤。"
+                )
+            else:
+                improvements.append(f"優先處理 `{top_block[0]}`，降低可執行候選被風控或交易所門檻擋下的比例。")
         focused_symbols = [symbol for symbol, count in selected_symbol_counts.items() if int(count) > 0]
         if len(focused_symbols) == 1 and sum(selected_symbol_counts.values()) > 20:
             improvements.append("目前是單一標的專注模式，優先檢查同一標的上的進場品質、續抱節奏與再進場能力，而不是增加分散與輪動。")
@@ -1120,6 +1127,11 @@ class DailyReviewAgent:
             f"主要 rejected 原因是 {top_reject[0]} ({top_reject[1]})。"
             f" Policy exit 摘要：{policy_exit_diagnostics.get('summary', 'n/a')}。"
         )
+        if top_block[0] == "projected available balance too low of equity" and top_block[1] > 0:
+            risk_review += (
+                f" 其中已有曝險倉位時被擋 {projected_balance_blocked_while_exposed} 次，"
+                f"空倉時被擋 {projected_balance_blocked_while_flat} 次。"
+            )
 
         benchmark_review = "目前沒有可用的外部 benchmark。"
         if benchmark_for_review.get("candidate_id"):
