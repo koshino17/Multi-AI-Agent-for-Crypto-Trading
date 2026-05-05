@@ -157,6 +157,14 @@ def _trade_timestamp_local(item: dict[str, Any]) -> str:
     return parsed.astimezone(LOCAL_TZ).isoformat()
 
 
+def _same_open_timestamp(left: Any, right: Any, *, tolerance_seconds: float = 120.0) -> bool:
+    left_dt = _parse_timestamp_local(left)
+    right_dt = _parse_timestamp_local(right)
+    if left_dt is not None and right_dt is not None:
+        return abs((left_dt - right_dt).total_seconds()) <= tolerance_seconds
+    return str(left or "").strip() != "" and str(left or "").strip() == str(right or "").strip()
+
+
 def _parse_timestamp_local(value: Any) -> datetime | None:
     text = str(value or "").strip()
     if not text:
@@ -557,6 +565,47 @@ def _build_trade_review(
     episodes: list[dict[str, Any]] = []
     active: dict[str, dict[str, Any]] = {}
 
+    def _infer_missing_open_metadata(
+        symbol: str,
+        direction: str,
+        opened_at: Any,
+    ) -> dict[str, Any]:
+        target_symbol = str(symbol or "").strip()
+        target_direction = str(direction or "").strip().lower()
+        if not target_symbol or target_direction not in {"long", "short"}:
+            return {}
+        for item in records:
+            if str(item.get("selected_symbol", "")).strip() != target_symbol:
+                continue
+            position_context = item.get("position_context")
+            account = item.get("account")
+            if not isinstance(position_context, dict) or not isinstance(account, dict):
+                continue
+            context_side = str(position_context.get("position_side", "")).strip().lower()
+            account_side = str(account.get("position_side", "")).strip().lower()
+            if context_side != target_direction and account_side != target_direction:
+                continue
+            context_opened_at = str(position_context.get("opened_at_local", "")).strip()
+            account_opened_at = str(account.get("opened_at_local", "")).strip()
+            candidate_opened_at = context_opened_at or account_opened_at
+            if opened_at and candidate_opened_at and not _same_open_timestamp(candidate_opened_at, opened_at):
+                continue
+            entry_count = _safe_int(position_context.get("entry_count"))
+            if entry_count <= 0:
+                entry_count = _safe_int(account.get("entry_count"))
+            if entry_count <= 0:
+                entry_count = 1
+            return {
+                "opened_at": candidate_opened_at or str(opened_at or "").strip(),
+                "entry_count": entry_count,
+                "decision_source": _decision_source(item),
+                "entry_reason": (
+                    str(item.get("idea", {}).get("rationale", "")).strip()
+                    or "report inferred the opening episode from persisted position metadata on decision logs"
+                ),
+            }
+        return {}
+
     def _carry_in_episode(symbol: str, close_record: dict[str, Any]) -> dict[str, Any]:
         order = _order_payload(close_record)
         account = close_record.get("account") or {}
@@ -580,7 +629,22 @@ def _build_trade_review(
             parsed_close = _parse_timestamp_local(close_time)
             if parsed_close is not None:
                 opened_at = (parsed_close - timedelta(minutes=hold_minutes)).isoformat()
+        inferred_open = _infer_missing_open_metadata(symbol, direction, opened_at)
+        if inferred_open.get("opened_at"):
+            opened_at = str(inferred_open.get("opened_at", opened_at)).strip() or opened_at
         carry_in = _is_carry_in_for_window(opened_at, close_time)
+        entry_source = "carry_in" if carry_in else "unlogged_in_window"
+        entry_reason = (
+            "position was already open before the first accepted trade in this report window"
+            if carry_in
+            else "position was opened in this report window but no accepted opening trade was found in local logs"
+        )
+        entry_count = max(1, int(round(_safe_float(account.get("entry_count", 1)))))
+        if inferred_open:
+            if not carry_in:
+                entry_source = str(inferred_open.get("decision_source", "")).strip().lower() or "inferred_position_context"
+            entry_reason = str(inferred_open.get("entry_reason", "")).strip() or entry_reason
+            entry_count = max(entry_count, _safe_int(inferred_open.get("entry_count", 1)), 1)
         edge_pct = 0.0
         if avg_entry > 0 and close_price > 0:
             if direction == "long":
@@ -591,15 +655,11 @@ def _build_trade_review(
             "symbol": symbol,
             "direction": direction,
             "opened_at": opened_at or "carry-in from prior records",
-            "entries": max(1, int(round(_safe_float(account.get("entry_count", 1))))),
+            "entries": entry_count,
             "entry_quantity": quantity,
             "avg_entry_price": avg_entry,
-            "entry_source": "carry_in" if carry_in else "unlogged_in_window",
-            "latest_entry_reason": (
-                "position was already open before the first accepted trade in this report window"
-                if carry_in
-                else "position was opened in this report window but no accepted opening trade was found in local logs"
-            ),
+            "entry_source": entry_source,
+            "latest_entry_reason": entry_reason,
             "carry_in": carry_in,
             "closed_at": close_time,
             "close_price": round(close_price, 6),

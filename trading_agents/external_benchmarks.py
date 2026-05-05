@@ -59,6 +59,26 @@ class BenchmarkCostModel:
         return max(self.round_trip_fee_pct, 0.0) + max(self.round_trip_slippage_pct, 0.0) + max(self.funding_fee_pct, 0.0)
 
 
+def build_benchmark_cost_model(settings, candidate: ExternalBenchmarkCandidate | None = None) -> BenchmarkCostModel:
+    taker_fee_pct = min(max(float(getattr(settings, "taker_fee_pct", 0.0) or 0.0), 0.0), 0.01)
+    slippage_pct = min(max(float(getattr(settings, "external_benchmark_slippage_pct", 0.0) or 0.0), 0.0), 0.01)
+    fee_round_trip = taker_fee_pct * 2.0
+    slippage_round_trip = slippage_pct * 2.0
+    funding_round_trip = 0.0
+    if candidate is not None and isinstance(candidate.params, dict):
+        if "assumed_round_trip_fee_pct" in candidate.params:
+            fee_round_trip = max(float(candidate.params.get("assumed_round_trip_fee_pct", 0.0) or 0.0), 0.0) / 100.0
+        if "assumed_round_trip_slippage_pct" in candidate.params:
+            slippage_round_trip = max(float(candidate.params.get("assumed_round_trip_slippage_pct", 0.0) or 0.0), 0.0) / 100.0
+        if "assumed_funding_fee_pct" in candidate.params:
+            funding_round_trip = max(float(candidate.params.get("assumed_funding_fee_pct", 0.0) or 0.0), 0.0) / 100.0
+    return BenchmarkCostModel(
+        round_trip_fee_pct=fee_round_trip,
+        round_trip_slippage_pct=slippage_round_trip,
+        funding_fee_pct=funding_round_trip,
+    )
+
+
 def load_external_benchmark_library(path: str | Path) -> tuple[str, list[ExternalBenchmarkCandidate]]:
     payload = json.loads(Path(path).read_text())
     baseline = str(payload.get("baseline_strategy_id", "")).strip()
@@ -127,13 +147,7 @@ def refresh_external_benchmark_suite(
     all_results: list[ExternalBenchmarkResult] = []
     generated_at = datetime.now(timezone.utc)
     stamp = generated_at.strftime("%Y%m%dT%H%M%S")
-    taker_fee_pct = min(max(float(getattr(settings, "taker_fee_pct", 0.0) or 0.0), 0.0), 0.01)
-    slippage_pct = min(max(float(getattr(settings, "external_benchmark_slippage_pct", 0.0) or 0.0), 0.0), 0.01)
-    cost_model = BenchmarkCostModel(
-        round_trip_fee_pct=taker_fee_pct * 2.0,
-        round_trip_slippage_pct=slippage_pct * 2.0,
-        funding_fee_pct=0.0,
-    )
+    default_cost_model = build_benchmark_cost_model(settings)
 
     for symbol in benchmark_symbols:
         candles = fetch_bybit_public_klines(symbol, settings.timeframe, limit=max(settings.external_benchmark_limit, 120))
@@ -157,7 +171,7 @@ def refresh_external_benchmark_suite(
                     take_profit_pct=candidate.take_profit_pct,
                     stop_loss_pct=candidate.stop_loss_pct,
                     candidate=None,
-                    cost_model=cost_model,
+                    cost_model=default_cost_model,
                 )
                 for key, result in grouped_results.items():
                     model_name = key.split("::", 1)[-1]
@@ -195,6 +209,7 @@ def refresh_external_benchmark_suite(
                 output_path = storage.external_benchmark_normalized / f"{candidate.id}-{symbol.replace('/', '-')}-{stamp}.jsonl"
                 write_normalized_signals(signals, str(output_path))
                 normalized_outputs.append(str(output_path))
+            candidate_cost_model = build_benchmark_cost_model(settings, candidate)
             result = benchmark_signal_groups(
                 candles,
                 {candidate.id: signals},
@@ -202,7 +217,7 @@ def refresh_external_benchmark_suite(
                 take_profit_pct=candidate.take_profit_pct,
                 stop_loss_pct=candidate.stop_loss_pct,
                 candidate=candidate,
-                cost_model=cost_model,
+                cost_model=candidate_cost_model,
             ).get(candidate.id)
             if result is None:
                 continue
@@ -244,10 +259,10 @@ def refresh_external_benchmark_suite(
         "timeframe": settings.timeframe,
         "baseline_strategy_id": baseline_strategy_id,
         "cost_model": {
-            "round_trip_fee_pct": cost_model.round_trip_fee_pct * 100.0,
-            "round_trip_slippage_pct": cost_model.round_trip_slippage_pct * 100.0,
-            "funding_fee_pct": cost_model.funding_fee_pct * 100.0,
-            "total_round_trip_cost_pct": cost_model.total_round_trip_cost_pct * 100.0,
+            "round_trip_fee_pct": default_cost_model.round_trip_fee_pct * 100.0,
+            "round_trip_slippage_pct": default_cost_model.round_trip_slippage_pct * 100.0,
+            "funding_fee_pct": default_cost_model.funding_fee_pct * 100.0,
+            "total_round_trip_cost_pct": default_cost_model.total_round_trip_cost_pct * 100.0,
             "funding_integrated": False,
         },
         "symbols": benchmark_symbols,
@@ -825,9 +840,72 @@ def _generate_bollinger_rsi_signals(
     return signals
 
 
+def _generate_bollinger_keltner_extreme_reversion_signals(
+    candles: list[dict[str, float | int]],
+    *,
+    symbol: str,
+    candidate: ExternalBenchmarkCandidate,
+) -> list[AlphaArenaSignal]:
+    closes = [float(item["close"]) for item in candles]
+    highs = [float(item["high"]) for item in candles]
+    lows = [float(item["low"]) for item in candles]
+    bb_period = int(candidate.params.get("bb_period", 20) or 20)
+    bb_stddev = float(candidate.params.get("bb_stddev", 2.5) or 2.5)
+    keltner_period = int(candidate.params.get("keltner_period", 20) or 20)
+    keltner_atr_period = int(candidate.params.get("keltner_atr_period", 14) or 14)
+    keltner_atr_multiplier = float(candidate.params.get("keltner_atr_multiplier", 1.8) or 1.8)
+    rsi_period = int(candidate.params.get("rsi_period", 14) or 14)
+    rsi_buy_max = float(candidate.params.get("rsi_buy_max", 30.0) or 30.0)
+    rsi_sell_min = float(candidate.params.get("rsi_sell_min", 70.0) or 70.0)
+    signal_cooldown = int(candidate.params.get("signal_cooldown_bars", 3) or 3)
+    ema_values = _compute_ema(closes, keltner_period)
+    atr_values = _compute_atr_series(highs, lows, closes, keltner_atr_period)
+    rsi_values = _compute_rsi(closes, period=rsi_period)
+    signals: list[AlphaArenaSignal] = []
+    next_allowed_index = 0
+    start_index = max(bb_period, keltner_period, keltner_atr_period, rsi_period + 1)
+    for index in range(start_index, len(closes)):
+        if index < next_allowed_index:
+            continue
+        window = closes[index - bb_period + 1 : index + 1]
+        middle = _rolling_mean(window)
+        std = _rolling_std(window)
+        ema_value = float(ema_values[index]) if index < len(ema_values) else 0.0
+        atr_value = float(atr_values[index]) if index < len(atr_values) else 0.0
+        if middle <= 0 or std <= 0 or ema_value <= 0 or atr_value <= 0:
+            continue
+        bb_upper = middle + (std * bb_stddev)
+        bb_lower = middle - (std * bb_stddev)
+        kc_upper = ema_value + (atr_value * keltner_atr_multiplier)
+        kc_lower = ema_value - (atr_value * keltner_atr_multiplier)
+        close = closes[index]
+        rsi = float(rsi_values[index]) if index < len(rsi_values) else 50.0
+        action = "hold"
+        if close <= bb_lower and close <= kc_lower and rsi <= rsi_buy_max:
+            action = "buy"
+        elif close >= bb_upper and close >= kc_upper and rsi >= rsi_sell_min:
+            action = "sell"
+        if action == "hold":
+            continue
+        confidence = min(max(abs(rsi - 50.0) / 50.0, 0.0), 1.0)
+        signals.append(
+            AlphaArenaSignal(
+                timestamp_ms=int(candles[index]["timestamp_ms"]),
+                symbol=symbol,
+                model=candidate.id,
+                action=action,
+                confidence=confidence,
+                commentary=f"bollinger+keltner extreme reversion signal at bar {index}",
+            )
+        )
+        next_allowed_index = index + max(signal_cooldown, 1)
+    return signals
+
+
 _RULE_GENERATORS: dict[str, Callable[..., list[AlphaArenaSignal]]] = {
     "donchian_adx": _generate_donchian_adx_signals,
     "donchian_adx_keltner": _generate_donchian_adx_keltner_signals,
     "grid_range_reversion": _generate_grid_range_reversion_signals,
     "bollinger_rsi_mean_reversion": _generate_bollinger_rsi_signals,
+    "bollinger_keltner_extreme_reversion": _generate_bollinger_keltner_extreme_reversion_signals,
 }

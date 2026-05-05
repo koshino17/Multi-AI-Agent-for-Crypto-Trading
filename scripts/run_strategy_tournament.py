@@ -15,7 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from trading_agents.alpha_arena import fetch_bybit_public_klines
 from trading_agents.config import load_settings
 from trading_agents.external_benchmarks import (
-    BenchmarkCostModel,
+    build_benchmark_cost_model,
     _RULE_GENERATORS,
     benchmark_signal_groups,
     load_external_benchmark_library,
@@ -76,11 +76,7 @@ def main() -> int:
     if not candles:
         raise SystemExit("No candles fetched.")
 
-    cost_model = BenchmarkCostModel(
-        round_trip_fee_pct=max(float(settings.taker_fee_pct or 0.0), 0.0) * 2.0,
-        round_trip_slippage_pct=max(float(settings.external_benchmark_slippage_pct or 0.0), 0.0) * 2.0,
-        funding_fee_pct=0.0,
-    )
+    default_cost_model = build_benchmark_cost_model(settings)
 
     ranked_rows: list[dict] = []
     for candidate in library:
@@ -90,6 +86,7 @@ def main() -> int:
         if generator is None:
             continue
         signals = generator(candles, symbol=args.symbol, candidate=candidate)
+        candidate_cost_model = build_benchmark_cost_model(settings, candidate)
         result = benchmark_signal_groups(
             candles,
             {candidate.id: signals},
@@ -97,7 +94,7 @@ def main() -> int:
             take_profit_pct=candidate.take_profit_pct,
             stop_loss_pct=candidate.stop_loss_pct,
             candidate=candidate,
-            cost_model=cost_model,
+            cost_model=candidate_cost_model,
         ).get(candidate.id)
         if result is None:
             continue
@@ -127,9 +124,9 @@ def main() -> int:
         "window_start_utc": window_start.isoformat(),
         "window_end_utc": window_end.isoformat(),
         "cost_model": {
-            "round_trip_fee_pct": cost_model.round_trip_fee_pct * 100.0,
-            "round_trip_slippage_pct": cost_model.round_trip_slippage_pct * 100.0,
-            "funding_fee_pct": cost_model.funding_fee_pct * 100.0,
+            "round_trip_fee_pct": default_cost_model.round_trip_fee_pct * 100.0,
+            "round_trip_slippage_pct": default_cost_model.round_trip_slippage_pct * 100.0,
+            "funding_fee_pct": default_cost_model.funding_fee_pct * 100.0,
             "funding_integrated": False,
         },
         "ranked_results": ranked_rows,

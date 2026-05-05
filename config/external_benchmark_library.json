@@ -119,6 +119,32 @@
       }
     },
     {
+      "id": "grid_range_reversion_maker_v1",
+      "name": "Grid Range Reversion (Maker Assumption)",
+      "kind": "rule_strategy",
+      "generator": "grid_range_reversion",
+      "source": "research_execution_variant",
+      "description": "Research-only variant of the grid range reversion strategy assuming maker-style execution with lower fee and slippage friction.",
+      "hold_bars": 5,
+      "take_profit_pct": 0.60,
+      "stop_loss_pct": 0.55,
+      "params": {
+        "bb_period": 20,
+        "bb_stddev": 2.0,
+        "adx_period": 14,
+        "adx_max": 18.0,
+        "bb_width_min_pct": 0.60,
+        "bb_width_max_pct": 4.50,
+        "entry_band_buffer_pct": 0.15,
+        "rsi_period": 14,
+        "rsi_buy_max": 43.0,
+        "rsi_sell_min": 57.0,
+        "signal_cooldown_bars": 2,
+        "assumed_round_trip_fee_pct": 0.04,
+        "assumed_round_trip_slippage_pct": 0.01
+      }
+    },
+    {
       "id": "bollinger_rsi_mean_reversion_v1",
       "name": "Bollinger RSI Mean Reversion",
       "kind": "rule_strategy",
@@ -135,6 +161,28 @@
         "rsi_buy_max": 35.0,
         "rsi_sell_min": 65.0,
         "signal_cooldown_bars": 2
+      }
+    },
+    {
+      "id": "bollinger_keltner_extreme_reversion_v1",
+      "name": "Bollinger + Keltner Extreme Reversion",
+      "kind": "rule_strategy",
+      "generator": "bollinger_keltner_extreme_reversion",
+      "source": "public_extreme_mean_reversion",
+      "description": "Research-only extreme mean-reversion benchmark that only trades outer-range exhaustions when price stretches beyond both Bollinger and Keltner envelopes with RSI confirmation.",
+      "hold_bars": 6,
+      "take_profit_pct": 0.95,
+      "stop_loss_pct": 0.60,
+      "params": {
+        "bb_period": 20,
+        "bb_stddev": 2.5,
+        "keltner_period": 20,
+        "keltner_atr_period": 14,
+        "keltner_atr_multiplier": 1.8,
+        "rsi_period": 14,
+        "rsi_buy_max": 30.0,
+        "rsi_sell_min": 70.0,
+        "signal_cooldown_bars": 3
       }
     },
     {
