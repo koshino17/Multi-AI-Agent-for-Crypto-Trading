@@ -1367,7 +1367,7 @@ What Changed:
 - Intraday policy exits now consume those controls, so repeated carry-in failures lead to earlier de-risking in live behavior rather than remaining a report-only observation.
 - Daily review text now explicitly calls out repeated carry-in drag and asks whether the new de-risk controls are actually reducing that pattern.
 
-# v0.11.33 - Make strategy tournaments candidate-aware and alpha-aware
+# v0.11.34 - Make strategy tournaments candidate-aware and alpha-aware
 
 Why:
 - Strategy tournament output had become harder to trust once benchmark candidates started using different execution-cost assumptions. The report still showed only the default benchmark cost model, which could make a maker-assumption candidate look like it was competing under the same friction as taker-style strategies.
@@ -1378,3 +1378,15 @@ What Changed:
 - Tournament rows now include the effective round-trip fee, slippage, funding, total cost, and whether a candidate used a custom cost model.
 - Tournament Markdown output now surfaces candidate-specific cost overrides and lists skipped candidates with explicit reasons, making research review more trustworthy.
 - External benchmark snapshots now preserve candidate-level cost metadata as well, so downstream daily reports can explain when a shadow winner depends on a custom maker-style assumption.
+
+# v0.11.35 - Add idle-time strategy research cycles with anti-overfit checks
+
+Why:
+- TradePulse needed a way to keep learning about strategy candidates even when live trading is in a defensive or idle posture, without relying on ad hoc manual tournament runs.
+- Pure single-window optimization would make it too easy to overfit recent `SOL/USDT` chop, so research needed both multiple lookback windows and a small validation set before stronger promotion decisions.
+
+What Changed:
+- Added `trading_agents/strategy_research.py`, which now owns reusable cost-aware tournament execution plus a multi-window strategy research cycle that aggregates focus-symbol and validation-symbol evidence.
+- Added `scripts/run_strategy_research_cycle.py` for manual invocation of the same research loop used by the runner.
+- The runner now performs low-frequency strategy research automatically during flat periods, using configurable intervals, candle windows, and validation symbols.
+- New settings expose this behavior explicitly: `STRATEGY_RESEARCH_*` now controls whether idle-time research runs, how often it runs, which windows it tests, and which validation symbols it uses.

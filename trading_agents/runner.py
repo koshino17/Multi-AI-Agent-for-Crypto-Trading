@@ -18,6 +18,7 @@ from trading_agents.config import load_settings
 from trading_agents.main import _build_exchange, _parse_symbol_pool, execute_cycle
 from trading_agents.notion_sync import sync_notion_heartbeat
 from trading_agents.reporting import load_daily_summary_data, local_date_label
+from trading_agents.strategy_research import run_strategy_research_cycle
 from trading_agents.storage import build_storage_layout
 
 
@@ -80,6 +81,22 @@ def _account_tuple(snapshot: dict) -> tuple[float, float]:
         round(float(account.get("free_usdt", 0.0)), 6),
         round(float(account.get("net_position", account.get("base_asset", 0.0))), 8),
     )
+
+
+def _all_positions_flat(snapshot: dict, epsilon: float = 1e-9) -> bool:
+    return all(abs(float(position)) <= epsilon for _, position in snapshot.get("accounts", {}).values())
+
+
+def _parse_research_limits(raw_limits: tuple[str, ...]) -> tuple[int, ...]:
+    limits: list[int] = []
+    for item in raw_limits:
+        try:
+            value = int(str(item).strip())
+        except (TypeError, ValueError):
+            continue
+        if value >= 120:
+            limits.append(min(value, 1000))
+    return tuple(dict.fromkeys(limits)) or (320, 1000)
 
 
 def _capture_cycle_state(report: dict, timeframe: str) -> dict:
@@ -224,7 +241,10 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
         "selected_score": 0.0,
         "selected_expectancy_pct": 0.0,
         "selected_profit_factor": 0.0,
+        "last_strategy_research_at": 0.0,
     }
+    strategy_research_every = max(float(settings.strategy_research_refresh_hours or 0.0), 0.0) * 3600.0
+    strategy_research_limits = _parse_research_limits(settings.strategy_research_focus_limits)
 
     _emit(
         {
@@ -318,6 +338,43 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
                                 "status": "error",
                                 "mode": "heartbeat",
                                 "detail": str(exc),
+                            }
+                        )
+
+            if settings.strategy_research_enabled and strategy_research_every > 0:
+                now_epoch = time.time()
+                research_due = now_epoch - float(monitor_state.get("last_strategy_research_at", 0.0)) >= strategy_research_every
+                can_research = (not settings.strategy_research_only_when_flat) or _all_positions_flat(snapshot)
+                if research_due and can_research:
+                    focus_symbol = symbol_pool[0] if symbol_pool else settings.symbol
+                    try:
+                        research_result = run_strategy_research_cycle(
+                            settings=settings,
+                            storage=storage,
+                            focus_symbol=focus_symbol,
+                            validation_symbols=settings.strategy_research_validation_symbols,
+                            limits=strategy_research_limits,
+                            include_alpha=settings.strategy_research_include_alpha,
+                        )
+                        monitor_state["last_strategy_research_at"] = now_epoch
+                        _emit(
+                            {
+                                "event": "strategy_research",
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                                "status": research_result.get("status", "updated"),
+                                "focus_symbol": focus_symbol,
+                                "recommendation": research_result.get("recommendation", {}),
+                                "md_path": research_result.get("md_path", ""),
+                            }
+                        )
+                    except Exception as exc:
+                        _emit(
+                            {
+                                "event": "strategy_research",
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                                "status": "error",
+                                "detail": str(exc),
+                                "focus_symbol": focus_symbol,
                             }
                         )
 
