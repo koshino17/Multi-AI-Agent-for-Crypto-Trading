@@ -15,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from trading_agents.alpha_arena import fetch_bybit_public_klines
 from trading_agents.config import load_settings
 from trading_agents.external_benchmarks import (
+    _load_alpha_arena_normalized_signals,
     build_benchmark_cost_model,
     _RULE_GENERATORS,
     benchmark_signal_groups,
@@ -32,6 +33,7 @@ def _candidate_sort_key(item: dict) -> tuple[float, float, float]:
 
 
 def _render_markdown(payload: dict) -> str:
+    has_custom_costs = any(bool(row.get("uses_custom_cost_model")) for row in payload["ranked_results"])
     lines = [
         f"# Strategy Tournament - {payload['symbol']}",
         "",
@@ -45,9 +47,13 @@ def _render_markdown(payload: dict) -> str:
             f"round-trip slippage {payload['cost_model']['round_trip_slippage_pct']:.2f}% | "
             f"funding integrated={'yes' if payload['cost_model']['funding_integrated'] else 'no'}"
         ),
+        (
+            "- Candidate-specific cost overrides: "
+            + ("present" if has_custom_costs else "none")
+        ),
         "",
-        "| Rank | Candidate | Expectancy | PF | Cumulative | Win Rate | Trades | Avg Return |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Rank | Candidate | Expectancy | PF | Cumulative | Win Rate | Trades | Avg Return | Round-trip Cost |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for index, row in enumerate(payload["ranked_results"], start=1):
         lines.append(
@@ -57,8 +63,14 @@ def _render_markdown(payload: dict) -> str:
             f"{float(row['cumulative_return_pct']):+.2f}% | "
             f"{float(row['win_rate'])*100.0:.1f}% | "
             f"{int(row['trade_count'])} | "
-            f"{float(row['avg_return_pct']):+.2f}% |"
+            f"{float(row['avg_return_pct']):+.2f}% | "
+            f"{float(row.get('total_round_trip_cost_pct', 0.0)):.2f}% |"
         )
+    skipped = payload.get("skipped_candidates") or []
+    if skipped:
+        lines.extend(["", "## Skipped Candidates", ""])
+        for item in skipped:
+            lines.append(f"- `{item.get('candidate_id', 'unknown')}`: {item.get('reason', 'unknown')}")
     return "\n".join(lines) + "\n"
 
 
@@ -79,11 +91,56 @@ def main() -> int:
     default_cost_model = build_benchmark_cost_model(settings)
 
     ranked_rows: list[dict] = []
+    skipped_candidates: list[dict[str, str]] = []
     for candidate in library:
-        if candidate.kind == "alpha_arena_dataset" and not args.include_alpha:
+        if candidate.kind == "alpha_arena_dataset":
+            if not args.include_alpha:
+                skipped_candidates.append({"candidate_id": candidate.id, "reason": "alpha candidate skipped without --include-alpha"})
+                continue
+            alpha_signals = _load_alpha_arena_normalized_signals(
+                storage.alpha_arena_normalized,
+                symbol=args.symbol,
+                max_signals=min(
+                    max(int(candidate.params.get("max_signals", settings.external_benchmark_max_alpha_signals)), 1),
+                    settings.external_benchmark_max_alpha_signals,
+                ),
+            )
+            if not alpha_signals:
+                skipped_candidates.append({"candidate_id": candidate.id, "reason": "no normalized alpha signals found for symbol"})
+                continue
+            grouped_results = benchmark_signal_groups(
+                candles,
+                {f"alpha_arena::{model}": signal_group for model, signal_group in alpha_signals.items()},
+                hold_bars=candidate.hold_bars,
+                take_profit_pct=candidate.take_profit_pct,
+                stop_loss_pct=candidate.stop_loss_pct,
+                candidate=None,
+                cost_model=default_cost_model,
+            )
+            for key, signal_group in alpha_signals.items():
+                result = grouped_results.get(f"alpha_arena::{key}")
+                if result is None:
+                    skipped_candidates.append({"candidate_id": f"alpha_arena::{key}", "reason": "benchmark returned no result"})
+                    continue
+                ranked_rows.append(
+                    {
+                        "candidate_id": f"alpha_arena::{key}",
+                        "candidate_name": f"{candidate.name} / {key}",
+                        "source": candidate.source,
+                        "baseline": False,
+                        "signal_count": len(signal_group),
+                        "round_trip_fee_pct": default_cost_model.round_trip_fee_pct * 100.0,
+                        "round_trip_slippage_pct": default_cost_model.round_trip_slippage_pct * 100.0,
+                        "funding_fee_pct": default_cost_model.funding_fee_pct * 100.0,
+                        "total_round_trip_cost_pct": default_cost_model.total_round_trip_cost_pct * 100.0,
+                        "uses_custom_cost_model": False,
+                        **asdict(result),
+                    }
+                )
             continue
         generator = _RULE_GENERATORS.get(candidate.generator) or _RULE_GENERATORS.get(candidate.kind) or _RULE_GENERATORS.get(candidate.id)
         if generator is None:
+            skipped_candidates.append({"candidate_id": candidate.id, "reason": f"no generator registered for {candidate.generator or candidate.kind or candidate.id}"})
             continue
         signals = generator(candles, symbol=args.symbol, candidate=candidate)
         candidate_cost_model = build_benchmark_cost_model(settings, candidate)
@@ -97,6 +154,7 @@ def main() -> int:
             cost_model=candidate_cost_model,
         ).get(candidate.id)
         if result is None:
+            skipped_candidates.append({"candidate_id": candidate.id, "reason": "benchmark returned no result"})
             continue
         row = {
             "candidate_id": candidate.id,
@@ -104,6 +162,11 @@ def main() -> int:
             "source": candidate.source,
             "baseline": candidate.id == baseline_id,
             "signal_count": len(signals),
+            "round_trip_fee_pct": candidate_cost_model.round_trip_fee_pct * 100.0,
+            "round_trip_slippage_pct": candidate_cost_model.round_trip_slippage_pct * 100.0,
+            "funding_fee_pct": candidate_cost_model.funding_fee_pct * 100.0,
+            "total_round_trip_cost_pct": candidate_cost_model.total_round_trip_cost_pct * 100.0,
+            "uses_custom_cost_model": candidate_cost_model != default_cost_model,
             **asdict(result),
         }
         ranked_rows.append(row)
@@ -130,6 +193,7 @@ def main() -> int:
             "funding_integrated": False,
         },
         "ranked_results": ranked_rows,
+        "skipped_candidates": skipped_candidates,
     }
     json_path = output_dir / f"strategy-tournament-{args.symbol.replace('/', '-')}-{stamp}.json"
     md_path = output_dir / f"strategy-tournament-{args.symbol.replace('/', '-')}-{stamp}.md"

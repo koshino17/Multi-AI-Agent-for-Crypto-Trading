@@ -31,6 +31,7 @@
 若要看 `Alpha Arena` 如何作為 benchmark / research 來源接進目前架構，請看 `ALPHA_ARENA_INTEGRATION_PLAN.md`。
 若你已經有一份公開 Alpha Arena / 類 Alpha Arena 訊號 JSON 匯出，可以直接用 `scripts/alpha_arena_import_and_backtest.py` 做第一階段 research benchmark。
 若你要一次重跑目前所有外部 benchmark 候選，請用 `scripts/run_external_strategy_benchmarks.py`。
+若你要對同一個標的做成本感知的候選策略排名，請用 `scripts/run_strategy_tournament.py`；它現在也支援 `--include-alpha`，並會把 candidate-specific 成本假設與 skipped candidates 一起寫進報告。
 目前 `funding rate` 仍未接進 live 或 benchmark，暫時只列為下一階段 research item。
 
 ## Repo 目標
@@ -299,12 +300,20 @@ Daily Summary 與 `Symbol Postmortem` 也會顯示 attribution。這能幫我們
 - `config/external_benchmark_library.json`
 - `trading_agents/external_benchmarks.py`
 - `scripts/run_external_strategy_benchmarks.py`
+- `scripts/run_strategy_tournament.py`
 
 手動強制跑一輪 benchmark：
 
 ```bash
 source .venv/bin/activate
 python scripts/run_external_strategy_benchmarks.py --force
+```
+
+手動對單一標的跑 strategy tournament：
+
+```bash
+source .venv/bin/activate
+python scripts/run_strategy_tournament.py --symbol SOL/USDT --include-alpha
 ```
 
 輸出位置：

@@ -1366,3 +1366,15 @@ What Changed:
 - New learning controls can switch on a `carry_in_mode=de_risk` posture and tighten `hold_bars_scale`, `stagnation_bars_scale`, and `stagnation_pnl_scale` when carry-in losses repeat.
 - Intraday policy exits now consume those controls, so repeated carry-in failures lead to earlier de-risking in live behavior rather than remaining a report-only observation.
 - Daily review text now explicitly calls out repeated carry-in drag and asks whether the new de-risk controls are actually reducing that pattern.
+
+# v0.11.33 - Make strategy tournaments candidate-aware and alpha-aware
+
+Why:
+- Strategy tournament output had become harder to trust once benchmark candidates started using different execution-cost assumptions. The report still showed only the default benchmark cost model, which could make a maker-assumption candidate look like it was competing under the same friction as taker-style strategies.
+- `--include-alpha` existed on the CLI, but the script was not actually replaying alpha-arena dataset candidates; they were silently skipped unless you inspected the code.
+
+What Changed:
+- `scripts/run_strategy_tournament.py` now replays alpha-arena dataset candidates when `--include-alpha` is set, rather than silently skipping them.
+- Tournament rows now include the effective round-trip fee, slippage, funding, total cost, and whether a candidate used a custom cost model.
+- Tournament Markdown output now surfaces candidate-specific cost overrides and lists skipped candidates with explicit reasons, making research review more trustworthy.
+- External benchmark snapshots now preserve candidate-level cost metadata as well, so downstream daily reports can explain when a shadow winner depends on a custom maker-style assumption.

@@ -1135,7 +1135,9 @@ def _build_shadow_benchmark_watch(
     baseline = _find(baseline_id)
     leader = symbol_rows[0] if symbol_rows and isinstance(symbol_rows[0], dict) else {}
     allowed_shadow_candidates = [
+        "grid_range_reversion_maker_v1",
         "grid_range_reversion_v1",
+        "bollinger_keltner_extreme_reversion_v1",
         "donchian_adx_keltner_v1",
         "donchian_adx_atr_midline_exit_v1",
         "bollinger_rsi_mean_reversion_v1",
@@ -1303,10 +1305,18 @@ def _shadow_snapshot_qualified(
     min_expectancy_delta = 0.03
     min_pf_delta = 0.20
     min_trades = 20
-    if candidate_id == "grid_range_reversion_v1":
+    if candidate_id == "grid_range_reversion_maker_v1":
+        min_expectancy_delta = 0.08
+        min_pf_delta = 1.00
+        min_trades = 18
+    elif candidate_id == "grid_range_reversion_v1":
         min_expectancy_delta = 0.05
         min_pf_delta = 0.50
         min_trades = 12
+    elif candidate_id == "bollinger_keltner_extreme_reversion_v1":
+        min_expectancy_delta = 0.05
+        min_pf_delta = 0.50
+        min_trades = 10
     return (
         watch_expectancy_pct > 0.0
         and watch_profit_factor > 1.0
@@ -1315,6 +1325,23 @@ def _shadow_snapshot_qualified(
         and profit_factor_delta >= min_pf_delta
         and trade_count >= min_trades
     )
+
+
+def _benchmark_cost_note(payload: dict[str, Any]) -> str:
+    total_cost = float(payload.get("total_round_trip_cost_pct", 0.0) or 0.0)
+    fee = float(payload.get("round_trip_fee_pct", 0.0) or 0.0)
+    slippage = float(payload.get("round_trip_slippage_pct", 0.0) or 0.0)
+    funding = float(payload.get("funding_fee_pct", 0.0) or 0.0)
+    if total_cost <= 0:
+        return ""
+    parts = [f"round-trip cost {total_cost:.2f}%"]
+    if fee > 0 or slippage > 0 or funding > 0:
+        parts.append(f"fee {fee:.2f}%")
+        parts.append(f"slippage {slippage:.2f}%")
+        if funding > 0:
+            parts.append(f"funding {funding:.2f}%")
+    suffix = " | custom cost assumption" if bool(payload.get("uses_custom_cost_model", False)) else ""
+    return " | ".join(parts) + suffix
 
 
 def _benchmark_generated_at(payload: dict[str, Any]) -> datetime | None:
@@ -3106,6 +3133,9 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
             f"profit_factor={float(top_benchmark.get('profit_factor', 0.0)):.2f} | "
             f"trades={int(top_benchmark.get('trade_count', 0))})"
         )
+        top_cost_note = _benchmark_cost_note(top_benchmark)
+        if top_cost_note:
+            lines.append(f"  cost={top_cost_note}")
         if top_alpha_benchmark.get("candidate_id"):
             lines.append(
                 f"- Top Alpha Arena model: {top_alpha_benchmark.get('candidate_id')} on {top_alpha_benchmark.get('symbol', 'n/a')} "
@@ -3135,12 +3165,18 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
             f"profit_factor={float(baseline.get('profit_factor', 0.0)):.2f} | "
             f"trades={int(baseline.get('trade_count', 0))})"
         )
+        baseline_cost_note = _benchmark_cost_note(baseline)
+        if baseline_cost_note:
+            lines.append(f"  cost={baseline_cost_note}")
         lines.append(
             f"- Shadow Candidate: {watch.get('candidate_id', 'n/a')} "
             f"(expectancy={float(watch.get('expectancy_pct', 0.0)):+.2f}% | "
             f"profit_factor={float(watch.get('profit_factor', 0.0)):.2f} | "
             f"trades={int(watch.get('trade_count', 0))})"
         )
+        watch_cost_note = _benchmark_cost_note(watch)
+        if watch_cost_note:
+            lines.append(f"  cost={watch_cost_note}")
         lines.append(
             f"- Delta: expectancy {float(shadow_benchmark_watch.get('expectancy_delta_pct', 0.0)):+.2f}% | "
             f"profit factor {float(shadow_benchmark_watch.get('profit_factor_delta', 0.0)):+.2f} | "

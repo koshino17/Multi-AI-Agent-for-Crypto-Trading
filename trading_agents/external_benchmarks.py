@@ -46,6 +46,11 @@ class ExternalBenchmarkResult:
     avg_loss_pct: float
     expectancy_pct: float
     profit_factor: float
+    round_trip_fee_pct: float = 0.0
+    round_trip_slippage_pct: float = 0.0
+    funding_fee_pct: float = 0.0
+    total_round_trip_cost_pct: float = 0.0
+    uses_custom_cost_model: bool = False
 
 
 @dataclass(frozen=True)
@@ -191,6 +196,11 @@ def refresh_external_benchmark_suite(
                             avg_loss_pct=result.avg_loss_pct,
                             expectancy_pct=result.expectancy_pct,
                             profit_factor=result.profit_factor,
+                            round_trip_fee_pct=default_cost_model.round_trip_fee_pct * 100.0,
+                            round_trip_slippage_pct=default_cost_model.round_trip_slippage_pct * 100.0,
+                            funding_fee_pct=default_cost_model.funding_fee_pct * 100.0,
+                            total_round_trip_cost_pct=default_cost_model.total_round_trip_cost_pct * 100.0,
+                            uses_custom_cost_model=False,
                         )
                     )
                 continue
@@ -237,6 +247,11 @@ def refresh_external_benchmark_suite(
                     avg_loss_pct=result.avg_loss_pct,
                     expectancy_pct=result.expectancy_pct,
                     profit_factor=result.profit_factor,
+                    round_trip_fee_pct=candidate_cost_model.round_trip_fee_pct * 100.0,
+                    round_trip_slippage_pct=candidate_cost_model.round_trip_slippage_pct * 100.0,
+                    funding_fee_pct=candidate_cost_model.funding_fee_pct * 100.0,
+                    total_round_trip_cost_pct=candidate_cost_model.total_round_trip_cost_pct * 100.0,
+                    uses_custom_cost_model=candidate_cost_model != default_cost_model,
                 )
             )
         results_for_symbol.sort(key=_benchmark_sort_key, reverse=True)
