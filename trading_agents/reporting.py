@@ -444,6 +444,7 @@ def _build_symbol_postmortem(
 
     top_block = next(iter(symbol_blocked.items()), ("none", 0))
     top_reject = next(iter(symbol_rejected.items()), ("none", 0))
+    baseline_strategy_id = str((external_benchmarks or {}).get("baseline_strategy_id", "") or "donchian_adx_perp_v1").strip() or "donchian_adx_perp_v1"
     benchmark_payload = ((external_benchmarks or {}).get("top_by_symbol") or {}).get(chosen_symbol, {})
     benchmark_summary = ""
     if isinstance(benchmark_payload, dict) and benchmark_payload.get("candidate_id"):
@@ -503,7 +504,7 @@ def _build_symbol_postmortem(
         improvements.append("檢查單一標的模式下 cooldown 是否過長，避免同一日內趨勢段被過度冷卻。")
     if top_reject[0] == "Rejected due to minimum executable size":
         improvements.append("持續觀察最小可執行單位拒單；若仍頻繁出現，可再調整資金或單筆風險預算。")
-    if benchmark_payload and benchmark_payload.get("candidate_id") and benchmark_payload.get("candidate_id") != "donchian_adx_perp_v1":
+    if benchmark_payload and benchmark_payload.get("candidate_id") and benchmark_payload.get("candidate_id") != baseline_strategy_id:
         improvements.append(
             f"外部 benchmark 顯示 `{benchmark_payload.get('candidate_id')}` 在 {chosen_symbol} 更強，應做同標的 attribution 對照。"
         )
@@ -1020,6 +1021,7 @@ def _build_loss_attribution(
         primary_driver = "mixed execution drag across entry sources"
 
     observations: list[str] = []
+    baseline_strategy_id = str((external_benchmarks or {}).get("baseline_strategy_id", "") or "donchian_adx_perp_v1").strip() or "donchian_adx_perp_v1"
     if total_accepted == 0:
         observations.append("no orders were accepted; today was primarily an observe-only session")
     if carry_in_closed:
@@ -1040,7 +1042,7 @@ def _build_loss_attribution(
         observations.append(
             "PnL bridge residual is elevated; carry-in or unlogged positions can make window-based equity delta diverge from lifecycle realized PnL."
         )
-    if symbol_benchmark.get("candidate_id") and symbol_benchmark.get("candidate_id") != "donchian_adx_perp_v1":
+    if symbol_benchmark.get("candidate_id") and symbol_benchmark.get("candidate_id") != baseline_strategy_id:
         observations.append(
             f"{focus_symbol or 'focus symbol'} benchmark leader remained {symbol_benchmark.get('candidate_id')}"
         )

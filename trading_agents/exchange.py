@@ -642,11 +642,61 @@ class BybitDemoExchangeClient:
             "min_notional": min_notional,
         }
 
+    def _price_constraints(self, symbol: str) -> dict[str, Decimal]:
+        info = self._instrument_info(symbol)
+        price_filter = info.get("priceFilter", {}) if isinstance(info, dict) else {}
+        tick = Decimal(str(price_filter.get("tickSize") or "0.0001"))
+        if tick <= 0:
+            tick = Decimal("0.0001")
+        return {"tick": tick}
+
+    def _normalize_price(self, symbol: str, price: float) -> str:
+        tick = self._price_constraints(symbol)["tick"]
+        price_decimal = Decimal(str(price))
+        normalized = (price_decimal / tick).to_integral_value(rounding=ROUND_DOWN) * tick
+        if normalized <= 0:
+            normalized = tick
+        return format(normalized.normalize(), "f")
+
     def minimum_order_value_usdt(self, symbol: str) -> float:
         try:
             return float(self._lot_constraints(symbol)["min_notional"])
         except (TypeError, ValueError):
             return 0.0
+
+    def _fetch_order_status(self, symbol: str, *, order_id: str = "", order_link_id: str = "", category: str = "linear") -> dict:
+        params: dict[str, str] = {
+            "category": category,
+            "symbol": self._symbol(symbol),
+        }
+        if order_id:
+            params["orderId"] = order_id
+        if order_link_id:
+            params["orderLinkId"] = order_link_id
+        response = self._request(
+            "GET",
+            "/v5/order/realtime",
+            params,
+            private=True,
+        )
+        orders = response.get("result", {}).get("list", [])
+        return orders[0] if orders else {}
+
+    def _cancel_order(self, symbol: str, *, order_id: str = "", order_link_id: str = "", category: str = "linear") -> dict:
+        payload: dict[str, str] = {
+            "category": category,
+            "symbol": self._symbol(symbol),
+        }
+        if order_id:
+            payload["orderId"] = order_id
+        if order_link_id:
+            payload["orderLinkId"] = order_link_id
+        return self._request(
+            "POST",
+            "/v5/order/cancel",
+            payload,
+            private=True,
+        )
 
     def executable_min_order_value_usdt(self, symbol: str, price: float) -> float:
         constraints = self._lot_constraints(symbol)
@@ -841,7 +891,10 @@ class BybitDemoPerpExchangeClient(BybitDemoExchangeClient):
                 if "not modified" not in message and "same to" not in message and "leverage not modified" not in message:
                     raise
         qty = self._normalize_quantity(order["symbol"], float(order["quantity"]))
-        self._validate_order_value(order["symbol"], qty, float(order["price"]))
+        validation_price = float(order.get("limit_price", order["price"]))
+        self._validate_order_value(order["symbol"], qty, validation_price)
+        order_type = str(order.get("order_type", "market") or "market").strip().lower()
+        order_link_id = f"codex-perp-{int(time.time() * 1000)}"
         payload = {
             "category": "linear",
             "symbol": self._symbol(order["symbol"]),
@@ -849,8 +902,12 @@ class BybitDemoPerpExchangeClient(BybitDemoExchangeClient):
             "orderType": "Market",
             "qty": qty,
             "positionIdx": 0,
-            "orderLinkId": f"codex-perp-{int(time.time() * 1000)}",
+            "orderLinkId": order_link_id,
         }
+        if order_type == "limit":
+            payload["orderType"] = "Limit"
+            payload["price"] = self._normalize_price(order["symbol"], validation_price)
+            payload["timeInForce"] = "PostOnly" if bool(order.get("post_only")) else "GTC"
         if bool(order.get("reduce_only")):
             payload["reduceOnly"] = True
         response = self._request(
@@ -859,6 +916,54 @@ class BybitDemoPerpExchangeClient(BybitDemoExchangeClient):
             payload,
             private=True,
         )
+        if order_type == "limit" and not bool(order.get("reduce_only")):
+            order_id = str(response.get("result", {}).get("orderId", "") or "")
+            entry_ttl_seconds = max(int(order.get("entry_ttl_seconds", 20) or 20), 1)
+            deadline = time.time() + float(entry_ttl_seconds)
+            while time.time() < deadline:
+                time.sleep(min(2.0, max(deadline - time.time(), 0.25)))
+                status_payload = self._fetch_order_status(
+                    order["symbol"],
+                    order_id=order_id,
+                    order_link_id=order_link_id,
+                    category="linear",
+                )
+                order_status = str(status_payload.get("orderStatus", "") or "").lower()
+                if order_status == "filled":
+                    return {
+                        "status": "filled",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "exchange": "bybit-demo-perp",
+                        "response": response["result"],
+                        "status_response": status_payload,
+                        "submitted_qty": qty,
+                        "order": order,
+                    }
+                if order_status in {"cancelled", "rejected", "deactivated"}:
+                    return {
+                        "status": order_status,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "exchange": "bybit-demo-perp",
+                        "response": response["result"],
+                        "status_response": status_payload,
+                        "submitted_qty": qty,
+                        "order": order,
+                    }
+            cancel_response = self._cancel_order(
+                order["symbol"],
+                order_id=order_id,
+                order_link_id=order_link_id,
+                category="linear",
+            )
+            return {
+                "status": "expired",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "exchange": "bybit-demo-perp",
+                "response": response["result"],
+                "cancel_response": cancel_response.get("result", {}),
+                "submitted_qty": qty,
+                "order": order,
+            }
         return {
             "status": "accepted",
             "timestamp": datetime.now(timezone.utc).isoformat(),

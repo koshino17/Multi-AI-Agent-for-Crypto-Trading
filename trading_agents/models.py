@@ -89,6 +89,7 @@ class StrategyResearchSnapshot:
     summary: str
     candidates: list[StrategyCandidate]
     selected_strategy_rationale: str = ""
+    selected_execution_profile: dict[str, object] = field(default_factory=dict)
     current_signal: str = "hold"
     current_signal_type: str = "hold"
     current_adx: float = 0.0

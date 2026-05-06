@@ -1640,6 +1640,7 @@ def execute_cycle(
                 if isinstance(item, dict)
             ],
             selected_strategy_rationale=str(payload.get("selected_strategy_rationale", "")),
+            selected_execution_profile=payload.get("selected_execution_profile", {}) if isinstance(payload.get("selected_execution_profile", {}), dict) else {},
             current_signal=str(payload.get("current_signal", "hold") or "hold"),
             current_signal_type=str(payload.get("current_signal_type", "hold") or "hold"),
             current_adx=float(payload.get("current_adx", 0.0) or 0.0),
@@ -1672,8 +1673,8 @@ def execute_cycle(
     )
     sentiment_collector = SentimentCollectorAgent(provider=sentiment_provider)
     backtester = BacktestAgent()
-    strategy_researcher = StrategyResearchAgent(settings.strategy_library_path, llm_client=analysis_llm_client)
-    rule_strategy_researcher = StrategyResearchAgent(settings.strategy_library_path, llm_client=None)
+    strategy_researcher = StrategyResearchAgent(settings.strategy_library_path, settings=settings, llm_client=analysis_llm_client)
+    rule_strategy_researcher = StrategyResearchAgent(settings.strategy_library_path, settings=settings, llm_client=None)
     strategist = StrategistAgent(llm_client=analysis_llm_client)
     rule_strategist = StrategistAgent(llm_client=None)
     supervisor = RiskSupervisorAgent(llm_client=analysis_llm_client)
@@ -1989,6 +1990,7 @@ def execute_cycle(
                     "selected_strategy_id": strategy_research.selected_strategy_id,
                     "selected_strategy_name": strategy_research.selected_strategy_name,
                     "selected_strategy_rationale": strategy_research.selected_strategy_rationale,
+                    "selected_execution_profile": strategy_research.selected_execution_profile,
                     "current_signal": strategy_research.current_signal,
                     "current_signal_type": strategy_research.current_signal_type,
                     "current_adx": strategy_research.current_adx,
@@ -2237,6 +2239,8 @@ def execute_cycle(
         position_side=str(report["account"].get("position_side", "flat")),
         buy_balance_buffer_pct=settings.buy_balance_buffer_pct,
         target_leverage=settings.perp_max_leverage if mode == "bybit-demo-perp" else 0.0,
+        execution_profile=report["strategy_research"].get("selected_execution_profile", {}),
+        market_snapshot=selected.get("snapshot"),
     )
     try:
         result = exchange.execute_order(order)

@@ -875,6 +875,8 @@ class ExecutorAgent:
         position_side: str = "flat",
         buy_balance_buffer_pct: float = 1.0,
         target_leverage: float = 0.0,
+        execution_profile: dict | None = None,
+        market_snapshot: MarketSnapshot | None = None,
     ) -> dict:
         perp_mode = "perp" in trading_mode
         if not perp_mode and side == "buy":
@@ -893,13 +895,45 @@ class ExecutorAgent:
             else:
                 capped_notional = min(notional_usdt, max(available_usdt * buy_balance_buffer_pct, 0.0))
                 quantity = capped_notional / price if price else 0.0
+        reduce_only = bool(perp_mode and ((side == "buy" and position_side == "short") or (side == "sell" and position_side == "long")))
+        order_type = "market"
+        post_only = False
+        limit_price = round(price, 4)
+        entry_ttl_seconds = 0
+        liquidity_style = "taker"
+        if perp_mode and not reduce_only and isinstance(execution_profile, dict):
+            requested_order_type = str(execution_profile.get("entry_order_type", "market") or "market").strip().lower()
+            requested_liquidity = str(execution_profile.get("entry_liquidity", "taker") or "taker").strip().lower()
+            if requested_order_type == "limit":
+                order_type = "limit"
+                post_only = bool(execution_profile.get("post_only", True))
+                entry_ttl_seconds = max(int(execution_profile.get("entry_ttl_seconds", 20) or 20), 1)
+                liquidity_style = requested_liquidity or "maker"
+                offset_bps = max(float(execution_profile.get("passive_offset_bps", 0.0) or 0.0), 0.0) / 10000.0
+                if market_snapshot is not None:
+                    if side == "buy":
+                        reference_price = float(market_snapshot.best_bid_price or market_snapshot.last_price or price)
+                        limit_price = reference_price * (1.0 - offset_bps)
+                    else:
+                        reference_price = float(market_snapshot.best_ask_price or market_snapshot.last_price or price)
+                        limit_price = reference_price * (1.0 + offset_bps)
+                else:
+                    if side == "buy":
+                        limit_price = float(price) * (1.0 - offset_bps)
+                    else:
+                        limit_price = float(price) * (1.0 + offset_bps)
         return {
             "symbol": symbol,
             "side": side,
             "notional_usdt": round(capped_notional, 2),
             "quantity": round(quantity, 6),
             "price": round(price, 4),
-            "reduce_only": bool(perp_mode and ((side == "buy" and position_side == "short") or (side == "sell" and position_side == "long"))),
+            "limit_price": round(limit_price, 4),
+            "order_type": order_type,
+            "post_only": post_only,
+            "entry_ttl_seconds": entry_ttl_seconds,
+            "execution_liquidity": liquidity_style,
+            "reduce_only": reduce_only,
             "target_leverage": round(float(target_leverage), 4) if target_leverage > 0 else 0.0,
         }
 

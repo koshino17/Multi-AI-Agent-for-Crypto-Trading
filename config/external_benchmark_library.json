@@ -1,5 +1,5 @@
 {
-  "baseline_strategy_id": "donchian_adx_perp_v1",
+  "baseline_strategy_id": "grid_range_reversion_maker_v1",
   "strategies": [
     {
       "id": "donchian_adx_perp_v1",

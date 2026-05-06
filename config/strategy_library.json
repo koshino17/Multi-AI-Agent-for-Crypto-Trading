@@ -1,12 +1,61 @@
 {
-  "base_strategy": "donchian_adx_perp_v1",
+  "base_strategy": "grid_range_reversion_maker_v1",
   "strategies": [
+    {
+      "id": "grid_range_reversion_maker_v1",
+      "name": "Grid Range Reversion (Maker Assumption)",
+      "kind": "rule_strategy",
+      "generator": "grid_range_reversion",
+      "source": "research_execution_variant",
+      "credibility": "experimental_live_candidate",
+      "description": "Range-reversion rules for SOL/USDT that only make economic sense under passive maker-style entries with low fee and slippage friction.",
+      "hold_bars": 5,
+      "take_profit_pct": 0.60,
+      "stop_loss_pct": 0.55,
+      "params": {
+        "bb_period": 20,
+        "bb_stddev": 2.0,
+        "adx_period": 14,
+        "adx_max": 18.0,
+        "bb_width_min_pct": 0.60,
+        "bb_width_max_pct": 4.50,
+        "entry_band_buffer_pct": 0.15,
+        "rsi_period": 14,
+        "rsi_buy_max": 43.0,
+        "rsi_sell_min": 57.0,
+        "signal_cooldown_bars": 2,
+        "assumed_round_trip_fee_pct": 0.04,
+        "assumed_round_trip_slippage_pct": 0.01
+      },
+      "execution": {
+        "entry_order_type": "limit",
+        "entry_liquidity": "maker",
+        "post_only": true,
+        "passive_offset_bps": 0.0,
+        "entry_ttl_seconds": 20
+      }
+    },
     {
       "id": "donchian_adx_perp_v1",
       "name": "Donchian ADX Perp",
+      "kind": "rule_strategy",
+      "generator": "donchian_adx",
       "source": "public_classic",
       "credibility": "external_public",
       "description": "Public classic trend-following rules: Donchian breakout entries with Wilder ADX trend-strength confirmation, adapted to 15m USDT perpetual trading.",
+      "hold_bars": 6,
+      "take_profit_pct": 1.20,
+      "stop_loss_pct": 0.75,
+      "params": {
+        "channel_period": 20,
+        "adx_period": 14,
+        "adx_threshold": 20.0,
+        "volume_ratio_threshold": 1.10
+      },
+      "execution": {
+        "entry_order_type": "market",
+        "entry_liquidity": "taker"
+      },
       "references": [
         "https://help.tc2000.com/m/69404/l/745298-donchian-channels",
         "https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/average-directional-index-adx"

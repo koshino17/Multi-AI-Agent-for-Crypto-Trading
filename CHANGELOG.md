@@ -16,6 +16,37 @@
 
 ---
 
+## v0.11.36 - Promote maker-style grid as the live baseline and add passive limit execution
+
+### Why
+
+- `donchian_adx_perp_v1` has continued to lose money in the current `SOL/USDT` regime, and the recent cost-aware strategy tournament no longer supports treating it as a trustworthy live default.
+- The strongest research candidate is no longer “plain grid”, but specifically `grid_range_reversion_maker_v1`, whose edge depends on **maker-style execution** rather than the current taker-only market-order path.
+- Switching strategy names without switching execution mechanics would be misleading: a `maker` backtest routed through `Market` live orders would simply recreate the same friction trap that already invalidated the taker grid variant.
+
+### What Changed
+
+- `config/strategy_library.json`
+  - Promoted `grid_range_reversion_maker_v1` to the live `base_strategy`.
+  - Kept `donchian_adx_perp_v1` in the library as an internal reference candidate instead of the live source of truth.
+  - Added explicit execution metadata so live strategy selection now carries its intended entry style (`limit` + `post_only` for maker-style grid, `market` for Donchian).
+- `trading_agents/research.py`
+  - Rebuilt `StrategyResearchAgent` as a **generic rule-strategy evaluator** instead of a Donchian-only researcher.
+  - Strategy replay now dispatches through the shared benchmark signal generators and uses the same candidate-level TP/SL and cost assumptions used in research.
+  - The selected strategy now carries a `selected_execution_profile`, so downstream execution can honor the strategy’s intended order style.
+- `trading_agents/agents.py`
+  - `ExecutorAgent.build_order(...)` now supports strategy-aware execution metadata, including `limit_price`, `post_only`, `entry_ttl_seconds`, and liquidity style.
+- `trading_agents/exchange.py`
+  - Added passive `Limit` order support for Bybit demo perp orders, including price normalization, short-lived post-only order handling, order-status polling, and cancel-on-timeout behavior.
+  - This gives `TradePulse` a real execution path for `maker`-style strategies instead of only a backtest assumption.
+- `trading_agents/main.py`
+  - Strategy research serialization/deserialization now preserves the selected execution profile.
+  - Live order submission now passes the selected strategy’s execution profile and market snapshot into the executor.
+- `config/external_benchmark_library.json`
+  - Updated the external benchmark baseline ID to match the new live baseline, so shadow comparisons and promotion logic stop treating the old Donchian baseline as the live source of truth.
+- `trading_agents/reporting.py`
+  - Daily postmortems now compare symbol benchmark leaders against the **current live baseline**, not a hard-coded Donchian default.
+
 ## v0.11.35 - Align daily benchmark reviews with the completed noon window
 
 ### Why

@@ -2,8 +2,18 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from statistics import fmean
+from typing import Any
 
-from trading_agents.backtest import build_backtest_snapshot, compute_adx, donchian_adx_signal, _simulate_intraday_trade
+from trading_agents.backtest import build_backtest_snapshot
+from trading_agents.external_benchmarks import (
+    AlphaArenaBacktestResult,
+    BenchmarkCostModel,
+    ExternalBenchmarkCandidate,
+    _RULE_GENERATORS,
+    benchmark_signal_groups,
+    build_benchmark_cost_model,
+)
 from trading_agents.llm import OllamaClient
 from trading_agents.models import (
     BacktestSnapshot,
@@ -14,11 +24,81 @@ from trading_agents.models import (
 )
 
 
+def _snapshot_to_candles(snapshot: MarketSnapshot) -> list[dict[str, float | int]]:
+    candles: list[dict[str, float | int]] = []
+    for index, (open_, high, low, close, volume) in enumerate(
+        zip(snapshot.opens, snapshot.highs, snapshot.lows, snapshot.closes, snapshot.volumes)
+    ):
+        candles.append(
+            {
+                "timestamp_ms": index * 60_000,
+                "open": float(open_),
+                "high": float(high),
+                "low": float(low),
+                "close": float(close),
+                "volume": float(volume),
+            }
+        )
+    return candles
+
+
+def _benchmark_candidate_from_strategy(item: dict[str, Any]) -> ExternalBenchmarkCandidate | None:
+    strategy_id = str(item.get("id", "")).strip()
+    generator = str(item.get("generator", "")).strip()
+    if not strategy_id or not generator:
+        return None
+    return ExternalBenchmarkCandidate(
+        id=strategy_id,
+        name=str(item.get("name", strategy_id)).strip() or strategy_id,
+        kind=str(item.get("kind", "rule_strategy")).strip() or "rule_strategy",
+        generator=generator,
+        source=str(item.get("source", "research")).strip() or "research",
+        description=str(item.get("description", "")).strip(),
+        hold_bars=max(int(item.get("hold_bars", 4) or 4), 1),
+        take_profit_pct=float(item.get("take_profit_pct", 0.0) or 0.0) / 100.0,
+        stop_loss_pct=float(item.get("stop_loss_pct", 0.0) or 0.0) / 100.0,
+        params=item.get("params", {}) if isinstance(item.get("params"), dict) else {},
+    )
+
+
+def _backtest_from_benchmark_result(
+    *,
+    strategy_id: str,
+    signal_count: int,
+    result: AlphaArenaBacktestResult | None,
+    empty_summary: str,
+) -> BacktestSnapshot:
+    if result is None:
+        return BacktestSnapshot(0, 0, 0.0, 0.0, 0.0, empty_summary, 0.0, 0.0, 0.0, 0.0)
+    returns: list[float] = []
+    if result.trade_count > 0:
+        win_count = int(round(result.win_rate * result.trade_count))
+        win_count = max(0, min(win_count, result.trade_count))
+        loss_count = max(result.trade_count - win_count, 0)
+        returns.extend([result.avg_win_pct / 100.0] * win_count if result.avg_win_pct != 0 else [])
+        returns.extend([result.avg_loss_pct / 100.0] * loss_count if result.avg_loss_pct != 0 else [])
+        while len(returns) < result.trade_count:
+            returns.append(result.avg_return_pct / 100.0)
+    return build_backtest_snapshot(
+        sample_count=max(signal_count, result.sample_count),
+        returns=returns,
+        summary_prefix=strategy_id,
+        empty_summary=empty_summary,
+    )
+
+
 class StrategyResearchAgent:
     name = "strategy_researcher"
 
-    def __init__(self, library_path: str, llm_client: OllamaClient | None = None) -> None:
+    def __init__(
+        self,
+        library_path: str,
+        *,
+        settings: Any | None = None,
+        llm_client: OllamaClient | None = None,
+    ) -> None:
         self.library_path = Path(library_path)
+        self.settings = settings
         self.library = self._load_library()
         self.llm_client = llm_client
 
@@ -37,34 +117,42 @@ class StrategyResearchAgent:
         strategy_memory: dict | None = None,
     ) -> StrategyResearchSnapshot:
         base_id = self.library.get("base_strategy", "donchian_adx_perp_v1")
+        raw_strategies = [item for item in self.library.get("strategies", []) if isinstance(item, dict)]
         candidates: list[StrategyCandidate] = []
-        for item in self.library.get("strategies", []):
-            backtest = self._run_strategy(item["id"], snapshot, sentiment)
+        candidate_items: dict[str, dict[str, Any]] = {}
+        for item in raw_strategies:
+            strategy_id = str(item.get("id", "")).strip()
+            if not strategy_id:
+                continue
+            backtest = self._run_strategy(item, snapshot, sentiment)
             candidates.append(
                 StrategyCandidate(
-                    strategy_id=item["id"],
-                    name=item["name"],
-                    source=item["source"],
-                    credibility=item["credibility"],
-                    description=item["description"],
+                    strategy_id=strategy_id,
+                    name=str(item.get("name", strategy_id)).strip() or strategy_id,
+                    source=str(item.get("source", "research")).strip() or "research",
+                    credibility=str(item.get("credibility", "external_public")).strip() or "external_public",
+                    description=str(item.get("description", "")).strip(),
                     backtest=backtest,
                 )
             )
+            candidate_items[strategy_id] = item
         if not candidates:
             fallback = StrategyCandidate(
                 strategy_id=base_id,
-                name="Donchian ADX Perp",
+                name="Fallback Strategy",
                 source="public_classic",
                 credibility="external_public",
-                description="Fallback external Donchian/ADX strategy entry",
+                description="Fallback strategy when no strategy candidates are loaded.",
                 backtest=BacktestSnapshot(0, 0, 0.0, 0.0, 0.0, "no strategy candidates loaded"),
             )
             candidates = [fallback]
+            candidate_items[base_id] = {"id": base_id, "name": fallback.name, "execution": {"entry_order_type": "market"}}
 
-        # Strategy reset: use a single external strategy as the live source of truth.
-        selected = candidates[0]
-        current_signal, current_metrics = self._current_signal(snapshot)
-        rationale = self._fallback_rationale(base_id, selected, snapshot, current_signal)
+        selected = next((item for item in candidates if item.strategy_id == base_id), candidates[0])
+        selected_item = candidate_items.get(selected.strategy_id, {})
+        current_signal, current_metrics = self._current_signal(selected_item, snapshot)
+        rationale = self._fallback_rationale(base_id, selected, current_signal, current_metrics)
+        execution_profile = self._execution_profile(selected_item)
         summary = (
             f"selected strategy {selected.strategy_id}; "
             f"base={base_id}; {selected.backtest.summary}; "
@@ -72,6 +160,7 @@ class StrategyResearchAgent:
             f"current_signal_type={current_metrics.get('signal_type', 'hold')}; "
             f"current_adx={current_metrics.get('adx', 0.0):.2f}; "
             f"current_volume_ratio={current_metrics.get('volume_ratio', 0.0):.2f}; "
+            f"execution={execution_profile.get('entry_order_type', 'market')}/{execution_profile.get('entry_liquidity', 'taker')}; "
             f"rationale={rationale}"
         )
         return StrategyResearchSnapshot(
@@ -81,100 +170,136 @@ class StrategyResearchAgent:
             summary=summary,
             candidates=candidates,
             selected_strategy_rationale=rationale,
+            selected_execution_profile=execution_profile,
             current_signal=current_signal,
             current_signal_type=str(current_metrics.get("signal_type", "hold") or "hold"),
             current_adx=float(current_metrics.get("adx", 0.0) or 0.0),
             current_volume_ratio=float(current_metrics.get("volume_ratio", 0.0) or 0.0),
         )
 
-    def _fallback_rationale(self, base_id: str, selected: StrategyCandidate, snapshot: MarketSnapshot, current_signal: str) -> str:
-        highs = snapshot.highs or snapshot.closes
-        lows = snapshot.lows or snapshot.closes
-        closes = snapshot.closes
-        adx_state = compute_adx(highs, lows, closes, period=14)
-        latest_adx = adx_state["adx"][-1] if adx_state["adx"] else 0.0
+    def _execution_profile(self, strategy_item: dict[str, Any]) -> dict[str, object]:
+        execution = strategy_item.get("execution", {})
+        if not isinstance(execution, dict):
+            execution = {}
+        entry_order_type = str(execution.get("entry_order_type", "market") or "market").strip().lower()
+        entry_liquidity = str(execution.get("entry_liquidity", "taker") or "taker").strip().lower()
+        post_only = bool(execution.get("post_only", entry_order_type == "limit"))
+        passive_offset_bps = float(execution.get("passive_offset_bps", 0.0) or 0.0)
+        entry_ttl_seconds = int(execution.get("entry_ttl_seconds", 20) or 20)
+        return {
+            "entry_order_type": entry_order_type,
+            "entry_liquidity": entry_liquidity,
+            "post_only": post_only,
+            "passive_offset_bps": passive_offset_bps,
+            "entry_ttl_seconds": max(entry_ttl_seconds, 1),
+        }
+
+    def _fallback_rationale(
+        self,
+        base_id: str,
+        selected: StrategyCandidate,
+        current_signal: str,
+        current_metrics: dict[str, float],
+    ) -> str:
+        signal_type = str(current_metrics.get("signal_type", "hold") or "hold")
+        adx = float(current_metrics.get("adx", 0.0) or 0.0)
+        volume_ratio = float(current_metrics.get("volume_ratio", 0.0) or 0.0)
         return (
             "single external strategy mode is active; "
             f"base_strategy={base_id}; "
             f"selected={selected.strategy_id}; "
             f"live_signal={current_signal}; "
-            f"latest_adx={latest_adx:.2f}; "
-            "this strategy is based on public Donchian breakout rules with Wilder ADX trend filtering"
+            f"signal_type={signal_type}; "
+            f"adx={adx:.2f}; "
+            f"volume_ratio={volume_ratio:.2f}"
         )
 
-    def _current_signal(self, snapshot: MarketSnapshot) -> tuple[str, dict[str, float]]:
-        closes = snapshot.closes
-        highs = snapshot.highs or closes
-        lows = snapshot.lows or closes
-        volumes = snapshot.volumes
-        if len(closes) < 35:
+    def _current_signal(self, strategy_item: dict[str, Any], snapshot: MarketSnapshot) -> tuple[str, dict[str, float]]:
+        candidate = _benchmark_candidate_from_strategy(strategy_item)
+        if candidate is None:
             return "hold", {}
-        return donchian_adx_signal(
-            highs=highs,
-            lows=lows,
-            closes=closes,
-            volumes=volumes,
-            index=len(closes) - 1,
-            channel_period=20,
-            adx_period=14,
-            adx_threshold=20.0,
-            volume_ratio_threshold=1.10,
-        )
+        generator = _RULE_GENERATORS.get(candidate.generator) or _RULE_GENERATORS.get(candidate.kind) or _RULE_GENERATORS.get(candidate.id)
+        if generator is None:
+            return "hold", {}
+        candles = _snapshot_to_candles(snapshot)
+        if len(candles) < 35:
+            return "hold", {}
+        signals = generator(candles, symbol=snapshot.symbol, candidate=candidate)
+        last_timestamp = int(candles[-1]["timestamp_ms"])
+        recent_signal = next((item for item in reversed(signals) if int(item.timestamp_ms) == last_timestamp), None)
+        adx_value = self._latest_adx(snapshot, candidate)
+        volume_ratio = self._latest_volume_ratio(snapshot)
+        metrics = {
+            "signal_type": "hold",
+            "adx": adx_value,
+            "volume_ratio": volume_ratio,
+        }
+        if recent_signal is None or recent_signal.action not in {"buy", "sell"}:
+            return "hold", metrics
+        metrics["signal_type"] = f"{candidate.generator}_{recent_signal.action}"
+        return ("long" if recent_signal.action == "buy" else "short"), metrics
 
     def _run_strategy(
         self,
-        strategy_id: str,
+        strategy_item: dict[str, Any],
         snapshot: MarketSnapshot,
         sentiment: SentimentSnapshot,
     ) -> BacktestSnapshot:
-        closes = snapshot.closes
-        highs = snapshot.highs or closes
-        lows = snapshot.lows or closes
-        volumes = snapshot.volumes
-        if len(closes) < 35:
+        strategy_id = str(strategy_item.get("id", "")).strip() or "unknown_strategy"
+        candidate = _benchmark_candidate_from_strategy(strategy_item)
+        if candidate is None:
+            return BacktestSnapshot(0, 0, 0.0, 0.0, 0.0, f"{strategy_id}: invalid strategy candidate")
+        generator = _RULE_GENERATORS.get(candidate.generator) or _RULE_GENERATORS.get(candidate.kind) or _RULE_GENERATORS.get(candidate.id)
+        if generator is None:
+            return BacktestSnapshot(0, 0, 0.0, 0.0, 0.0, f"{strategy_id}: no generator registered")
+        candles = _snapshot_to_candles(snapshot)
+        if len(candles) < 35:
             return BacktestSnapshot(0, 0, 0.0, 0.0, 0.0, f"{strategy_id}: not enough candles")
-
-        returns: list[float] = []
-        start_index = 28
-        for index in range(start_index, len(closes) - 6):
-            direction, metrics = donchian_adx_signal(
-                highs=highs,
-                lows=lows,
-                closes=closes,
-                volumes=volumes,
-                index=index,
-                channel_period=20,
-                adx_period=14,
-                adx_threshold=20.0,
-                volume_ratio_threshold=1.10,
-            )
-            if direction == "hold":
-                continue
-            # Keep a light sentiment veto so the external rule remains dominant,
-            # while still avoiding obvious sentiment shocks.
-            if direction == "long" and sentiment.sentiment_score < -0.85:
-                continue
-            if direction == "short" and sentiment.sentiment_score > 0.85:
-                continue
-
-            atr_pct = (metrics.get("atr", 0.0) / closes[index]) if closes[index] > 0 else 0.0
-            stop_loss_pct = max(atr_pct * 1.0, 0.0045)
-            take_profit_pct = max(atr_pct * 1.8, stop_loss_pct * 1.6)
-            returns.append(
-                _simulate_intraday_trade(
-                    closes,
-                    entry_index=index,
-                    direction=direction,
-                    max_hold_bars=6,
-                    take_profit_pct=take_profit_pct,
-                    stop_loss_pct=stop_loss_pct,
-                )
-            )
-
-        sample_count = max(len(closes) - start_index, 0)
-        return build_backtest_snapshot(
-            sample_count=sample_count,
-            returns=returns,
-            summary_prefix=strategy_id,
+        signals = generator(candles, symbol=snapshot.symbol, candidate=candidate)
+        # Keep a light sentiment veto for extreme shock conditions only.
+        if signals:
+            if sentiment.sentiment_score <= -0.90:
+                signals = [item for item in signals if item.action != "buy"]
+            elif sentiment.sentiment_score >= 0.90:
+                signals = [item for item in signals if item.action != "sell"]
+        if self.settings is not None:
+            cost_model = build_benchmark_cost_model(self.settings, candidate)
+        else:
+            cost_model = BenchmarkCostModel()
+        result = benchmark_signal_groups(
+            candles,
+            {candidate.id: signals},
+            hold_bars=candidate.hold_bars,
+            take_profit_pct=candidate.take_profit_pct,
+            stop_loss_pct=candidate.stop_loss_pct,
+            candidate=candidate,
+            cost_model=cost_model,
+        ).get(candidate.id)
+        return _backtest_from_benchmark_result(
+            strategy_id=strategy_id,
+            signal_count=len(signals),
+            result=result,
             empty_summary=f"{strategy_id}: no valid setups in recent replay",
         )
+
+    def _latest_adx(self, snapshot: MarketSnapshot, candidate: ExternalBenchmarkCandidate) -> float:
+        adx_period = int(candidate.params.get("adx_period", 14) or 14)
+        highs = snapshot.highs or snapshot.closes
+        lows = snapshot.lows or snapshot.closes
+        closes = snapshot.closes
+        from trading_agents.backtest import compute_adx
+
+        adx_state = compute_adx(highs, lows, closes, period=adx_period)
+        if not adx_state.get("adx"):
+            return 0.0
+        return float(adx_state["adx"][-1])
+
+    def _latest_volume_ratio(self, snapshot: MarketSnapshot) -> float:
+        volumes = snapshot.volumes or []
+        if not volumes:
+            return 0.0
+        recent_volume = fmean(volumes[max(0, len(volumes) - 3) :])
+        baseline_volume = fmean(volumes[max(0, len(volumes) - 20) :])
+        if baseline_volume <= 0:
+            return 0.0
+        return recent_volume / baseline_volume
