@@ -1617,6 +1617,18 @@ def _window_label_to_bounds(date_label: str, anchor_hour: int = REPORT_WINDOW_AN
     return window_start, window_end
 
 
+def _load_strategy_research_latest(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return payload
+
+
 def active_report_date_label(now: datetime | None = None, anchor_hour: int = REPORT_WINDOW_ANCHOR_HOUR_LOCAL) -> str:
     local_now = now.astimezone(LOCAL_TZ) if now is not None else _local_now()
     anchor_today = local_now.replace(hour=anchor_hour, minute=0, second=0, microsecond=0)
@@ -2827,6 +2839,9 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
         benchmark_reports_dir=storage.benchmark_reports,
         cutoff=window_end,
     )
+    summary["strategy_research_latest"] = _load_strategy_research_latest(
+        storage.service / "strategy_research_latest.json"
+    )
     summary["executed_trade_timeline"] = _build_executed_trade_timeline(records)
     summary["daily_strategy_review"] = _load_daily_strategy_review(trade_logs_dir, date_label)
     summary["external_ai_review"] = (
@@ -2881,6 +2896,7 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
     market_path_review = summary.get("market_path_review") or {}
     loss_attribution = summary.get("loss_attribution") or {}
     shadow_benchmark_watch = summary.get("shadow_benchmark_watch") or {}
+    strategy_research_latest = summary.get("strategy_research_latest") or {}
     daily_strategy_review = summary.get("daily_strategy_review") or {}
     external_ai_review = summary.get("external_ai_review") or {}
 
@@ -3194,6 +3210,45 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
             lines.append(f"- Summary: {shadow_benchmark_watch.get('summary')}")
         if shadow_benchmark_watch.get("next_step"):
             lines.append(f"- Next Step: {shadow_benchmark_watch.get('next_step')}")
+
+    if strategy_research_latest:
+        recommendation = strategy_research_latest.get("recommendation") or {}
+        aggregate_ranking = list(strategy_research_latest.get("aggregate_ranking") or [])
+        runs = list(strategy_research_latest.get("runs") or [])
+        lines.extend(["", "## Idle-Time Strategy Research", ""])
+        lines.append(f"- Generated At: {strategy_research_latest.get('generated_at', 'n/a')}")
+        lines.append(f"- Focus Symbol: {strategy_research_latest.get('focus_symbol', 'n/a')}")
+        validation_symbols = strategy_research_latest.get("validation_symbols") or []
+        if validation_symbols:
+            lines.append(f"- Validation Symbols: {', '.join(str(item) for item in validation_symbols)}")
+        limits = strategy_research_latest.get("limits") or []
+        if limits:
+            lines.append(f"- Lookback Windows: {', '.join(str(int(item)) for item in limits)} candles")
+        lines.append(
+            f"- Recommendation: {recommendation.get('candidate_id', 'n/a')} / {recommendation.get('verdict', 'n/a')}"
+        )
+        if recommendation.get("rationale"):
+            lines.append(f"- Rationale: {recommendation.get('rationale')}")
+        if aggregate_ranking:
+            top = aggregate_ranking[0]
+            lines.append(
+                f"- Aggregate Leader: {top.get('candidate_id', 'n/a')} "
+                f"(focus positive windows={int(top.get('focus_positive_windows', 0))}/{int(top.get('focus_window_count', 0))} | "
+                f"avg focus expectancy={float(top.get('avg_focus_expectancy_pct', 0.0)):+.2f}% | "
+                f"avg focus PF={float(top.get('avg_focus_profit_factor', 0.0)):.2f} | "
+                f"validation pass={'yes' if bool(top.get('validation_guard_pass', False)) else 'no'})"
+            )
+        if runs:
+            lines.append("- Per-Window Leaders:")
+            for run in runs[:6]:
+                top_candidate = run.get("top_candidate") or {}
+                lines.append(
+                    f"  - {run.get('symbol', 'n/a')} / {int(run.get('limit', 0) or 0)} candles: "
+                    f"{top_candidate.get('candidate_id', 'n/a')} "
+                    f"(expectancy={float(top_candidate.get('expectancy_pct', 0.0)):+.2f}% | "
+                    f"pf={float(top_candidate.get('profit_factor', 0.0)):.2f} | "
+                    f"trades={int(top_candidate.get('trade_count', 0) or 0)})"
+                )
 
     if trade_review.get("episodes"):
         lines.extend(["", "## Trade Review", ""])

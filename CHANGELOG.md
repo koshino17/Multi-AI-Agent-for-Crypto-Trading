@@ -16,6 +16,30 @@
 
 ---
 
+## v0.11.37 - Surface idle-time strategy research in live daily reports
+
+### Why
+
+- The daily automation had started running a separate idle-time strategy research cycle, but the live daily reports still did not surface that result.
+- That made the automation look like it had "reviewed but not written", even when fresh research evidence already existed in `strategy_research_latest.json`.
+- Users also needed a clearer distinction between:
+  - repo-side fixes that changed report generation logic
+  - and live daily markdown files that had actually been regenerated with the new research section
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Daily summary loading now reads the latest idle-time strategy research snapshot from `service/strategy_research_latest.json`.
+  - Daily reports now render a new `Idle-Time Strategy Research` section, including:
+    - generation time
+    - focus / validation symbols
+    - lookback windows
+    - current recommendation and rationale
+    - aggregate leader statistics
+    - per-window tournament leaders
+- Live state
+  - Rebuilt the active live daily markdown files so the new section appears immediately in the live reports instead of waiting for a future code path to regenerate them.
+
 ## v0.11.36 - Promote maker-style grid as the live baseline and add passive limit execution
 
 ### Why
