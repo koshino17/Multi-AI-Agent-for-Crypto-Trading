@@ -16,6 +16,25 @@
 
 ---
 
+## v0.11.38 - Keep noon reports aligned with refreshed strategy memory
+
+### Why
+
+- The daily automation correctly identified that completed noon-window reports could lag behind the newly refreshed `strategy_memory.json`.
+- In practice, that meant a completed report could still show stale learning controls or action items from the pre-refresh decision state, even though the persistent strategy memory had already moved on.
+- That made the automation look unreliable: it had diagnosed the right problem, but the live report still lagged one cycle behind.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Daily summary loading now includes the current persisted strategy memory from `service/strategy_memory.json`.
+  - Completed reports now prefer the current persisted learning controls when rendering `Latest Decision` and review context instead of relying only on the last embedded decision payload.
+- `trading_agents/agents.py`
+  - `DailyReviewAgent` now reads `strategy_memory_current` from the loaded summary when available, so fallback daily reviews stop lagging behind refreshed learning controls.
+- `trading_agents/main.py`
+  - The daily review fingerprint now includes key strategy-memory controls.
+  - When the noon strategy reflection updates `strategy_memory.json`, TradePulse immediately regenerates the completed daily review and rebuilds both completed and active daily markdown files in the same run.
+
 ## v0.11.37 - Surface idle-time strategy research in live daily reports
 
 ### Why

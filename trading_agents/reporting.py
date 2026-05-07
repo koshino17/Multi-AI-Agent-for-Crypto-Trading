@@ -1629,6 +1629,18 @@ def _load_strategy_research_latest(path: Path | None) -> dict[str, Any]:
     return payload
 
 
+def _read_json_file(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return payload
+
+
 def active_report_date_label(now: datetime | None = None, anchor_hour: int = REPORT_WINDOW_ANCHOR_HOUR_LOCAL) -> str:
     local_now = now.astimezone(LOCAL_TZ) if now is not None else _local_now()
     anchor_today = local_now.replace(hour=anchor_hour, minute=0, second=0, microsecond=0)
@@ -2839,6 +2851,7 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
         benchmark_reports_dir=storage.benchmark_reports,
         cutoff=window_end,
     )
+    summary["strategy_memory_current"] = _read_json_file(storage.strategy_memory_state)
     summary["strategy_research_latest"] = _load_strategy_research_latest(
         storage.service / "strategy_research_latest.json"
     )
@@ -3467,7 +3480,7 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
             lines.append(f"- Strategy Research: {strategy_research['summary']}")
         if latest.get("idea", {}).get("rationale"):
             lines.append(f"- Why This Decision: {latest['idea']['rationale']}")
-        strategy_memory = latest.get("strategy_memory") or {}
+        strategy_memory = summary.get("strategy_memory_current") or latest.get("strategy_memory") or {}
         controls = strategy_memory.get("controls") or {}
         if controls:
             lines.append(f"- Learning Controls: {json.dumps(controls, ensure_ascii=False)}")

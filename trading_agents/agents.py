@@ -1048,7 +1048,7 @@ class DailyReviewAgent:
         symbol_postmortem = daily_summary.get("symbol_postmortem") or {}
         loss_attribution = daily_summary.get("loss_attribution") or {}
         policy_exit_diagnostics = daily_summary.get("policy_exit_diagnostics") or {}
-        strategy_memory = daily_summary.get("latest", {}).get("strategy_memory") or {}
+        strategy_memory = daily_summary.get("strategy_memory_current") or daily_summary.get("latest", {}).get("strategy_memory") or {}
         learning_controls = strategy_memory.get("controls") or {}
         action_line = ", ".join(f"{key}={value}" for key, value in action_counts.items()) or "no actions"
         symbol_line = ", ".join(f"{key}={value}" for key, value in selected_symbol_counts.items()) or "no symbol focus"

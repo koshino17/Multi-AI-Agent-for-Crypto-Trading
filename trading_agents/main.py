@@ -98,6 +98,10 @@ def _daily_review_fingerprint(daily_summary: dict) -> str:
     focus_benchmark = top_by_symbol.get(focus_symbol, {}) if focus_symbol else {}
     if not isinstance(focus_benchmark, dict):
         focus_benchmark = {}
+    strategy_memory_current = daily_summary.get("strategy_memory_current") or {}
+    current_controls = strategy_memory_current.get("controls") if isinstance(strategy_memory_current, dict) else {}
+    if not isinstance(current_controls, dict):
+        current_controls = {}
     payload = {
         "mode": daily_summary.get("mode"),
         "date_label": daily_summary.get("date_label", ""),
@@ -110,6 +114,10 @@ def _daily_review_fingerprint(daily_summary: dict) -> str:
         "focus_symbol": focus_symbol,
         "focus_benchmark_candidate": str(focus_benchmark.get("candidate_id", "") or ""),
         "focus_benchmark_expectancy": round(float(focus_benchmark.get("expectancy_pct", 0.0) or 0.0), 4),
+        "benchmark_watch_candidate": str(current_controls.get("benchmark_watch_candidate", "") or ""),
+        "benchmark_watch_symbol": str(current_controls.get("benchmark_watch_symbol", "") or ""),
+        "entry_mode": str(current_controls.get("entry_mode", "") or ""),
+        "carry_in_mode": str(current_controls.get("carry_in_mode", "") or ""),
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
@@ -1515,6 +1523,7 @@ def _finalize_reporting(
         daily_summary["equity_curve"] = equity_curve
 
     strategy_memory_sync = {"status": "skipped", "reason": "12h reflection already up to date"}
+    strategy_memory_updated = False
     try:
         current_slot = current_strategy_slot()
         strategy_memory = load_strategy_memory(storage.strategy_memory_state)
@@ -1540,6 +1549,7 @@ def _finalize_reporting(
                 "reflection_context": reflection_context,
             }
             save_strategy_memory(storage.strategy_memory_state, payload)
+            strategy_memory_updated = True
             strategy_memory_sync = {
                 "status": "updated",
                 "slot": current_slot,
@@ -1548,6 +1558,28 @@ def _finalize_reporting(
     except Exception as exc:
         strategy_memory_sync = {"status": "error", "reason": str(exc)}
     report["strategy_memory_sync"] = strategy_memory_sync
+
+    if strategy_memory_updated and completed_daily_summary is not None:
+        try:
+            completed_daily_summary = load_daily_summary_data(storage.trade_logs, completed_date_label, storage.runner_log)
+            completed_daily_summary["date_label"] = completed_date_label
+            completed_daily_summary["review_history"] = _load_recent_daily_review_history(storage, completed_date_label)
+            refreshed_fingerprint = _daily_review_fingerprint(completed_daily_summary)
+            refreshed_review = daily_reviewer.evaluate(completed_date_label, completed_daily_summary)
+            stored_review = {
+                "date_label": completed_date_label,
+                "summary_fingerprint": refreshed_fingerprint,
+                **refreshed_review.__dict__,
+            }
+            _write_daily_strategy_review(daily_strategy_review_path, stored_review)
+            completed_daily_content = build_daily_summary(storage.trade_logs, completed_date_label, storage.runner_log)
+            write_daily_summary(storage.daily_reports, completed_date_label, completed_daily_content)
+            daily_content = build_daily_summary(storage.trade_logs, active_date_label, storage.runner_log)
+            daily_report_path = write_daily_summary(storage.daily_reports, active_date_label, daily_content)
+            report["daily_report"] = str(daily_report_path)
+        except Exception as exc:
+            report["strategy_memory_rebuild"] = {"status": "error", "reason": str(exc)}
+
     progress("reporting", "done", report_label)
     return report
 
