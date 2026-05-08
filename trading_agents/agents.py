@@ -4,6 +4,7 @@ import json
 from statistics import fmean
 from typing import cast
 
+from trading_agents.config import Settings
 from trading_agents.llm import OllamaClient
 from trading_agents.models import (
     Approval,
@@ -614,6 +615,11 @@ class RiskSupervisorAgent:
         perp_mode = "perp" in trading_mode
         demo_mode = trading_mode.startswith("bybit-demo")
         selected_backtest = self._selected_strategy_backtest(strategy_research)
+        memory_controls = {}
+        if isinstance(strategy_memory, dict):
+            memory_controls = strategy_memory.get("controls") or {}
+            if not isinstance(memory_controls, dict):
+                memory_controls = {}
         buffered_available_usdt = max(available_usdt * buy_balance_buffer_pct, 0.0)
         opening_long = idea.action == "buy" and (not perp_mode or position_side != "short")
         opening_short = idea.action == "sell" and perp_mode and position_side != "long"
@@ -624,6 +630,31 @@ class RiskSupervisorAgent:
         effective_max_position_pct = max_position_pct
         if aggressive_mode and demo_mode:
             effective_max_position_pct = max(max_position_pct, 0.20)
+        pilot_entry_mode = str(memory_controls.get("entry_mode", "") or "").strip().lower()
+        pilot_candidate_id = str(memory_controls.get("pilot_candidate_id", "") or "").strip()
+        selected_entry_order_type = str(
+            strategy_research.selected_execution_profile.get("entry_order_type", "market") or "market"
+        ).strip().lower()
+        selected_entry_liquidity = str(
+            strategy_research.selected_execution_profile.get("entry_liquidity", "taker") or "taker"
+        ).strip().lower()
+        pilot_mode_applies = bool(
+            pilot_entry_mode == "capital_preservation_pilot"
+            and pilot_candidate_id
+            and strategy_research.selected_strategy_id == pilot_candidate_id
+            and selected_entry_order_type == "limit"
+            and selected_entry_liquidity == "maker"
+            and (opening_long or opening_short)
+        )
+        if pilot_mode_applies:
+            try:
+                pilot_max_position_pct = float(memory_controls.get("pilot_max_position_pct", 0.10) or 0.10)
+            except (TypeError, ValueError):
+                pilot_max_position_pct = 0.10
+            effective_max_position_pct = min(effective_max_position_pct, max(0.02, min(pilot_max_position_pct, 0.20)))
+            warnings.append(
+                f"capital-preservation pilot active: capped new exposure at {effective_max_position_pct:.2f} of buffered available balance"
+            )
         max_notional = buffered_available_usdt * effective_max_position_pct
         if (
             aggressive_mode
@@ -1311,8 +1342,9 @@ class DailyReviewAgent:
 class StrategyReflectionAgent:
     name = "strategy_reflector"
 
-    def __init__(self, llm_client: OllamaClient | None = None) -> None:
+    def __init__(self, llm_client: OllamaClient | None = None, settings: Settings | None = None) -> None:
         self.llm_client = llm_client
+        self.settings = settings or Settings()
 
     def evaluate(self, slot: str, daily_summary: dict, reflection_context: dict | None = None) -> StrategyReflectionSnapshot:
         fallback = self._fallback(slot, daily_summary, reflection_context=reflection_context)
@@ -1402,6 +1434,10 @@ class StrategyReflectionAgent:
         live_symbol_benchmark = reflection_context.get("live_symbol_benchmark") or {}
         current_live_symbol = str(reflection_context.get("current_live_symbol", "") or "").strip()
         previous_controls = reflection_context.get("previous_controls") or {}
+        pilot_candidate_id = str(live_symbol_benchmark.get("candidate_id", "") or "").strip()
+        pilot_expectancy_pct = float(live_symbol_benchmark.get("expectancy_pct", 0.0) or 0.0)
+        pilot_profit_factor = float(live_symbol_benchmark.get("profit_factor", 0.0) or 0.0)
+        pilot_uses_custom_cost_model = bool(live_symbol_benchmark.get("uses_custom_cost_model"))
         def _tighten_control_max(key: str, target: float) -> None:
             try:
                 current = float(controls.get(key, 1.0) or 1.0)
@@ -1468,7 +1504,15 @@ class StrategyReflectionAgent:
                 "only restore normal fallback mode after consecutive positive reflection windows and partial equity recovery"
             )
             controls["fallback_entry_mode"] = "base_only"
-        if capital_preservation_mode:
+        pilot_ready = bool(
+            capital_preservation_mode
+            and pilot_candidate_id
+            and benchmark_leader_streak >= int(self.settings.strategy_learning_pilot_benchmark_streak or 0)
+            and pilot_expectancy_pct >= float(self.settings.strategy_learning_pilot_min_expectancy_pct or 0.0)
+            and pilot_profit_factor >= float(self.settings.strategy_learning_pilot_min_profit_factor or 0.0)
+            and pilot_uses_custom_cost_model
+        )
+        if capital_preservation_mode and not pilot_ready:
             biases.append(
                 "multi-day drawdown and negative live expectancy triggered capital-preservation mode"
             )
@@ -1476,6 +1520,16 @@ class StrategyReflectionAgent:
                 "pause new live entries until either equity meaningfully recovers or a benchmark candidate proves positive after costs across consecutive windows"
             )
             controls["entry_mode"] = "capital_preservation"
+        if pilot_ready:
+            biases.append(
+                f"`{pilot_candidate_id}` has repeated positive post-cost benchmark evidence; allow a tightly bounded live pilot instead of a full freeze"
+            )
+            risk_adjustments.append(
+                "allow a maker-only pilot with reduced size while keeping capital-preservation mode active for all non-pilot entry paths"
+            )
+            controls["entry_mode"] = "capital_preservation_pilot"
+            controls["pilot_candidate_id"] = pilot_candidate_id
+            controls["pilot_max_position_pct"] = float(self.settings.strategy_learning_pilot_max_position_pct or 0.10)
         previous_carry_in_mode = str(previous_controls.get("carry_in_mode", "") or "").strip().lower()
         if previous_carry_in_mode == "de_risk" and not bool(reflection_context.get("restore_ready")) and negative_streak > 0:
             controls["carry_in_mode"] = "de_risk"
@@ -1537,7 +1591,11 @@ class StrategyReflectionAgent:
             summary_parts.append(
                 f"benchmark_streak={repeated_benchmark_leader_id}x{benchmark_leader_streak}"
             )
-        if capital_preservation_mode:
+        if pilot_ready:
+            summary_parts.append(
+                f"pilot_mode={pilot_candidate_id}x{benchmark_leader_streak} expectancy={pilot_expectancy_pct:+.2f}% pf={pilot_profit_factor:.2f} max_position={float(self.settings.strategy_learning_pilot_max_position_pct or 0.10):.2f}"
+            )
+        elif capital_preservation_mode:
             summary_parts.append(
                 f"capital_preservation=on drawdown={drawdown_pct:.2f}% expectancy={live_trade_expectancy_pct:+.2f}% pf={live_profit_factor:.2f}"
             )
@@ -1565,7 +1623,7 @@ class StrategyReflectionAgent:
             mode = "normal"
         normalized["fallback_entry_mode"] = mode
         entry_mode = str(raw.get("entry_mode", normalized.get("entry_mode", "normal")) or "normal").strip().lower()
-        if entry_mode not in {"normal", "capital_preservation"}:
+        if entry_mode not in {"normal", "capital_preservation", "capital_preservation_pilot"}:
             entry_mode = "normal"
         normalized["entry_mode"] = entry_mode
         carry_in_mode = str(raw.get("carry_in_mode", normalized.get("carry_in_mode", "normal")) or "normal").strip().lower()
@@ -1593,9 +1651,21 @@ class StrategyReflectionAgent:
                 normalized[key] = value
             else:
                 normalized.pop(key, None)
+        pilot_candidate_id = str(raw.get("pilot_candidate_id", normalized.get("pilot_candidate_id", "")) or "").strip()
+        if pilot_candidate_id:
+            normalized["pilot_candidate_id"] = pilot_candidate_id
+        else:
+            normalized.pop("pilot_candidate_id", None)
+        try:
+            pilot_max_position_pct = float(
+                raw.get("pilot_max_position_pct", normalized.get("pilot_max_position_pct", 0.10)) or 0.10
+            )
+        except (TypeError, ValueError):
+            pilot_max_position_pct = 0.10
+        normalized["pilot_max_position_pct"] = max(0.02, min(pilot_max_position_pct, 0.20))
         if bool(reflection_context.get("force_fallback_base_only")):
             normalized["fallback_entry_mode"] = "base_only"
-        if bool(reflection_context.get("capital_preservation_mode")):
+        if bool(reflection_context.get("capital_preservation_mode")) and normalized.get("entry_mode") == "normal":
             normalized["entry_mode"] = "capital_preservation"
         if str((reflection_context.get("previous_controls") or {}).get("carry_in_mode", "") or "").strip().lower() == "de_risk":
             if not bool(reflection_context.get("restore_ready")) and int(reflection_context.get("negative_streak", 0) or 0) > 0:

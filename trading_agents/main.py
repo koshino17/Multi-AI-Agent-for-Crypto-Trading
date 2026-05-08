@@ -499,18 +499,58 @@ def _apply_strategy_memory_fallback_policy(
 def _apply_strategy_memory_entry_policy(
     *,
     idea: TradeIdea,
+    strategy_research,
     position_side: str,
     mode: str,
     strategy_memory: dict | None,
 ) -> tuple[TradeIdea, str]:
     controls = _strategy_memory_controls(strategy_memory)
     entry_mode = str(controls.get("entry_mode", "normal") or "normal").strip().lower()
-    if entry_mode != "capital_preservation":
+    if entry_mode == "normal":
         return idea, ""
     action = str(getattr(idea, "action", "hold") or "hold").lower()
     if action not in {"buy", "sell"}:
         return idea, ""
     if not _opens_new_exposure(action, position_side=position_side, mode=mode):
+        return idea, ""
+    if entry_mode == "capital_preservation_pilot":
+        pilot_candidate_id = str(controls.get("pilot_candidate_id", "") or "").strip()
+        selected_strategy_id = str(getattr(strategy_research, "selected_strategy_id", "") or "").strip()
+        execution_profile = getattr(strategy_research, "selected_execution_profile", {}) or {}
+        entry_order_type = str(execution_profile.get("entry_order_type", "market") or "market").strip().lower()
+        entry_liquidity = str(execution_profile.get("entry_liquidity", "taker") or "taker").strip().lower()
+        if (
+            pilot_candidate_id
+            and selected_strategy_id == pilot_candidate_id
+            and entry_order_type == "limit"
+            and entry_liquidity == "maker"
+        ):
+            piloted = TradeIdea(
+                action=idea.action,
+                score=idea.score,
+                rationale=(
+                    f"{idea.rationale}; allowed under capital-preservation pilot mode because "
+                    f"`{pilot_candidate_id}` has sustained post-cost benchmark support"
+                ),
+                invalidation=(
+                    "cancel the pilot if maker-style fills degrade, benchmark expectancy turns negative, "
+                    "or the next reflection window disables pilot mode"
+                ),
+                holding_horizon=idea.holding_horizon,
+            )
+            return piloted, ""
+        guarded = TradeIdea(
+            action="hold",
+            score=min(float(getattr(idea, "score", 0.40) or 0.40), 0.45),
+            rationale=(
+                f"{idea.rationale}; converted to hold because capital-preservation pilot mode only allows "
+                "maker-style entries for the approved pilot candidate"
+            ),
+            invalidation="wait for pilot candidate alignment or the next reflection window",
+            holding_horizon="none",
+        )
+        return guarded, "strategy-memory guard: capital-preservation pilot only allows bounded maker entries for the approved candidate"
+    if entry_mode != "capital_preservation":
         return idea, ""
     guarded = TradeIdea(
         action="hold",
@@ -1715,7 +1755,7 @@ def execute_cycle(
     executor = ExecutorAgent()
     evaluator = PostTradeEvaluatorAgent(llm_client=analysis_llm_client)
     daily_reviewer = DailyReviewAgent(llm_client=llm_client)
-    strategy_reflector = StrategyReflectionAgent(llm_client=llm_client)
+    strategy_reflector = StrategyReflectionAgent(llm_client=llm_client, settings=settings)
     strategy_memory = load_strategy_memory(storage.strategy_memory_state)
 
     exchange = _build_exchange(mode, settings)
@@ -1871,6 +1911,7 @@ def execute_cycle(
         if not memory_guard_reason:
             idea, memory_guard_reason = _apply_strategy_memory_entry_policy(
                 idea=idea,
+                strategy_research=strategy_research,
                 position_side=position_side,
                 mode=mode,
                 strategy_memory=strategy_memory,

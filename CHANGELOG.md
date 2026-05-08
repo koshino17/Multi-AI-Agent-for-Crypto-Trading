@@ -16,6 +16,28 @@
 
 ---
 
+## v0.11.39 - Add bounded maker-grid pilot mode under capital preservation
+
+### Why
+
+- `TradePulse` had already shifted its research focus toward `grid_range_reversion_maker_v1`, and recent cost-aware tournaments kept supporting that direction.
+- But the live system was still stuck in an all-or-nothing posture: either fully frozen under `capital_preservation`, or eventually forced to restore normal entry mode all at once.
+- That made the framework too passive. We needed a middle state where TradePulse could test the strongest candidate in the real runtime with tightly bounded exposure instead of remaining permanently paper-only.
+
+### What Changed
+
+- `trading_agents/agents.py`
+  - Strategy reflection can now promote a repeated positive benchmark leader into `capital_preservation_pilot` mode when post-cost expectancy, profit factor, and streak requirements are met.
+  - The learning controls now support:
+    - `entry_mode=capital_preservation_pilot`
+    - `pilot_candidate_id`
+    - `pilot_max_position_pct`
+  - Risk sizing now respects that pilot mode by capping new exposure to a smaller percentage of buffered available balance and only for the approved maker-style candidate.
+- `trading_agents/main.py`
+  - The memory-entry guard now allows a bounded exception path: maker-only entries for the approved pilot candidate can pass while all other new exposure remains blocked.
+- `.env.example` / `trading_agents/config.py`
+  - Added explicit pilot-tuning settings for benchmark streak, minimum expectancy, minimum profit factor, and pilot max position sizing.
+
 ## v0.11.38 - Keep noon reports aligned with refreshed strategy memory
 
 ### Why

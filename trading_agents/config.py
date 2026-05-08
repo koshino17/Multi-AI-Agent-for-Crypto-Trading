@@ -167,6 +167,22 @@ class Settings:
         "STRATEGY_LEARNING_CAPITAL_PRESERVATION_NEGATIVE_STREAK",
         4,
     )
+    strategy_learning_pilot_benchmark_streak: int = _int(
+        "STRATEGY_LEARNING_PILOT_BENCHMARK_STREAK",
+        3,
+    )
+    strategy_learning_pilot_min_expectancy_pct: float = _float(
+        "STRATEGY_LEARNING_PILOT_MIN_EXPECTANCY_PCT",
+        0.05,
+    )
+    strategy_learning_pilot_min_profit_factor: float = _float(
+        "STRATEGY_LEARNING_PILOT_MIN_PROFIT_FACTOR",
+        1.20,
+    )
+    strategy_learning_pilot_max_position_pct: float = _float(
+        "STRATEGY_LEARNING_PILOT_MAX_POSITION_PCT",
+        0.10,
+    )
     strategy_learning_restore_equity_recovery_ratio_pct: float = _float(
         "STRATEGY_LEARNING_RESTORE_EQUITY_RECOVERY_RATIO_PCT",
         99.0,
