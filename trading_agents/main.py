@@ -194,11 +194,13 @@ def _build_strategy_reflection_context(settings, storage, current_date_label: st
         financial = summary.get("financial_snapshot") or {}
         loss_attribution = summary.get("loss_attribution") or {}
         policy_exit_diagnostics = summary.get("policy_exit_diagnostics") or {}
-        external_benchmarks = summary.get("external_benchmarks") or {}
-        top_by_symbol = external_benchmarks.get("top_by_symbol") or {}
-        if not isinstance(top_by_symbol, dict):
-            top_by_symbol = {}
-        live_symbol_benchmark = top_by_symbol.get(current_live_symbol, {}) if current_live_symbol else {}
+        live_symbol_benchmark = summary.get("benchmark_watch_candidate_current") or {}
+        if not isinstance(live_symbol_benchmark, dict) or not str(live_symbol_benchmark.get("candidate_id", "") or "").strip():
+            external_benchmarks = summary.get("external_benchmarks") or {}
+            top_by_symbol = external_benchmarks.get("top_by_symbol") or {}
+            if not isinstance(top_by_symbol, dict):
+                top_by_symbol = {}
+            live_symbol_benchmark = top_by_symbol.get(current_live_symbol, {}) if current_live_symbol else {}
         if not isinstance(live_symbol_benchmark, dict):
             live_symbol_benchmark = {}
         recent_windows.append(
@@ -335,8 +337,10 @@ def _build_strategy_reflection_context(settings, storage, current_date_label: st
     if previous_cooldown_scale is not None and previous_cooldown_scale < 1.0 and not restore_ready:
         preserve_cooldown_scale = previous_cooldown_scale
 
-    top_by_symbol = (daily_summary.get("external_benchmarks") or {}).get("top_by_symbol") or {}
-    live_symbol_benchmark = top_by_symbol.get(current_live_symbol, {}) if current_live_symbol else {}
+    live_symbol_benchmark = daily_summary.get("benchmark_watch_candidate_current") or {}
+    if not isinstance(live_symbol_benchmark, dict) or not str(live_symbol_benchmark.get("candidate_id", "") or "").strip():
+        top_by_symbol = (daily_summary.get("external_benchmarks") or {}).get("top_by_symbol") or {}
+        live_symbol_benchmark = top_by_symbol.get(current_live_symbol, {}) if current_live_symbol else {}
 
     return {
         "lookback_days": lookback_days,

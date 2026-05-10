@@ -16,6 +16,24 @@
 
 ---
 
+## v0.11.40 - Unify shadow-candidate selection across reports and learning memory
+
+### Why
+
+- `Shadow Benchmark Watch` was choosing a candidate from the single-window external benchmark snapshot, while idle-time strategy research used multi-window + validation-symbol aggregation, and `strategy_memory` leaned on repeated benchmark leaders.
+- That meant the three most important places for strategy direction could disagree in the same report window, which made TradePulse look indecisive even when the underlying data was valid.
+- We needed one adjudication path so that reports, learning controls, and promotion logic all talk about the same candidate unless there is a clear reason not to.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Shadow watch selection now considers idle-time strategy research recommendations before falling back to the single-window external benchmark leader.
+  - Daily summary loading now exposes a synthesized `benchmark_watch_candidate_current` so downstream consumers can use the same adjudicated candidate.
+  - Daily reports now show `Selection Source` inside `Shadow Benchmark Watch` to make it obvious whether the active candidate came from strategy research or the external benchmark leader.
+- `trading_agents/main.py`
+  - Strategy reflection context now prefers the synthesized benchmark-watch candidate from the loaded daily summary instead of always defaulting to `external_benchmarks.top_by_symbol`.
+  - This keeps `strategy_memory`, daily review, and shadow-watch reporting aligned on the same promotion candidate.
+
 ## v0.11.39 - Add bounded maker-grid pilot mode under capital preservation
 
 ### Why

@@ -1112,6 +1112,7 @@ def _build_shadow_benchmark_watch(
     *,
     focus_symbol: str,
     watch_candidate_id: str = "",
+    strategy_research_latest: dict[str, Any] | None = None,
     benchmark_reports_dir: Path | None = None,
     cutoff: datetime | None = None,
 ) -> dict[str, Any]:
@@ -1146,13 +1147,79 @@ def _build_shadow_benchmark_watch(
         "donchian_adx_fast_14_v1",
         "donchian_adx_fast_10_v1",
     ]
+    recommendation = (strategy_research_latest or {}).get("recommendation") or {}
+    aggregate_ranking = list((strategy_research_latest or {}).get("aggregate_ranking") or [])
+    recommended_watch_id = str(recommendation.get("candidate_id", "") or "").strip()
+    recommended_verdict = str(recommendation.get("verdict", "") or "").strip().lower()
+    recommended_row = _find(recommended_watch_id)
+    recommended_aggregate = next(
+        (
+            item
+            for item in aggregate_ranking
+            if isinstance(item, dict) and str(item.get("candidate_id", "") or "").strip() == recommended_watch_id
+        ),
+        {},
+    )
+
     requested_watch = str(watch_candidate_id or "").strip()
+    selection_source = "requested"
+    leader_id = str(leader.get("candidate_id", "")).strip()
+    baseline_positive_edge = (
+        float(baseline.get("expectancy_pct", 0.0) or 0.0) > 0.0
+        and float(baseline.get("profit_factor", 0.0) or 0.0) > 1.0
+    )
+    if (
+        not requested_watch
+        and recommended_watch_id
+        and recommended_watch_id == baseline_id
+        and recommended_verdict in {"shadow_candidate", "promotion_candidate"}
+        and leader_id == baseline_id
+        and baseline_positive_edge
+    ):
+        return {
+            "status": "baseline_confirmed",
+            "focus_symbol": focus_symbol,
+            "baseline_candidate_id": baseline_id,
+            "watch_candidate_id": baseline_id,
+            "selection_source": "baseline_and_research_aligned",
+            "baseline": baseline,
+            "watch": baseline,
+            "leader": leader,
+            "expectancy_delta_pct": 0.0,
+            "profit_factor_delta": 0.0,
+            "cumulative_return_delta_pct": 0.0,
+            "trade_count_delta": 0,
+            "is_watch_leader": True,
+            "promotion_streak": 0,
+            "current_snapshot_qualified": False,
+            "verdict": "baseline_confirmed",
+            "summary": (
+                f"{focus_symbol} 上，live baseline `{baseline_id}` 與 idle-time strategy research 已對齊，"
+                "目前沒有更強的替代 shadow candidate 需要推進。"
+            ),
+            "next_step": "維持目前 live baseline，等下一輪 research 或 benchmark 再決定是否需要新的升級候選。",
+        }
     if requested_watch:
         chosen_watch_id = requested_watch
     else:
-        leader_id = str(leader.get("candidate_id", "")).strip()
-        if leader_id and leader_id != baseline_id and leader_id in allowed_shadow_candidates:
+        recommended_is_eligible = (
+            recommended_watch_id
+            and recommended_watch_id != baseline_id
+            and recommended_watch_id in allowed_shadow_candidates
+            and bool(recommended_row)
+            and recommended_verdict in {"shadow_candidate", "promotion_candidate"}
+            and (
+                float(recommended_row.get("expectancy_pct", 0.0) or 0.0) > 0.0
+                or float(recommended_row.get("profit_factor", 0.0) or 0.0) > 1.0
+                or float(recommended_aggregate.get("avg_focus_expectancy_pct", 0.0) or 0.0) > 0.0
+            )
+        )
+        if recommended_is_eligible:
+            chosen_watch_id = recommended_watch_id
+            selection_source = "strategy_research"
+        elif leader_id and leader_id != baseline_id and leader_id in allowed_shadow_candidates:
             chosen_watch_id = leader_id
+            selection_source = "external_benchmark_leader"
         else:
             chosen_watch_id = next(
                 (
@@ -1162,6 +1229,7 @@ def _build_shadow_benchmark_watch(
                 ),
                 "",
             )
+            selection_source = "fallback_first_available"
     watch = _find(chosen_watch_id)
     if not baseline or not watch:
         return {
@@ -1169,6 +1237,7 @@ def _build_shadow_benchmark_watch(
             "focus_symbol": focus_symbol,
             "baseline_candidate_id": baseline_id,
             "watch_candidate_id": chosen_watch_id,
+            "selection_source": selection_source,
             "baseline": baseline,
             "watch": watch,
             "leader": leader,
@@ -1232,6 +1301,7 @@ def _build_shadow_benchmark_watch(
         "focus_symbol": focus_symbol,
         "baseline_candidate_id": baseline_id,
         "watch_candidate_id": chosen_watch_id,
+        "selection_source": selection_source,
         "baseline": baseline,
         "watch": watch,
         "leader": leader,
@@ -2845,16 +2915,28 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
         external_benchmarks=summary["external_benchmarks"],
         focus_symbol=focus_symbol,
     )
-    summary["shadow_benchmark_watch"] = _build_shadow_benchmark_watch(
-        summary["external_benchmarks"],
-        focus_symbol=focus_symbol or str(summary.get("symbol_postmortem", {}).get("symbol", "")).strip(),
-        benchmark_reports_dir=storage.benchmark_reports,
-        cutoff=window_end,
-    )
     summary["strategy_memory_current"] = _read_json_file(storage.strategy_memory_state)
     summary["strategy_research_latest"] = _load_strategy_research_latest(
         storage.service / "strategy_research_latest.json"
     )
+    summary["shadow_benchmark_watch"] = _build_shadow_benchmark_watch(
+        summary["external_benchmarks"],
+        focus_symbol=focus_symbol or str(summary.get("symbol_postmortem", {}).get("symbol", "")).strip(),
+        strategy_research_latest=summary["strategy_research_latest"],
+        benchmark_reports_dir=storage.benchmark_reports,
+        cutoff=window_end,
+    )
+    if isinstance(summary.get("shadow_benchmark_watch"), dict):
+        shadow_payload = summary["shadow_benchmark_watch"]
+        summary["benchmark_watch_candidate_current"] = (
+            shadow_payload.get("watch")
+            if isinstance(shadow_payload.get("watch"), dict) and str(shadow_payload.get("watch", {}).get("candidate_id", "")).strip()
+            else shadow_payload.get("baseline")
+            if isinstance(shadow_payload.get("baseline"), dict) and str(shadow_payload.get("baseline", {}).get("candidate_id", "")).strip()
+            else {}
+        ) or {}
+    else:
+        summary["benchmark_watch_candidate_current"] = {}
     summary["executed_trade_timeline"] = _build_executed_trade_timeline(records)
     summary["daily_strategy_review"] = _load_daily_strategy_review(trade_logs_dir, date_label)
     summary["external_ai_review"] = (
@@ -3185,11 +3267,13 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
                     f"trades={int(payload.get('trade_count', 0))})"
                 )
 
-    if shadow_benchmark_watch and shadow_benchmark_watch.get("status") == "ready":
+    if shadow_benchmark_watch and shadow_benchmark_watch.get("status") in {"ready", "baseline_confirmed"}:
         baseline = shadow_benchmark_watch.get("baseline") or {}
         watch = shadow_benchmark_watch.get("watch") or {}
         lines.extend(["", "## Shadow Benchmark Watch", ""])
         lines.append(f"- Focus Symbol: {shadow_benchmark_watch.get('focus_symbol', 'n/a')}")
+        if shadow_benchmark_watch.get("selection_source"):
+            lines.append(f"- Selection Source: {shadow_benchmark_watch.get('selection_source')}")
         lines.append(
             f"- Live Baseline: {baseline.get('candidate_id', 'n/a')} "
             f"(expectancy={float(baseline.get('expectancy_pct', 0.0)):+.2f}% | "
@@ -3199,25 +3283,26 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
         baseline_cost_note = _benchmark_cost_note(baseline)
         if baseline_cost_note:
             lines.append(f"  cost={baseline_cost_note}")
-        lines.append(
-            f"- Shadow Candidate: {watch.get('candidate_id', 'n/a')} "
-            f"(expectancy={float(watch.get('expectancy_pct', 0.0)):+.2f}% | "
-            f"profit_factor={float(watch.get('profit_factor', 0.0)):.2f} | "
-            f"trades={int(watch.get('trade_count', 0))})"
-        )
-        watch_cost_note = _benchmark_cost_note(watch)
-        if watch_cost_note:
-            lines.append(f"  cost={watch_cost_note}")
-        lines.append(
-            f"- Delta: expectancy {float(shadow_benchmark_watch.get('expectancy_delta_pct', 0.0)):+.2f}% | "
-            f"profit factor {float(shadow_benchmark_watch.get('profit_factor_delta', 0.0)):+.2f} | "
-            f"cumulative {float(shadow_benchmark_watch.get('cumulative_return_delta_pct', 0.0)):+.2f}% | "
-            f"trades {int(shadow_benchmark_watch.get('trade_count_delta', 0)):+d}"
-        )
-        lines.append(
-            f"- Promotion Streak: {int(shadow_benchmark_watch.get('promotion_streak', 0))} "
-            f"(qualified now={bool(shadow_benchmark_watch.get('current_snapshot_qualified', False))})"
-        )
+        if shadow_benchmark_watch.get("status") == "ready":
+            lines.append(
+                f"- Shadow Candidate: {watch.get('candidate_id', 'n/a')} "
+                f"(expectancy={float(watch.get('expectancy_pct', 0.0)):+.2f}% | "
+                f"profit_factor={float(watch.get('profit_factor', 0.0)):.2f} | "
+                f"trades={int(watch.get('trade_count', 0))})"
+            )
+            watch_cost_note = _benchmark_cost_note(watch)
+            if watch_cost_note:
+                lines.append(f"  cost={watch_cost_note}")
+            lines.append(
+                f"- Delta: expectancy {float(shadow_benchmark_watch.get('expectancy_delta_pct', 0.0)):+.2f}% | "
+                f"profit factor {float(shadow_benchmark_watch.get('profit_factor_delta', 0.0)):+.2f} | "
+                f"cumulative {float(shadow_benchmark_watch.get('cumulative_return_delta_pct', 0.0)):+.2f}% | "
+                f"trades {int(shadow_benchmark_watch.get('trade_count_delta', 0)):+d}"
+            )
+            lines.append(
+                f"- Promotion Streak: {int(shadow_benchmark_watch.get('promotion_streak', 0))} "
+                f"(qualified now={bool(shadow_benchmark_watch.get('current_snapshot_qualified', False))})"
+            )
         lines.append(f"- Verdict: {shadow_benchmark_watch.get('verdict', 'n/a')}")
         if shadow_benchmark_watch.get("summary"):
             lines.append(f"- Summary: {shadow_benchmark_watch.get('summary')}")
