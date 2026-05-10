@@ -183,6 +183,18 @@ class Settings:
         "STRATEGY_LEARNING_PILOT_MAX_POSITION_PCT",
         0.10,
     )
+    strategy_learning_pilot_hold_ratio_threshold: float = _float(
+        "STRATEGY_LEARNING_PILOT_HOLD_RATIO_THRESHOLD",
+        0.85,
+    )
+    strategy_learning_pilot_low_participation_windows: int = _int(
+        "STRATEGY_LEARNING_PILOT_LOW_PARTICIPATION_WINDOWS",
+        2,
+    )
+    strategy_learning_pilot_max_accepted_per_window: int = _int(
+        "STRATEGY_LEARNING_PILOT_MAX_ACCEPTED_PER_WINDOW",
+        1,
+    )
     strategy_learning_restore_equity_recovery_ratio_pct: float = _float(
         "STRATEGY_LEARNING_RESTORE_EQUITY_RECOVERY_RATIO_PCT",
         99.0,

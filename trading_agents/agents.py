@@ -1414,6 +1414,8 @@ class StrategyReflectionAgent:
         negative_day_count = int(reflection_context.get("negative_day_count", 0) or 0)
         negative_streak = int(reflection_context.get("negative_streak", 0) or 0)
         positive_streak = int(reflection_context.get("positive_streak", 0) or 0)
+        low_participation_window_count = int(reflection_context.get("low_participation_window_count", 0) or 0)
+        low_participation_streak = int(reflection_context.get("low_participation_streak", 0) or 0)
         carry_in_loss_window_count = int(reflection_context.get("carry_in_loss_window_count", 0) or 0)
         carry_in_loss_streak = int(reflection_context.get("carry_in_loss_streak", 0) or 0)
         stagnation_exit_window_count = int(reflection_context.get("stagnation_exit_window_count", 0) or 0)
@@ -1438,6 +1440,10 @@ class StrategyReflectionAgent:
         pilot_expectancy_pct = float(live_symbol_benchmark.get("expectancy_pct", 0.0) or 0.0)
         pilot_profit_factor = float(live_symbol_benchmark.get("profit_factor", 0.0) or 0.0)
         pilot_uses_custom_cost_model = bool(live_symbol_benchmark.get("uses_custom_cost_model"))
+        research_recommendation = reflection_context.get("strategy_research_recommendation") or {}
+        research_candidate_id = str(research_recommendation.get("candidate_id", "") or "").strip()
+        research_verdict = str(research_recommendation.get("verdict", "") or "").strip().lower()
+        low_participation_threshold = int(self.settings.strategy_learning_pilot_low_participation_windows or 0)
         def _tighten_control_max(key: str, target: float) -> None:
             try:
                 current = float(controls.get(key, 1.0) or 1.0)
@@ -1512,6 +1518,16 @@ class StrategyReflectionAgent:
             and pilot_profit_factor >= float(self.settings.strategy_learning_pilot_min_profit_factor or 0.0)
             and pilot_uses_custom_cost_model
         )
+        low_participation_pilot_ready = bool(
+            pilot_candidate_id
+            and pilot_candidate_id == research_candidate_id
+            and research_verdict in {"shadow_candidate", "promotion_candidate"}
+            and pilot_expectancy_pct >= float(self.settings.strategy_learning_pilot_min_expectancy_pct or 0.0)
+            and pilot_profit_factor >= float(self.settings.strategy_learning_pilot_min_profit_factor or 0.0)
+            and pilot_uses_custom_cost_model
+            and low_participation_streak >= low_participation_threshold
+            and positive_streak >= 1
+        )
         if capital_preservation_mode and not pilot_ready:
             biases.append(
                 "multi-day drawdown and negative live expectancy triggered capital-preservation mode"
@@ -1526,6 +1542,16 @@ class StrategyReflectionAgent:
             )
             risk_adjustments.append(
                 "allow a maker-only pilot with reduced size while keeping capital-preservation mode active for all non-pilot entry paths"
+            )
+            controls["entry_mode"] = "capital_preservation_pilot"
+            controls["pilot_candidate_id"] = pilot_candidate_id
+            controls["pilot_max_position_pct"] = float(self.settings.strategy_learning_pilot_max_position_pct or 0.10)
+        elif low_participation_pilot_ready:
+            biases.append(
+                "recent windows were overwhelmingly observe-only; start a tiny maker-only pilot so research can become live evidence instead of remaining paper-only"
+            )
+            risk_adjustments.append(
+                "allow a strictly bounded maker-only pilot for the research-aligned candidate after repeated high-hold / low-trade windows"
             )
             controls["entry_mode"] = "capital_preservation_pilot"
             controls["pilot_candidate_id"] = pilot_candidate_id
@@ -1577,6 +1603,10 @@ class StrategyReflectionAgent:
             summary_parts.append(
                 f"carry_in_loss_windows={carry_in_loss_window_count} carry_in_loss_streak={carry_in_loss_streak}"
             )
+        if low_participation_window_count > 0:
+            summary_parts.append(
+                f"low_participation_windows={low_participation_window_count} low_participation_streak={low_participation_streak}"
+            )
         if stagnation_exit_window_count > 0:
             summary_parts.append(
                 f"stagnation_exit_windows={stagnation_exit_window_count} stagnation_exit_streak={stagnation_exit_streak}"
@@ -1594,6 +1624,10 @@ class StrategyReflectionAgent:
         if pilot_ready:
             summary_parts.append(
                 f"pilot_mode={pilot_candidate_id}x{benchmark_leader_streak} expectancy={pilot_expectancy_pct:+.2f}% pf={pilot_profit_factor:.2f} max_position={float(self.settings.strategy_learning_pilot_max_position_pct or 0.10):.2f}"
+            )
+        elif low_participation_pilot_ready:
+            summary_parts.append(
+                f"tiny_pilot={pilot_candidate_id} low_participation_streak={low_participation_streak} expectancy={pilot_expectancy_pct:+.2f}% pf={pilot_profit_factor:.2f} max_position={float(self.settings.strategy_learning_pilot_max_position_pct or 0.10):.2f}"
             )
         elif capital_preservation_mode:
             summary_parts.append(

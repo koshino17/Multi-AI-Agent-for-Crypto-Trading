@@ -16,6 +16,28 @@
 
 ---
 
+## v0.11.41 - Escalate repeated hold-only windows into tiny maker-grid pilot mode
+
+### Why
+
+- TradePulse had started defending capital better, but it was still spending too many completed windows in an almost pure observe-only state.
+- That created a new failure mode: not overtrading, but learning too slowly because research conclusions were never being converted into bounded live validation.
+- We needed a rule that says: if recent windows are dominated by holds, accepted trades stay near zero, and research remains aligned with the same positive-cost-adjusted candidate, open a tiny maker-only pilot instead of staying frozen.
+
+### What Changed
+
+- `trading_agents/main.py`
+  - Strategy reflection context now tracks low-participation windows using hold ratio, accepted order count, and proposal activity across the recent noon-to-noon lookback set.
+  - Reflection context now also passes the latest idle-time strategy research recommendation into the learning loop.
+- `trading_agents/agents.py`
+  - Strategy reflection can now activate `capital_preservation_pilot` not only during drawdown preservation mode, but also after repeated high-hold / low-trade windows when the same maker candidate remains aligned between research and live benchmark evidence.
+  - Reflection summaries now explicitly mention `low_participation_windows` / `low_participation_streak` and record when a tiny pilot is justified.
+- `.env.example` / `trading_agents/config.py`
+  - Added explicit knobs for:
+    - `STRATEGY_LEARNING_PILOT_HOLD_RATIO_THRESHOLD`
+    - `STRATEGY_LEARNING_PILOT_LOW_PARTICIPATION_WINDOWS`
+    - `STRATEGY_LEARNING_PILOT_MAX_ACCEPTED_PER_WINDOW`
+
 ## v0.11.40 - Unify shadow-candidate selection across reports and learning memory
 
 ### Why

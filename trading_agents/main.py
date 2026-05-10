@@ -208,6 +208,10 @@ def _build_strategy_reflection_context(settings, storage, current_date_label: st
                 "date": label,
                 "daily_pnl_usdt": float(financial.get("daily_pnl_usdt", 0.0) or 0.0),
                 "total_portfolio_value_usdt": float(financial.get("total_portfolio_value_usdt", 0.0) or 0.0),
+                "total_decisions": int(summary.get("total", 0) or 0),
+                "hold_count": int(summary.get("holds", 0) or 0),
+                "accepted_orders": int(summary.get("accepted_orders", 0) or 0),
+                "trade_proposals": int(summary.get("proposals", 0) or 0),
                 "carry_in_closed_count": int(loss_attribution.get("carry_in_closed_count", 0) or 0),
                 "new_closed_count": int(loss_attribution.get("new_closed_count", 0) or 0),
                 "primary_driver": str(loss_attribution.get("primary_driver", "") or "").strip(),
@@ -235,6 +239,28 @@ def _build_strategy_reflection_context(settings, storage, current_date_label: st
     for item in reversed(recent_windows):
         if float(item.get("equity_delta_usdt", 0.0) or 0.0) > 0:
             positive_streak += 1
+        else:
+            break
+    hold_ratio_threshold = float(settings.strategy_learning_pilot_hold_ratio_threshold or 0.85)
+    max_accepted_per_window = int(settings.strategy_learning_pilot_max_accepted_per_window or 1)
+    low_participation_window_count = 0
+    low_participation_streak = 0
+    for item in recent_windows:
+        total_decisions = int(item.get("total_decisions", 0) or 0)
+        hold_count = int(item.get("hold_count", 0) or 0)
+        accepted_orders = int(item.get("accepted_orders", 0) or 0)
+        hold_ratio = (hold_count / total_decisions) if total_decisions > 0 else 0.0
+        item["hold_ratio"] = hold_ratio
+        item["low_participation_window"] = bool(
+            total_decisions > 0
+            and hold_ratio >= hold_ratio_threshold
+            and accepted_orders <= max_accepted_per_window
+        )
+        if bool(item["low_participation_window"]):
+            low_participation_window_count += 1
+    for item in reversed(recent_windows):
+        if bool(item.get("low_participation_window")):
+            low_participation_streak += 1
         else:
             break
     carry_in_loss_window_count = sum(
@@ -341,6 +367,7 @@ def _build_strategy_reflection_context(settings, storage, current_date_label: st
     if not isinstance(live_symbol_benchmark, dict) or not str(live_symbol_benchmark.get("candidate_id", "") or "").strip():
         top_by_symbol = (daily_summary.get("external_benchmarks") or {}).get("top_by_symbol") or {}
         live_symbol_benchmark = top_by_symbol.get(current_live_symbol, {}) if current_live_symbol else {}
+    strategy_research_latest = daily_summary.get("strategy_research_latest") or {}
 
     return {
         "lookback_days": lookback_days,
@@ -348,6 +375,8 @@ def _build_strategy_reflection_context(settings, storage, current_date_label: st
         "negative_day_count": negative_day_count,
         "negative_streak": negative_streak,
         "positive_streak": positive_streak,
+        "low_participation_window_count": low_participation_window_count,
+        "low_participation_streak": low_participation_streak,
         "carry_in_loss_window_count": carry_in_loss_window_count,
         "carry_in_loss_streak": carry_in_loss_streak,
         "stagnation_exit_window_count": stagnation_exit_window_count,
@@ -369,6 +398,7 @@ def _build_strategy_reflection_context(settings, storage, current_date_label: st
         "live_symbols": live_symbols,
         "current_live_symbol": current_live_symbol,
         "live_symbol_benchmark": live_symbol_benchmark if isinstance(live_symbol_benchmark, dict) else {},
+        "strategy_research_recommendation": (strategy_research_latest.get("recommendation") or {}),
         "previous_controls": previous_controls if isinstance(previous_controls, dict) else {},
         "current_date_label": current_date_label,
     }
