@@ -199,6 +199,14 @@ class Settings:
         "STRATEGY_LEARNING_RESTORE_EQUITY_RECOVERY_RATIO_PCT",
         99.0,
     )
+    strategy_learning_min_accepted_orders: int = _int("STRATEGY_LEARNING_MIN_ACCEPTED_ORDERS", 2)
+    strategy_learning_min_closed_episodes: int = _int("STRATEGY_LEARNING_MIN_CLOSED_EPISODES", 2)
+    strategy_learning_low_sample_max_tunable_changes: int = _int(
+        "STRATEGY_LEARNING_LOW_SAMPLE_MAX_TUNABLE_CHANGES",
+        1,
+    )
+    strategy_learning_cooldown_step_limit: float = _float("STRATEGY_LEARNING_COOLDOWN_STEP_LIMIT", 0.15)
+    strategy_learning_experiment_ttl_windows: int = _int("STRATEGY_LEARNING_EXPERIMENT_TTL_WINDOWS", 2)
 
 
 def load_settings() -> Settings:

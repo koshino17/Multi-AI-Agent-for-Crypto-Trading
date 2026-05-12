@@ -100,8 +100,11 @@ def _daily_review_fingerprint(daily_summary: dict) -> str:
         focus_benchmark = {}
     strategy_memory_current = daily_summary.get("strategy_memory_current") or {}
     current_controls = strategy_memory_current.get("controls") if isinstance(strategy_memory_current, dict) else {}
+    current_experiment = strategy_memory_current.get("experiment") if isinstance(strategy_memory_current, dict) else {}
     if not isinstance(current_controls, dict):
         current_controls = {}
+    if not isinstance(current_experiment, dict):
+        current_experiment = {}
     payload = {
         "mode": daily_summary.get("mode"),
         "date_label": daily_summary.get("date_label", ""),
@@ -118,6 +121,8 @@ def _daily_review_fingerprint(daily_summary: dict) -> str:
         "benchmark_watch_symbol": str(current_controls.get("benchmark_watch_symbol", "") or ""),
         "entry_mode": str(current_controls.get("entry_mode", "") or ""),
         "carry_in_mode": str(current_controls.get("carry_in_mode", "") or ""),
+        "experiment_id": str(current_experiment.get("experiment_id", "") or ""),
+        "experiment_trigger": str(current_experiment.get("trigger", "") or ""),
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
@@ -368,6 +373,7 @@ def _build_strategy_reflection_context(settings, storage, current_date_label: st
         top_by_symbol = (daily_summary.get("external_benchmarks") or {}).get("top_by_symbol") or {}
         live_symbol_benchmark = top_by_symbol.get(current_live_symbol, {}) if current_live_symbol else {}
     strategy_research_latest = daily_summary.get("strategy_research_latest") or {}
+    current_loss_attribution = daily_summary.get("loss_attribution") or {}
 
     return {
         "lookback_days": lookback_days,
@@ -400,6 +406,9 @@ def _build_strategy_reflection_context(settings, storage, current_date_label: st
         "live_symbol_benchmark": live_symbol_benchmark if isinstance(live_symbol_benchmark, dict) else {},
         "strategy_research_recommendation": (strategy_research_latest.get("recommendation") or {}),
         "previous_controls": previous_controls if isinstance(previous_controls, dict) else {},
+        "previous_experiment": (previous_memory or {}).get("experiment", {}) if isinstance(previous_memory, dict) else {},
+        "current_window_accepted_orders": int(daily_summary.get("accepted_orders", 0) or 0),
+        "current_window_closed_episodes": int(current_loss_attribution.get("closed_episode_count", 0) or 0),
         "current_date_label": current_date_label,
     }
 
@@ -1602,7 +1611,8 @@ def _finalize_reporting(
         current_slot = current_strategy_slot()
         strategy_memory = load_strategy_memory(storage.strategy_memory_state)
         controls_missing = not isinstance(strategy_memory.get("controls"), dict) or not strategy_memory.get("controls")
-        if strategy_memory.get("slot") != current_slot or controls_missing:
+        experiment_missing = not isinstance(strategy_memory.get("experiment"), dict) or not strategy_memory.get("experiment")
+        if strategy_memory.get("slot") != current_slot or controls_missing or experiment_missing:
             reflection_summary = completed_daily_summary or daily_summary
             reflection_context = _build_strategy_reflection_context(
                 settings,
@@ -1620,6 +1630,7 @@ def _finalize_reporting(
                 "risk_adjustments": reflection.risk_adjustments,
                 "focus_symbols": reflection.focus_symbols,
                 "controls": reflection.controls,
+                "experiment": reflection.experiment,
                 "reflection_context": reflection_context,
             }
             save_strategy_memory(storage.strategy_memory_state, payload)
@@ -1627,7 +1638,11 @@ def _finalize_reporting(
             strategy_memory_sync = {
                 "status": "updated",
                 "slot": current_slot,
-                "reason": "backfilled controls" if controls_missing and strategy_memory.get("slot") == current_slot else "",
+                "reason": (
+                    "backfilled controls" if controls_missing and strategy_memory.get("slot") == current_slot
+                    else "backfilled experiment" if experiment_missing and strategy_memory.get("slot") == current_slot
+                    else ""
+                ),
             }
     except Exception as exc:
         strategy_memory_sync = {"status": "error", "reason": str(exc)}

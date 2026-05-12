@@ -23,6 +23,7 @@
 - 每筆決策現在都會記錄 `Decision Source`，區分 `base_strategy / fallback / fallback_guard / policy_exit`
 - `TradePulse` 的 learning controls 現在會看多日資金曲線，而不只看最近 12 小時；若 equity 持續低於設定基準且連續多日虧損，fallback 會維持受限，benchmark watch 也會強制對齊目前 live symbol
 - 每天中午之後會把 `Strategy Review` 併入當天 daily report 與 Notion Daily Review，從 strategist / risk / benchmark / execution 四個角度對同一天表現做複盤
+- 12 小時 strategy reflection 現在不只會改 controls，還會產生有 `ttl_windows` 與 success metrics 的小型 experiment，並在 daily report 顯示 `Control Impact`
 - Daily report 與 Notion `Daily Review` 的主窗口現在是 **台灣時間前一天 12:00 -> 當天 12:00**，不再是曆日 `00:00 -> 24:00`
 - daily report 現在也會區分 `carry-in` 倉位關閉與「本窗口新交易」，避免把前一窗口留下來的部位管理和今天的新進場混在一起
 - 若設定外部模型 API key，Daily 也可以額外產出 `External AI Review`，把同一天的摘要送去給外部模型做第二視角審稿；這層只用於研究與檢討，不直接影響 live 下單

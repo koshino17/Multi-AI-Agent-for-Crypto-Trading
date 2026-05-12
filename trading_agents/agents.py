@@ -1374,13 +1374,15 @@ class StrategyReflectionAgent:
                 focus_symbols = fallback.focus_symbols
             if not isinstance(controls, dict):
                 controls = fallback.controls
+            normalized_controls = self._normalize_controls(controls, fallback.controls, reflection_context=reflection_context)
             return StrategyReflectionSnapshot(
                 slot=slot,
                 summary=str(response.get("summary", fallback.summary)).strip() or fallback.summary,
                 biases=[str(item).strip() for item in biases if str(item).strip()][:4] or fallback.biases,
                 risk_adjustments=[str(item).strip() for item in adjustments if str(item).strip()][:4] or fallback.risk_adjustments,
                 focus_symbols=[str(item).strip() for item in focus_symbols if str(item).strip()][:4] or fallback.focus_symbols,
-                controls=self._normalize_controls(controls, fallback.controls, reflection_context=reflection_context),
+                controls=normalized_controls,
+                experiment=self._build_experiment(slot, normalized_controls, reflection_context=reflection_context),
             )
         except Exception:
             return fallback
@@ -1587,6 +1589,12 @@ class StrategyReflectionAgent:
             biases.append("keep favoring positive expectancy and strong payoff asymmetry")
         if not risk_adjustments:
             risk_adjustments.append("avoid changing thresholds again until the next 12h reflection window")
+        controls = self._apply_low_sample_guard(
+            controls,
+            previous_controls,
+            accepted_orders=accepted_orders,
+            closed_episode_count=int((daily_summary.get("loss_attribution") or {}).get("closed_episode_count", 0) or 0),
+        )
         summary_parts = [
             f"12h reflection for {slot}: focus on executable positive-expectancy setups",
             f"top blocked={top_block[0]} ({top_block[1]})",
@@ -1595,9 +1603,16 @@ class StrategyReflectionAgent:
             f"base accepted={base_accepted}",
             f"daily_pnl={daily_pnl_usdt:+.2f}",
         ]
+        min_accepted_orders = int(self.settings.strategy_learning_min_accepted_orders or 0)
+        min_closed_episodes = int(self.settings.strategy_learning_min_closed_episodes or 0)
+        low_sample_mode = accepted_orders < min_accepted_orders or int((daily_summary.get("loss_attribution") or {}).get("closed_episode_count", 0) or 0) < min_closed_episodes
         if lookback_days > 0:
             summary_parts.append(
                 f"lookback={lookback_days}d multi_day_pnl={multi_day_pnl_usdt:+.2f} negative_days={negative_day_count} negative_streak={negative_streak}"
+            )
+        if low_sample_mode:
+            summary_parts.append(
+                f"low_sample_guard=on accepted={accepted_orders}/{min_accepted_orders} closed={int((daily_summary.get('loss_attribution') or {}).get('closed_episode_count', 0) or 0)}/{min_closed_episodes}"
             )
         if carry_in_loss_window_count > 0:
             summary_parts.append(
@@ -1634,13 +1649,15 @@ class StrategyReflectionAgent:
                 f"capital_preservation=on drawdown={drawdown_pct:.2f}% expectancy={live_trade_expectancy_pct:+.2f}% pf={live_profit_factor:.2f}"
             )
         summary = "; ".join(summary_parts) + "."
+        normalized_controls = self._normalize_controls(controls, previous_controls, reflection_context=reflection_context)
         return StrategyReflectionSnapshot(
             slot=slot,
             summary=summary,
             biases=biases[:4],
             risk_adjustments=risk_adjustments[:4],
             focus_symbols=focus_symbols,
-            controls=self._normalize_controls(controls, previous_controls, reflection_context=reflection_context),
+            controls=normalized_controls,
+            experiment=self._build_experiment(slot, normalized_controls, reflection_context=reflection_context),
         )
 
     def _normalize_controls(
@@ -1718,17 +1735,130 @@ class StrategyReflectionAgent:
                 pass
         live_symbol_benchmark = reflection_context.get("live_symbol_benchmark") or {}
         current_live_symbol = str(reflection_context.get("current_live_symbol", "") or "").strip()
+        research_recommendation = reflection_context.get("strategy_research_recommendation") or {}
+        research_candidate_id = str(research_recommendation.get("candidate_id", "") or "").strip()
+        research_verdict = str(research_recommendation.get("verdict", "") or "").strip().lower()
         live_benchmark_positive_edge = (
             isinstance(live_symbol_benchmark, dict)
             and float(live_symbol_benchmark.get("expectancy_pct", 0.0) or 0.0) > 0.0
             and float(live_symbol_benchmark.get("profit_factor", 0.0) or 0.0) > 1.0
         )
-        if live_benchmark_positive_edge and live_symbol_benchmark.get("candidate_id"):
+        if research_candidate_id and research_verdict in {"shadow_candidate", "promotion_candidate"}:
+            normalized["benchmark_watch_candidate"] = research_candidate_id
+            if current_live_symbol:
+                normalized["benchmark_watch_symbol"] = current_live_symbol
+        elif live_benchmark_positive_edge and live_symbol_benchmark.get("candidate_id"):
             normalized["benchmark_watch_candidate"] = str(live_symbol_benchmark.get("candidate_id", "")).strip()
             normalized["benchmark_watch_symbol"] = str(live_symbol_benchmark.get("symbol", current_live_symbol)).strip()
         elif current_live_symbol:
             normalized["benchmark_watch_symbol"] = current_live_symbol
         return normalized
+
+    def _apply_low_sample_guard(
+        self,
+        controls: dict[str, object],
+        previous_controls: dict[str, object],
+        *,
+        accepted_orders: int,
+        closed_episode_count: int,
+    ) -> dict[str, object]:
+        min_accepted_orders = int(self.settings.strategy_learning_min_accepted_orders or 0)
+        min_closed_episodes = int(self.settings.strategy_learning_min_closed_episodes or 0)
+        if accepted_orders >= min_accepted_orders and closed_episode_count >= min_closed_episodes:
+            return controls
+
+        guarded = dict(previous_controls or {})
+        current = dict(controls or {})
+        safety_keys = {"entry_mode", "fallback_entry_mode", "benchmark_watch_candidate", "benchmark_watch_symbol", "pilot_candidate_id"}
+        for key in safety_keys:
+            if key in current:
+                guarded[key] = current[key]
+
+        try:
+            previous_pilot_max = float((previous_controls or {}).get("pilot_max_position_pct", 0.10) or 0.10)
+        except (TypeError, ValueError):
+            previous_pilot_max = 0.10
+        try:
+            current_pilot_max = float(current.get("pilot_max_position_pct", previous_pilot_max) or previous_pilot_max)
+        except (TypeError, ValueError):
+            current_pilot_max = previous_pilot_max
+        guarded["pilot_max_position_pct"] = min(current_pilot_max, previous_pilot_max)
+
+        numeric_step_limits = {
+            "cooldown_scale": float(self.settings.strategy_learning_cooldown_step_limit or 0.15),
+            "hold_bars_scale": 0.10,
+            "stagnation_bars_scale": 0.10,
+            "stagnation_pnl_scale": 0.10,
+        }
+        tunable_priority = ["cooldown_scale", "carry_in_mode", "hold_bars_scale", "stagnation_bars_scale", "stagnation_pnl_scale"]
+        max_tunable_changes = max(int(self.settings.strategy_learning_low_sample_max_tunable_changes or 1), 0)
+        allowed_tunable = 0
+        for key in tunable_priority:
+            if key not in current:
+                continue
+            previous_value = (previous_controls or {}).get(key)
+            current_value = current.get(key)
+            if current_value == previous_value:
+                guarded[key] = current_value
+                continue
+            if allowed_tunable >= max_tunable_changes:
+                guarded[key] = previous_value if previous_value is not None else current_value
+                continue
+            allowed_tunable += 1
+            if key in numeric_step_limits:
+                step_limit = numeric_step_limits[key]
+                try:
+                    previous_float = float(previous_value if previous_value is not None else current_value)
+                    current_float = float(current_value)
+                except (TypeError, ValueError):
+                    guarded[key] = previous_value if previous_value is not None else current_value
+                    continue
+                lower = previous_float - step_limit
+                upper = previous_float + step_limit
+                guarded[key] = max(lower, min(current_float, upper))
+            else:
+                guarded[key] = current_value
+        return guarded
+
+    def _build_experiment(
+        self,
+        slot: str,
+        controls: dict[str, object],
+        *,
+        reflection_context: dict | None = None,
+    ) -> dict[str, object]:
+        reflection_context = reflection_context or {}
+        previous_controls = reflection_context.get("previous_controls") or {}
+        if not isinstance(previous_controls, dict):
+            previous_controls = {}
+        deltas: dict[str, dict[str, object]] = {}
+        for key, value in controls.items():
+            if previous_controls.get(key) != value:
+                deltas[key] = {"previous": previous_controls.get(key), "current": value}
+        if not deltas:
+            return dict((reflection_context.get("previous_experiment") or {})) if isinstance(reflection_context.get("previous_experiment"), dict) else {}
+
+        primary_key = next(iter(deltas.keys()))
+        success_metrics = ["live_trade_expectancy_pct", "live_profit_factor", "cost_impact_ratio"]
+        if primary_key == "carry_in_mode":
+            success_metrics = ["carry_in_closed_count", "accepted_policy_exit_count", "live_trade_expectancy_pct"]
+        elif primary_key == "cooldown_scale":
+            success_metrics = ["accepted_rate", "hold_ratio", "cost_impact_ratio"]
+        elif primary_key == "entry_mode":
+            success_metrics = ["accepted_orders", "pilot_acceptance_count", "live_trade_expectancy_pct"]
+        return {
+            "experiment_id": f"{slot}:{primary_key}",
+            "slot": slot,
+            "trigger": primary_key,
+            "control_deltas": deltas,
+            "success_metrics": success_metrics,
+            "ttl_windows": max(int(self.settings.strategy_learning_experiment_ttl_windows or 0), 1),
+            "sample_guard_active": bool(
+                int(reflection_context.get("current_window_accepted_orders", 0) or 0) < int(self.settings.strategy_learning_min_accepted_orders or 0)
+                or int(reflection_context.get("current_window_closed_episodes", 0) or 0) < int(self.settings.strategy_learning_min_closed_episodes or 0)
+            ),
+            "status": "active",
+        }
 
 
 class SelectorAgent:

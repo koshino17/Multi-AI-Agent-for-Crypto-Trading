@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
-from trading_agents.agents import RiskSupervisorAgent
+from trading_agents.agents import RiskSupervisorAgent, StrategyReflectionAgent
 from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyCandidate, StrategyResearchSnapshot, TradeIdea
+from trading_agents.research import StrategyResearchAgent
 from trading_agents.runner import _monitor_snapshot
 from trading_agents_web import _runtime_settings
 
@@ -90,6 +94,107 @@ class RuntimeRegressionTests(unittest.TestCase):
 
         snapshot = _monitor_snapshot(FakeExchange(), ["SOL/USDT"], "15m")
         self.assertEqual(snapshot["accounts"]["SOL/USDT"], (12.5, -2.5))
+
+    def test_strategy_reflection_low_sample_guard_limits_tunable_control_churn(self) -> None:
+        agent = StrategyReflectionAgent(llm_client=None)
+        daily_summary = {
+            "blocked_reason_counts": {"symbol cooldown active": 20},
+            "rejection_reason_counts": {},
+            "selected_symbol_counts": {"SOL/USDT": 10},
+            "financial_snapshot": {
+                "daily_pnl_usdt": -1.5,
+                "realized_pnl_usdt": 0.0,
+                "unrealized_pnl_usdt": 0.0,
+                "daily_fees_usdt": 0.1,
+            },
+            "accepted_source_counts": {"fallback": 0, "base_strategy": 0},
+            "accepted_orders": 0,
+            "blocked": 20,
+            "loss_attribution": {"closed_episode_count": 0},
+            "external_benchmarks": {"top_candidates": [{}]},
+        }
+        reflection_context = {
+            "live_symbols": ["SOL/USDT"],
+            "current_live_symbol": "SOL/USDT",
+            "lookback_days": 5,
+            "negative_day_count": 3,
+            "negative_streak": 2,
+            "positive_streak": 0,
+            "carry_in_loss_window_count": 2,
+            "carry_in_loss_streak": 2,
+            "stagnation_exit_window_count": 2,
+            "stagnation_exit_streak": 2,
+            "previous_controls": {
+                "cooldown_scale": 1.0,
+                "hold_bars_scale": 1.0,
+                "stagnation_bars_scale": 1.0,
+                "stagnation_pnl_scale": 1.0,
+            },
+            "current_window_accepted_orders": 0,
+            "current_window_closed_episodes": 0,
+            "strategy_research_recommendation": {},
+            "live_symbol_benchmark": {},
+        }
+        reflection = agent.evaluate("2026-05-12-day", daily_summary, reflection_context=reflection_context)
+        self.assertAlmostEqual(float(reflection.controls.get("cooldown_scale", 1.0)), 0.85, places=2)
+        self.assertAlmostEqual(float(reflection.controls.get("hold_bars_scale", 1.0)), 1.0, places=2)
+        self.assertTrue(bool(reflection.experiment.get("sample_guard_active")))
+
+    def test_strategy_research_uses_memory_to_bias_candidate_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            library_path = Path(tmpdir) / "strategy_library.json"
+            library_path.write_text(
+                json.dumps(
+                    {
+                        "base_strategy": "donchian_adx_perp_v1",
+                        "strategies": [
+                            {
+                                "id": "donchian_adx_perp_v1",
+                                "name": "Donchian",
+                                "generator": "donchian_adx",
+                                "execution": {"entry_order_type": "market", "entry_liquidity": "taker"},
+                            },
+                            {
+                                "id": "grid_range_reversion_maker_v1",
+                                "name": "Grid Maker",
+                                "generator": "grid_range_reversion",
+                                "execution": {"entry_order_type": "limit", "entry_liquidity": "maker"},
+                            },
+                        ],
+                    }
+                )
+            )
+            agent = StrategyResearchAgent(str(library_path))
+
+            def fake_run_strategy(item, snapshot, sentiment):
+                if item.get("id") == "donchian_adx_perp_v1":
+                    return BacktestSnapshot(100, 10, 0.55, 0.10, 1.0, "donchian", 0.30, -0.15, 0.06, 1.30)
+                return BacktestSnapshot(100, 10, 0.52, 0.08, 0.8, "grid", 0.25, -0.12, 0.05, 1.20)
+
+            agent._run_strategy = fake_run_strategy  # type: ignore[method-assign]
+            snapshot = SimpleNamespace(
+                symbol="SOL/USDT",
+                timeframe="15m",
+                opens=[1.0] * 40,
+                highs=[1.0] * 40,
+                lows=[1.0] * 40,
+                closes=[1.0] * 40,
+                volumes=[1.0] * 40,
+                last_price=1.0,
+            )
+            sentiment = SentimentSnapshot(0, 0.0, "", [])
+            result = agent.evaluate_with_memory(
+                snapshot,
+                sentiment,
+                strategy_memory={
+                    "controls": {
+                        "benchmark_watch_candidate": "grid_range_reversion_maker_v1",
+                        "pilot_candidate_id": "grid_range_reversion_maker_v1",
+                        "entry_mode": "capital_preservation_pilot",
+                    }
+                },
+            )
+            self.assertEqual(result.selected_strategy_id, "grid_range_reversion_maker_v1")
 
 
 if __name__ == "__main__":

@@ -264,6 +264,102 @@ def _load_daily_strategy_review(trade_logs_dir: Path, date_label: str) -> dict[s
     return payload if isinstance(payload, dict) else {}
 
 
+def _previous_report_date_label(date_label: str) -> str:
+    window_end_date = datetime.strptime(date_label, "%Y-%m-%d").date()
+    return (window_end_date - timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def _estimate_avg_hold_bars(episodes: list[dict[str, Any]], timeframe_minutes: float = 15.0) -> float | None:
+    if timeframe_minutes <= 0:
+        return None
+    values: list[float] = []
+    for item in episodes:
+        opened = _parse_timestamp_local(item.get("opened_at"))
+        closed = _parse_timestamp_local(item.get("closed_at"))
+        if opened is None or closed is None or closed <= opened:
+            continue
+        values.append((closed - opened).total_seconds() / 60.0 / timeframe_minutes)
+    if not values:
+        return None
+    return fmean(values)
+
+
+def _build_control_impact_summary(
+    current_summary: dict[str, Any],
+    previous_summary: dict[str, Any] | None,
+    *,
+    timeframe_minutes: float = 15.0,
+) -> dict[str, Any]:
+    strategy_memory = current_summary.get("strategy_memory_current") or {}
+    controls = strategy_memory.get("controls") or {}
+    experiment = strategy_memory.get("experiment") or {}
+    if not isinstance(controls, dict):
+        controls = {}
+    if not isinstance(experiment, dict):
+        experiment = {}
+    reflection_context = strategy_memory.get("reflection_context") or {}
+    previous_controls = reflection_context.get("previous_controls") or {}
+    if not isinstance(previous_controls, dict):
+        previous_controls = {}
+    changed_controls = {
+        key: {
+            "previous": previous_controls.get(key),
+            "current": value,
+        }
+        for key, value in controls.items()
+        if previous_controls.get(key) != value
+    }
+    if not changed_controls and not experiment:
+        return {}
+
+    previous_summary = previous_summary or {}
+    current_total = int(current_summary.get("total", 0) or 0)
+    previous_total = int(previous_summary.get("total", 0) or 0)
+    current_accepted = int(current_summary.get("accepted_orders", 0) or 0)
+    previous_accepted = int(previous_summary.get("accepted_orders", 0) or 0)
+    current_hold = int(current_summary.get("holds", 0) or 0)
+    previous_hold = int(previous_summary.get("holds", 0) or 0)
+    current_accepted_rate = (current_accepted / current_total) if current_total > 0 else 0.0
+    previous_accepted_rate = (previous_accepted / previous_total) if previous_total > 0 else 0.0
+    current_hold_ratio = (current_hold / current_total) if current_total > 0 else 0.0
+    previous_hold_ratio = (previous_hold / previous_total) if previous_total > 0 else 0.0
+    current_loss = current_summary.get("loss_attribution") or {}
+    previous_loss = previous_summary.get("loss_attribution") or {}
+    current_policy = current_summary.get("policy_exit_diagnostics") or {}
+    previous_policy = previous_summary.get("policy_exit_diagnostics") or {}
+    current_trade_review = current_summary.get("trade_review") or {}
+    previous_trade_review = previous_summary.get("trade_review") or {}
+    current_closed_episodes = [item for item in (current_trade_review.get("episodes") or []) if str(item.get("status", "")).lower() in {"win", "loss", "flat"}]
+    previous_closed_episodes = [item for item in (previous_trade_review.get("episodes") or []) if str(item.get("status", "")).lower() in {"win", "loss", "flat"}]
+
+    return {
+        "changed_controls": changed_controls,
+        "experiment": experiment,
+        "accepted_rate_pct": round(current_accepted_rate * 100.0, 2),
+        "accepted_rate_delta_pct": round((current_accepted_rate - previous_accepted_rate) * 100.0, 2),
+        "hold_ratio_pct": round(current_hold_ratio * 100.0, 2),
+        "hold_ratio_delta_pct": round((current_hold_ratio - previous_hold_ratio) * 100.0, 2),
+        "cost_impact_ratio": current_loss.get("cost_impact_ratio"),
+        "cost_impact_ratio_delta": (
+            round(float(current_loss.get("cost_impact_ratio", 0.0)) - float(previous_loss.get("cost_impact_ratio", 0.0)), 2)
+            if current_loss.get("cost_impact_ratio") is not None and previous_loss.get("cost_impact_ratio") is not None
+            else None
+        ),
+        "accepted_policy_exit_count": int(current_policy.get("accepted_policy_exit_count", 0) or 0),
+        "accepted_policy_exit_delta": int(current_policy.get("accepted_policy_exit_count", 0) or 0) - int(previous_policy.get("accepted_policy_exit_count", 0) or 0),
+        "avg_hold_bars": round(_estimate_avg_hold_bars(current_closed_episodes, timeframe_minutes) or 0.0, 2),
+        "avg_hold_bars_delta": (
+            round(
+                (float(_estimate_avg_hold_bars(current_closed_episodes, timeframe_minutes) or 0.0) -
+                 float(_estimate_avg_hold_bars(previous_closed_episodes, timeframe_minutes) or 0.0)),
+                2,
+            )
+            if current_closed_episodes or previous_closed_episodes
+            else None
+        ),
+    }
+
+
 def _build_market_path_review(records: list[dict[str, Any]], *, focus_symbol: str = "") -> dict[str, Any]:
     symbol_counts = Counter(str(item.get("selected_symbol", "")).strip() for item in records if item.get("selected_symbol"))
     symbol_counts = Counter({symbol: count for symbol, count in symbol_counts.items() if symbol})
@@ -2861,7 +2957,13 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
     }
 
 
-def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_path: Path | None = None) -> dict[str, Any]:
+def load_daily_summary_data(
+    trade_logs_dir: Path,
+    date_label: str,
+    runner_log_path: Path | None = None,
+    *,
+    include_control_impact: bool = True,
+) -> dict[str, Any]:
     from trading_agents.config import load_settings
     from trading_agents.external_benchmarks import load_external_benchmark_summary
     from trading_agents.external_ai_review import external_ai_review_path, load_external_ai_review
@@ -2944,6 +3046,21 @@ def load_daily_summary_data(trade_logs_dir: Path, date_label: str, runner_log_pa
         if settings.external_ai_review_enabled
         else {}
     )
+    if include_control_impact:
+        previous_summary = {}
+        previous_label = _previous_report_date_label(date_label)
+        try:
+            previous_summary = load_daily_summary_data(
+                trade_logs_dir,
+                previous_label,
+                runner_log_path,
+                include_control_impact=False,
+            )
+        except Exception:
+            previous_summary = {}
+        summary["control_impact"] = _build_control_impact_summary(summary, previous_summary)
+    else:
+        summary["control_impact"] = {}
     return summary
 
 
@@ -2994,6 +3111,7 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
     strategy_research_latest = summary.get("strategy_research_latest") or {}
     daily_strategy_review = summary.get("daily_strategy_review") or {}
     external_ai_review = summary.get("external_ai_review") or {}
+    control_impact = summary.get("control_impact") or {}
 
     lines = [f"# Daily Summary: {date_label}", ""]
     if summary_mode:
@@ -3458,6 +3576,55 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
             )
         for item in loss_attribution.get("observations", [])[:5]:
             lines.append(f"- Observation: {item}")
+
+    if control_impact:
+        lines.extend(["", "## Control Impact", ""])
+        changed_controls = control_impact.get("changed_controls") or {}
+        if changed_controls:
+            lines.append(
+                "- Changed Controls: "
+                + " | ".join(
+                    f"{key}={payload.get('previous', 'n/a')} -> {payload.get('current', 'n/a')}"
+                    for key, payload in changed_controls.items()
+                    if isinstance(payload, dict)
+                )
+            )
+        experiment = control_impact.get("experiment") or {}
+        if experiment:
+            lines.append(
+                f"- Active Experiment: {experiment.get('experiment_id', 'n/a')} "
+                f"(ttl_windows={int(experiment.get('ttl_windows', 0) or 0)} | "
+                f"trigger={experiment.get('trigger', 'n/a')})"
+            )
+            success_metrics = experiment.get("success_metrics") or []
+            if success_metrics:
+                lines.append(f"- Success Metrics: {', '.join(str(item) for item in success_metrics)}")
+            lines.append(
+                f"- Sample Guard: {'on' if bool(experiment.get('sample_guard_active')) else 'off'}"
+            )
+        lines.append(
+            f"- Accepted Rate: {float(control_impact.get('accepted_rate_pct', 0.0)):.2f}% "
+            f"(delta {float(control_impact.get('accepted_rate_delta_pct', 0.0)):+.2f}pp)"
+        )
+        lines.append(
+            f"- Hold Ratio: {float(control_impact.get('hold_ratio_pct', 0.0)):.2f}% "
+            f"(delta {float(control_impact.get('hold_ratio_delta_pct', 0.0)):+.2f}pp)"
+        )
+        if control_impact.get("cost_impact_ratio") is not None:
+            lines.append(
+                f"- Cost Impact Ratio: {float(control_impact.get('cost_impact_ratio', 0.0)):.2f} "
+                f"(delta {float(control_impact.get('cost_impact_ratio_delta', 0.0) or 0.0):+.2f})"
+            )
+        lines.append(
+            f"- Accepted Policy Exits: {int(control_impact.get('accepted_policy_exit_count', 0) or 0)} "
+            f"(delta {int(control_impact.get('accepted_policy_exit_delta', 0) or 0):+d})"
+        )
+        avg_hold_bars = control_impact.get("avg_hold_bars")
+        if avg_hold_bars is not None:
+            lines.append(
+                f"- Avg Hold Bars (closed episodes): {float(avg_hold_bars):.2f} "
+                f"(delta {float(control_impact.get('avg_hold_bars_delta', 0.0) or 0.0):+.2f})"
+            )
 
     if daily_strategy_review:
         lines.extend(["", "## Strategy Review", ""])

@@ -148,14 +148,25 @@ class StrategyResearchAgent:
             candidates = [fallback]
             candidate_items[base_id] = {"id": base_id, "name": fallback.name, "execution": {"entry_order_type": "market"}}
 
-        selected = next((item for item in candidates if item.strategy_id == base_id), candidates[0])
-        selected_item = candidate_items.get(selected.strategy_id, {})
+        selected, selected_item, selection_mode = self._select_candidate_with_memory(
+            candidates,
+            candidate_items,
+            strategy_memory,
+        )
         current_signal, current_metrics = self._current_signal(selected_item, snapshot)
-        rationale = self._fallback_rationale(base_id, selected, current_signal, current_metrics)
+        rationale = self._fallback_rationale(
+            base_id,
+            selected,
+            current_signal,
+            current_metrics,
+            selection_mode=selection_mode,
+            strategy_memory=strategy_memory,
+        )
         execution_profile = self._execution_profile(selected_item)
         summary = (
             f"selected strategy {selected.strategy_id}; "
             f"base={base_id}; {selected.backtest.summary}; "
+            f"selection_mode={selection_mode}; "
             f"current_signal={current_signal}; "
             f"current_signal_type={current_metrics.get('signal_type', 'hold')}; "
             f"current_adx={current_metrics.get('adx', 0.0):.2f}; "
@@ -200,19 +211,71 @@ class StrategyResearchAgent:
         selected: StrategyCandidate,
         current_signal: str,
         current_metrics: dict[str, float],
+        *,
+        selection_mode: str,
+        strategy_memory: dict | None,
     ) -> str:
         signal_type = str(current_metrics.get("signal_type", "hold") or "hold")
         adx = float(current_metrics.get("adx", 0.0) or 0.0)
         volume_ratio = float(current_metrics.get("volume_ratio", 0.0) or 0.0)
+        controls = (strategy_memory or {}).get("controls") if isinstance(strategy_memory, dict) else {}
+        controls = controls if isinstance(controls, dict) else {}
         return (
             "single external strategy mode is active; "
             f"base_strategy={base_id}; "
             f"selected={selected.strategy_id}; "
+            f"selection_mode={selection_mode}; "
             f"live_signal={current_signal}; "
             f"signal_type={signal_type}; "
             f"adx={adx:.2f}; "
-            f"volume_ratio={volume_ratio:.2f}"
+            f"volume_ratio={volume_ratio:.2f}; "
+            f"benchmark_watch_candidate={str(controls.get('benchmark_watch_candidate', '') or '').strip()}; "
+            f"pilot_candidate_id={str(controls.get('pilot_candidate_id', '') or '').strip()}"
         )
+
+    def _select_candidate_with_memory(
+        self,
+        candidates: list[StrategyCandidate],
+        candidate_items: dict[str, dict[str, Any]],
+        strategy_memory: dict | None,
+    ) -> tuple[StrategyCandidate, dict[str, Any], str]:
+        if not candidates:
+            raise ValueError("at least one strategy candidate is required")
+        controls = (strategy_memory or {}).get("controls") if isinstance(strategy_memory, dict) else {}
+        controls = controls if isinstance(controls, dict) else {}
+        pilot_candidate_id = str(controls.get("pilot_candidate_id", "") or "").strip()
+        benchmark_watch_candidate = str(controls.get("benchmark_watch_candidate", "") or "").strip()
+        entry_mode = str(controls.get("entry_mode", "") or "").strip().lower()
+        carry_in_mode = str(controls.get("carry_in_mode", "") or "").strip().lower()
+
+        def _score(candidate: StrategyCandidate) -> float:
+            score = float(candidate.backtest.expectancy_pct or 0.0) * 8.0
+            score += float(candidate.backtest.profit_factor or 0.0) * 0.2
+            score += float(candidate.backtest.cumulative_return_pct or 0.0) * 0.02
+            strategy_item = candidate_items.get(candidate.strategy_id, {})
+            execution_profile = self._execution_profile(strategy_item)
+            if candidate.strategy_id == pilot_candidate_id:
+                score += 1.0
+            if candidate.strategy_id == benchmark_watch_candidate:
+                score += 0.5
+            if entry_mode == "capital_preservation_pilot" and candidate.strategy_id == pilot_candidate_id:
+                score += 0.5
+            if execution_profile.get("entry_liquidity") == "maker":
+                score += 0.08
+            if carry_in_mode == "de_risk":
+                hold_bars = float(strategy_item.get("hold_bars", 0.0) or 0.0)
+                if hold_bars > 0:
+                    score += max(0.0, (8.0 - hold_bars)) * 0.02
+            return score
+
+        ranked = sorted(candidates, key=_score, reverse=True)
+        selected = ranked[0]
+        selection_mode = "memory_ranked"
+        if pilot_candidate_id and selected.strategy_id == pilot_candidate_id:
+            selection_mode = "memory_pilot_aligned"
+        elif benchmark_watch_candidate and selected.strategy_id == benchmark_watch_candidate:
+            selection_mode = "memory_benchmark_aligned"
+        return selected, candidate_items.get(selected.strategy_id, {}), selection_mode
 
     def _current_signal(self, strategy_item: dict[str, Any], snapshot: MarketSnapshot) -> tuple[str, dict[str, float]]:
         candidate = _benchmark_candidate_from_strategy(strategy_item)

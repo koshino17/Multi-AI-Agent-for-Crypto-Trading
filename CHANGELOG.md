@@ -16,6 +16,50 @@
 
 ---
 
+## v0.11.44 - Turn daily reflection into bounded experiments with control-impact reporting
+
+### Why
+
+- TradePulse already had noon-window reviews and 12h strategy reflection, but most of the learning loop still ended at “write guidance and tweak controls”.
+- That made it too hard to tell whether a reflection change actually helped: there was no explicit experiment lifecycle, no minimum-sample guard against overreacting, and no daily report section showing how control changes affected participation, fee drag, or policy exits.
+- Strategy research also accepted `strategy_memory` as input but barely used it, so reflection had limited influence over candidate selection.
+
+### What Changed
+
+- `trading_agents/agents.py`
+  - Strategy reflection now applies a low-sample guard: if accepted orders or closed episodes are below threshold, only a bounded subset of tunable controls can change in one window.
+  - Reflection now emits a structured `experiment` payload with:
+    - `experiment_id`
+    - `trigger`
+    - `success_metrics`
+    - `ttl_windows`
+    - `control_deltas`
+    - `sample_guard_active`
+- `trading_agents/research.py`
+  - Strategy research now uses `strategy_memory.controls` to bias candidate selection toward the current benchmark-watch or pilot candidate, instead of ignoring memory almost entirely.
+- `trading_agents/reporting.py`
+  - Daily summaries now compute a `Control Impact` block by comparing the current noon window with the previous one.
+  - Reports now show:
+    - changed controls
+    - active experiment metadata
+    - accepted-rate delta
+    - hold-ratio delta
+    - cost-impact delta
+    - accepted policy-exit delta
+    - average hold-bars delta for closed episodes
+- `trading_agents/main.py` / `trading_agents/strategy_memory.py`
+  - Strategy memory now persists `experiment` alongside controls and reflection context.
+  - Daily-review fingerprinting now includes experiment identifiers so completed reviews rebuild when the experiment state changes.
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for low-sample reflection gating and memory-aware strategy research selection.
+- `.env.example` / `trading_agents/config.py`
+  - Added knobs for:
+    - `STRATEGY_LEARNING_MIN_ACCEPTED_ORDERS`
+    - `STRATEGY_LEARNING_MIN_CLOSED_EPISODES`
+    - `STRATEGY_LEARNING_LOW_SAMPLE_MAX_TUNABLE_CHANGES`
+    - `STRATEGY_LEARNING_COOLDOWN_STEP_LIMIT`
+    - `STRATEGY_LEARNING_EXPERIMENT_TTL_WINDOWS`
+
 ## v0.11.43 - Realign strategy documentation with the current live baseline
 
 ### Why

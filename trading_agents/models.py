@@ -132,3 +132,4 @@ class StrategyReflectionSnapshot:
     risk_adjustments: list[str]
     focus_symbols: list[str]
     controls: dict[str, object]
+    experiment: dict[str, object] = field(default_factory=dict)
