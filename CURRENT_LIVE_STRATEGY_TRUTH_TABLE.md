@@ -8,110 +8,125 @@
 
 ## Short Answer
 
-截至目前版本，live trading 已經不再使用原本那 3 個本地內部 intraday 策略：
+截至目前版本，`TradePulse` 的 live baseline 已經不是早期的本地 intraday 策略池，也不是後來那版 `donchian_adx_perp_v1`。
 
-- `intraday_breakout_perp_v1`
-- `intraday_pullback_perp_v1`
-- `intraday_reversal_scalp_v1`
+現在 live baseline 是：
 
-現在已收斂成單一主策略：
-
-- `donchian_adx_perp_v1`
+- `grid_range_reversion_maker_v1`
 
 來源：
-- [config/strategy_library.json](/Users/koshino/Documents/Playground/config/strategy_library.json)
+
+- `config/strategy_library.json`
 
 定位：
 
-- `source = public_classic`
-- `credibility = external_public`
+- `source = research_execution_variant`
+- `credibility = experimental_live_candidate`
 
-也就是說，現在 live trading 的主策略已經改成：
+也就是說，現在的 live baseline 是：
 
-**公開經典規則策略：Donchian breakout + Wilder ADX trend-strength filter**
-
----
-
-## Why This Reset Happened
-
-原先系統雖然名義上是 intraday-perp，但實際上是：
-
-- 本地 hand-crafted 策略池
-- strategist / risk / policy exit 混合決策
-
-結果造成兩個問題：
-
-1. 策略來源不夠有公信力
-2. 決策鏈太混合，難以驗證到底是哪一層在虧錢
-
-因此本輪 reset 的原則是：
-
-- 先停止把 live trading 建立在內部自造策略池上
-- 先收斂成一個公開、經典、可審計、可回測的單一主策略
-- 保留框架、風控、報表、Notion、runner，不重寫基礎設施
+**在 maker-style execution 假設下運作的區間均值回歸策略。**
 
 ---
 
-## The Active Strategy
+## Why This Changed
 
-### `donchian_adx_perp_v1`
+前一階段我們先把主線收斂到單一可審計策略，避免內部策略池、fallback、policy exit 混在一起很難歸因。
 
-策略來源概念：
+但之後的 cost-aware benchmark / tournament 持續顯示：
 
-- Richard Donchian breakout / channel breakout
-- Welles Wilder ADX trend-strength confirmation
+- `donchian_adx_perp_v1` 在近期 `SOL/USDT` 環境下沒有證明自己具備正期望值
+- 一般 `taker` 版 grid 也沒有證明自己可行
+- 真正比較有希望的是：
+  - `grid_range_reversion_maker_v1`
+  - 也就是「策略邏輯 + maker-style execution 假設」的組合
 
-目前在 repo 的實作位置：
+所以目前的 live baseline 已經切到這條線，而 Donchian 家族退回 benchmark / research 軌。
 
-- [trading_agents/research.py](/Users/koshino/Documents/Playground/trading_agents/research.py)
-- [trading_agents/backtest.py](/Users/koshino/Documents/Playground/trading_agents/backtest.py)
+---
+
+## The Active Baseline
+
+### `grid_range_reversion_maker_v1`
+
+策略概念：
+
+- 區間均值回歸 / grid-style oscillation fade
+- Bollinger Band 區間邊緣回補
+- 低 ADX / 受限區間環境下的反轉入場
+- 假設使用 `limit + maker` 執行，降低 fee drag
+
+主要位置：
+
+- `trading_agents/research.py`
+- `trading_agents/backtest.py`
+- `config/strategy_library.json`
 
 ---
 
 ## Entry Logic
 
-當前實作用的是：
+當前 baseline 大致是：
 
 ### Long
 
-- 價格突破過去 `20` 根 bar 的高點
-- `ADX >= 20`
-- `+DI >= -DI`
-- 最近量能比率達標
+- 價格接近 Bollinger 下緣
+- `ADX` 不高，盤勢仍被視為 range / contained regime
+- `RSI` 偏弱，符合回補條件
+- signal cooldown 已過
 
 ### Short
 
-- 價格跌破過去 `20` 根 bar 的低點
-- `ADX >= 20`
-- `-DI >= +DI`
-- 最近量能比率達標
+- 價格接近 Bollinger 上緣
+- `ADX` 不高，盤勢仍被視為 range / contained regime
+- `RSI` 偏強，符合回落條件
+- signal cooldown 已過
 
 ### Hold
 
-若不滿足以上條件，就不產生方向性進場。
+若價格沒有靠近區間邊緣、或 `ADX` 顯示盤勢不適合均值回歸，則維持觀察。
+
+---
+
+## Cost Assumption
+
+這條 baseline 的關鍵不是只有「grid」兩個字，而是：
+
+- `entry_order_type = limit`
+- `entry_liquidity = maker`
+
+也就是說，它成立的前提包含較低交易摩擦。  
+目前 repo 裡的成本假設是：
+
+- round-trip fee `0.04%`
+- round-trip slippage `0.01%`
+
+因此它不能被理解成「普通 taker grid 直接升級 live」，而是：
+
+**maker-style grid candidate 被拉成新的 live baseline。**
 
 ---
 
 ## Replay / Backtest Logic
 
-目前回測不再是三個內部策略互相比較，而是直接回放同一條外部主策略。
+目前這條 baseline 的 replay / benchmark 會：
 
-回測邏輯：
-
-- 用 Donchian + ADX 規則產生進場
-- 持有最多 `6` 根 bar
-- 使用 ATR 風格的動態 TP / SL 近似
-  - `stop_loss_pct = max(ATR * 1.0, 0.45%)`
-  - `take_profit_pct = max(ATR * 1.8, stop_loss * 1.6)`
+- 用 `grid_range_reversion_maker_v1` 規則產生進場
+- 預設持有最多 `5` 根 bar
+- 以較短 TP/SL 模型模擬均值回歸段
+- 用 candidate-specific 成本模型估算預期報酬
 
 來源：
-- [trading_agents/backtest.py](/Users/koshino/Documents/Playground/trading_agents/backtest.py)
+
+- `trading_agents/backtest.py`
+- `scripts/run_strategy_tournament.py`
+- `scripts/run_strategy_research_cycle.py`
 
 ---
 
 ## What Still Exists Around It
 
-雖然主策略已經變成單一外部規則策略，但系統周邊框架還在：
+雖然 live baseline 已切到單一策略，但系統周邊框架還在：
 
 1. `market_collector`
 2. `sentiment_collector`
@@ -123,55 +138,42 @@
 8. `executor`
 9. `post_trade_evaluator`
 
-但要注意：
+也就是說，現在的 baseline 不是「裸策略直接下單」，而是：
 
-- `strategy_researcher` 現在只會選這一個主策略
-- 不再是多個內部策略池競爭
-
-因此，現在 strategist/risk 的角色比較像：
-
-- 對外部主策略做包裝、風控、與執行調節
-
-而不是：
-
-- 在多個自創策略中自由切換
+- 一個單一 baseline
+- 外圍再包一層 risk / learning controls / reporting / execution discipline
 
 ---
 
 ## What Is NOT Driving Live Trading
 
-### Alpha Arena
+### Donchian Family
 
-目前不直接下單，但已經不只是規劃文件，現在會進入 research-only benchmark 管線：
+目前這些仍然存在，但已退回 benchmark / research：
 
-- benchmark
-- research source
-- evaluator/reference candidate
-
-目前會：
-
-- 載入 normalized public signals
-- 跑 Bybit public candle replay
-- 寫入 `external_benchmark_latest.json`
-- 進 daily report / Notion / 12h reflection
-
-但仍然不直接下單。
-
-來源：
-- [trading_agents/alpha_arena.py](/Users/koshino/Documents/Playground/trading_agents/alpha_arena.py)
-- [ALPHA_ARENA_INTEGRATION_PLAN.md](/Users/koshino/Documents/Playground/ALPHA_ARENA_INTEGRATION_PLAN.md)
-
-### Grid
-
-目前仍未接進 live trading，但已經有 benchmark-only 候選：
-
-- `grid_range_reversion_v1`
+- `donchian_adx_perp_v1`
+- `donchian_adx_fast_14_v1`
+- `donchian_adx_fast_10_v1`
+- `donchian_adx_keltner_v1`
+- `donchian_adx_atr_midline_exit_v1`
 
 也就是說：
 
-- 現在不是 grid 在跑
-- 但 grid 已經會被離線 replay / benchmark
-- 也不是 regime router 在切換 grid / trend
+- 現在不是 Donchian 在跑 live
+- 但 Donchian 家族仍會被拿來做 replay / benchmark / attribution
+
+### Alpha Arena
+
+目前不直接下單，但會作為：
+
+- benchmark
+- research source
+- evaluator / reference candidate
+
+主要檔案：
+
+- `trading_agents/alpha_arena.py`
+- `ALPHA_ARENA_INTEGRATION_PLAN.md`
 
 ---
 
@@ -179,55 +181,44 @@
 
 現在的 live trading，應該被理解成：
 
-**「以單一外部公開規則策略為主腦的 intraday-perp 系統，外圍再包一層 sentiment / strategist / risk / execution framework。」**
+**「以 `grid_range_reversion_maker_v1` 為 live baseline 的 intraday-perp 系統，外圍再包一層 sentiment / strategist / risk / execution framework。」**
 
 而研究支線則是：
 
-**「用 external benchmark pipeline 持續比較 Donchian + ADX、grid、其他公開規則，以及 Alpha Arena normalized imports。」**
-
-這比之前更清楚，也更容易檢驗：
-
-- 如果績效不好
-- 我們先檢查這條外部主策略在你這個市場 / 週期是否真的有 edge
-- 而不是先被內部自造策略池與混合選擇搞亂
+**「用 external benchmark pipeline 持續比較 maker-grid、Donchian 家族、其他公開規則，以及 Alpha Arena imports。」**
 
 ---
 
 ## Current Caveat
 
-雖然主策略已經 reset，但系統還不是「完全純規則化」。
+雖然 baseline 已經切換，但目前仍不是「完全放開交易」。
 
-因為現在仍然保留：
+因為現在還保留：
 
-- strategist
-- risk supervisor
-- intraday policy exit
-- perp protection / profit-lock
+- `capital_preservation`
+- `capital_preservation_pilot`
+- carry-in de-risk
+- fee hurdle
+- maker execution gate
 
-所以這一版比之前更收斂，但還不是最終的「單策略純 execution engine」。
+所以這個階段更像：
 
-這是刻意保留的，因為：
+- baseline 已換
+- 但 live exposure 仍受 learning controls 強限制
 
-- 先讓外部主策略接管方向來源
-- 再逐步檢查周邊模組是否幫忙，還是在干擾
+這是刻意保留的，因為我們目前在做的是：
+
+- 先確認 baseline 是否有比較像樣的 edge
+- 再決定是否放寬 pilot / 恢復更積極的 live entry
 
 ---
 
 ## Current Best Next Step
 
-下一步最值得做的不是再加新策略，而是：
+下一步最值得做的不是再把文件寫得更漂亮，而是：
 
-### 做 strategy attribution
-
-拆清楚最近一段交易：
-
-- 進場是否符合 `donchian_adx_perp_v1`
-- strategist 有沒有覆蓋策略方向
-- 哪些單是 policy exit 關掉
-- 哪些單是 TP/SL 關掉
-- 哪些單是 risk 擋掉
-
-這樣我們才能真正知道：
-
-- 問題在主策略
-- 還是周邊框架
+1. 確認 `grid_range_reversion_maker_v1` 的 maker-style execution 在 live runtime 真的能形成可驗證的 pilot evidence
+2. 繼續用 cost-aware tournament / strategy research 驗證它不是只在單一窗口看起來比較好
+3. 用 daily attribution 拆清楚：
+   - baseline 本身是否有 edge
+   - risk / memory / carry-in 是否仍在拖累它

@@ -16,6 +16,24 @@
 
 ---
 
+## v0.11.43 - Realign strategy documentation with the current live baseline
+
+### Why
+
+- The repo had already shifted its real live baseline to `grid_range_reversion_maker_v1`, but several top-level documents were still describing `donchian_adx_perp_v1` as the active strategy.
+- That mismatch made it too easy to misread reports, research output, and runtime behavior.
+- A few repo docs were also still using local absolute file paths, which are acceptable in Codex chat responses but wrong inside portable project documentation.
+
+### What Changed
+
+- `README.md`
+  - Updated the live strategy / benchmark section so it matches the current `grid_range_reversion_maker_v1` live baseline.
+- `CURRENT_LIVE_STRATEGY_TRUTH_TABLE.md`
+  - Rewritten to reflect the current maker-grid baseline instead of the older Donchian baseline.
+  - Replaced local absolute path links with repo-portable references.
+- `EXCHANGE_AND_SIMULATION_OPTIONS.md`
+  - Clarified that OKX remains a future / research option and is not currently exposed as a runtime mode.
+
 ## v0.11.42 - Fix pilot crashes, web runner overrides, perp monitoring, and Python runtime consistency
 
 ### Why
@@ -1019,7 +1037,7 @@
 
 ### What Changed
 
-- 新增 [ALPHA_ARENA_INTEGRATION_PLAN.md](/Users/koshino/Documents/Playground/ALPHA_ARENA_INTEGRATION_PLAN.md)
+- 新增 `ALPHA_ARENA_INTEGRATION_PLAN.md`
 - 明確定義 Alpha Arena 在目前架構中的定位：
   - benchmark
   - research source

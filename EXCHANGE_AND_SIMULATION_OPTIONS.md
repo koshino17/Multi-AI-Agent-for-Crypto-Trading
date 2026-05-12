@@ -7,7 +7,7 @@
 若目標是「先讓 AI 代理在很像真的環境裡練習，再決定是否進入實盤」，建議：
 
 1. 第一個交易所優先評估 `Bybit`
-2. 第二個備選 `OKX`
+2. 第二個備選 `OKX`（研究 / 未接入現行 runtime）
 3. 若重視最典型的程式化 Spot Testnet，再保留 `Binance Spot Testnet`
 
 ## 為什麼這樣排
@@ -27,7 +27,7 @@
 - 想較快接 API
 - 想測 Spot 與 Derivatives，但仍先用虛擬資金
 
-### OKX
+### OKX（目前未接入現行 runtime）
 
 優點：
 
@@ -39,6 +39,11 @@
 
 - 想測交易機器人
 - 想用官方 demo trading API
+
+但要注意：
+
+- 目前 `TradePulse` 的程式模式尚未提供 `okx-demo` 或 `okx` runtime 選項
+- 所以這裡比較像未來擴充方向，不是現在打開 `.env` 就能直接切換的模式
 
 ### Binance Spot Testnet
 
