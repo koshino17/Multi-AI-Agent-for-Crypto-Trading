@@ -1,11 +1,15 @@
 #!/bin/zsh
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
 cd "$SCRIPT_DIR"
+PYTHON_BIN="$SCRIPT_DIR/.venv/bin/python3"
+if [ ! -x "$PYTHON_BIN" ]; then
+  PYTHON_BIN="python3"
+fi
 
 # Ensure the runner keeps running independently, then open the web console as an
 # optional control surface.
 
-runner_status=$(PYTHONPATH="$SCRIPT_DIR" python3 - <<PY
+runner_status=$(PYTHONPATH="$SCRIPT_DIR" "$PYTHON_BIN" - <<PY
 from pathlib import Path
 from trading_agents.config import load_settings
 from trading_agents.service_manager import start_runner_service
@@ -27,7 +31,7 @@ fi
 pkill -f "trading_agents_web.py" 2>/dev/null
 sleep 1
 
-python3 "$SCRIPT_DIR/trading_agents_web.py" &
+"$PYTHON_BIN" "$SCRIPT_DIR/trading_agents_web.py" &
 web_pid=$!
 
 sleep 2

@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import traceback
+from dataclasses import replace
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -20,6 +21,27 @@ from trading_agents.storage import build_storage_layout
 
 settings = load_settings()
 storage = build_storage_layout(settings.data_root)
+
+
+def _parse_symbol_pool(raw: str) -> tuple[str, ...]:
+    symbols = tuple(item.strip() for item in str(raw).split(",") if item.strip())
+    return symbols or settings.observation_pool
+
+
+def _runtime_settings(mode: str, symbol: str, interval: str):
+    try:
+        monitor_interval = float(interval)
+    except (TypeError, ValueError):
+        monitor_interval = settings.monitor_interval_seconds
+    symbol_pool = _parse_symbol_pool(symbol)
+    primary_symbol = symbol_pool[0] if symbol_pool else settings.symbol
+    return replace(
+        settings,
+        trading_mode=mode or settings.trading_mode,
+        symbol=primary_symbol,
+        observation_pool=symbol_pool,
+        monitor_interval_seconds=monitor_interval,
+    )
 
 
 class AgentController:
@@ -130,7 +152,7 @@ class AgentController:
         self.interval = interval
         if self._runner_is_running() and not force_restart:
             return
-        start_runner_service(settings, Path(__file__).resolve().parent)
+        start_runner_service(_runtime_settings(mode, symbol, interval), Path(__file__).resolve().parent)
         self._reset_stages()
         self.logs.append(f"Runner active: mode={mode}, symbols={symbol}, monitor_poll={interval}s")
 

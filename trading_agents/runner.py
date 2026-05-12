@@ -122,7 +122,10 @@ def _monitor_snapshot(exchange, symbol_pool: list[str], timeframe: str) -> dict:
         market = exchange.fetch_snapshot(candidate_symbol, timeframe, include_microstructure=False)
         account = exchange.fetch_account_state(candidate_symbol)
         prices[candidate_symbol] = float(market.last_price)
-        accounts[candidate_symbol] = (round(account.free_usdt, 6), round(account.base_asset, 8))
+        accounts[candidate_symbol] = (
+            round(float(getattr(account, "free_usdt", 0.0)), 6),
+            round(float(getattr(account, "net_position", getattr(account, "base_asset", 0.0))), 8),
+        )
     return {"prices": prices, "accounts": accounts}
 
 

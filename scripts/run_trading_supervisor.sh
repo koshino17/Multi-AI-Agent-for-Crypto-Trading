@@ -4,9 +4,13 @@ set -euo pipefail
 PROJECT_ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 cd "$PROJECT_ROOT"
 export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python3"
+if [ ! -x "$PYTHON_BIN" ]; then
+  PYTHON_BIN="python3"
+fi
 
 eval "$(
-python3 - <<'PY'
+"$PYTHON_BIN" - <<'PY'
 import shlex
 from trading_agents.config import load_settings
 from trading_agents.storage import build_storage_layout
@@ -68,7 +72,7 @@ while true; do
   fi
 
   echo "$(date '+%F %T %Z') supervisor starting runner"
-  python3 -m trading_agents.runner --mode "$MODE" --symbol "$SYMBOLS" --interval "$MONITOR_INTERVAL" >> "$RUNNER_LOG" 2>&1 &
+  "$PYTHON_BIN" -m trading_agents.runner --mode "$MODE" --symbol "$SYMBOLS" --interval "$MONITOR_INTERVAL" >> "$RUNNER_LOG" 2>&1 &
   child_pid=$!
   if wait "$child_pid"; then
     exit_code=0

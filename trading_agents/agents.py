@@ -620,6 +620,7 @@ class RiskSupervisorAgent:
             memory_controls = strategy_memory.get("controls") or {}
             if not isinstance(memory_controls, dict):
                 memory_controls = {}
+        warnings: list[str] = []
         buffered_available_usdt = max(available_usdt * buy_balance_buffer_pct, 0.0)
         opening_long = idea.action == "buy" and (not perp_mode or position_side != "short")
         opening_short = idea.action == "sell" and perp_mode and position_side != "long"
@@ -666,7 +667,6 @@ class RiskSupervisorAgent:
             # Keep at least one exchange-valid starter order available in demo mode
             # so small-but-viable setups do not get blocked by percentage sizing alone.
             max_notional = max(max_notional, min_order_value_usdt * 1.05)
-        warnings: list[str] = []
         if idea.action == "hold":
             return Approval(False, "no trade proposed", 0.0, warnings)
         effective_min_signal = min_signal_score

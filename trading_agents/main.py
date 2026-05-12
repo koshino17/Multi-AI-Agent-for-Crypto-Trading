@@ -1796,6 +1796,7 @@ def execute_cycle(
     symbol_pool = _parse_symbol_pool(symbol, settings)
     progress("setup", "done", f"observation pool: {', '.join(symbol_pool)}")
     candidates: list[dict] = []
+    candidate_snapshots: dict[str, object] = {}
 
     for candidate_symbol in symbol_pool:
         progress("market_collector", "running", f"fetching {candidate_symbol} {settings.timeframe} market data")
@@ -1803,6 +1804,7 @@ def execute_cycle(
             "market_collector",
             lambda: exchange.fetch_snapshot(candidate_symbol, settings.timeframe),
         )
+        candidate_snapshots[candidate_symbol] = snapshot
         account = exchange.fetch_account_state(candidate_symbol)
         protection_targets = {"take_profit": 0.0, "stop_loss": 0.0, "trailing_stop": 0.0}
         protection_profile: dict[str, float | str] = {}
@@ -2347,7 +2349,7 @@ def execute_cycle(
         buy_balance_buffer_pct=settings.buy_balance_buffer_pct,
         target_leverage=settings.perp_max_leverage if mode == "bybit-demo-perp" else 0.0,
         execution_profile=report["strategy_research"].get("selected_execution_profile", {}),
-        market_snapshot=selected.get("snapshot"),
+        market_snapshot=candidate_snapshots.get(report["selected_symbol"]),
     )
     try:
         result = exchange.execute_order(order)
@@ -2377,7 +2379,7 @@ def execute_cycle(
                 exchange,
                 report["selected_symbol"],
                 settings,
-                selected.get("snapshot"),
+                candidate_snapshots.get(report["selected_symbol"]),
             )
             report["protection_targets"] = protection_targets
             report["protection_profile"] = protection_profile

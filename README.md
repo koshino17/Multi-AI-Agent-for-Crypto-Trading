@@ -71,7 +71,8 @@ python trading_agents_web.py
 最低建議：
 
 - Python `3.9+`
-- macOS / Linux
+- macOS（完整桌面啟動器 / launchd 常駐流程）
+- Linux（可跑核心命令列 runner / research，但不保證 macOS 專用啟動器可用）
 - `Ollama`，若你要跑本地 LLM
 - 穩定網路，若你要抓新聞 / CoinGecko / Alternative.me / Bybit API
 
@@ -588,7 +589,8 @@ Launch Trading Agents.command
 ## 已知限制
 
 - 目前主要以 macOS 開發與驗證
-- `Launch Trading Agents.command` 是 macOS 友善入口
+- `Launch Trading Agents.command`、`caffeinate`、`open`、`launchd` 流程屬於 macOS 專用
+- Linux 可跑核心 Python runner / research 流程，但桌面啟動器與 launchd 常駐腳本不屬於 Linux 支援範圍
 - 若你換到 Linux / Windows，建議直接用命令列啟動
 - `Ollama`、Bybit API、Notion 都屬於外部相依，需要自己先準備
 

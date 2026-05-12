@@ -16,6 +16,33 @@
 
 ---
 
+## v0.11.42 - Fix pilot crashes, web runner overrides, perp monitoring, and Python runtime consistency
+
+### Why
+
+- A fresh code scan found several real operational issues that were too close to the live trading path to leave as paper findings.
+- The most urgent ones could either crash risk approval in pilot mode, ignore Web UI runner settings, or make the runtime depend on a different Python environment than the one we install into.
+- There was also a quiet execution-quality regression: maker-style limit orders were losing market microstructure context because the selected candidate snapshot never made it through to the executor path.
+
+### What Changed
+
+- `trading_agents/agents.py`
+  - Fixed the pilot-mode `warnings` initialization order so `capital_preservation_pilot` no longer risks an `UnboundLocalError` during risk review.
+- `trading_agents_web.py`
+  - The Web UI now builds an override settings object from the submitted `mode`, `symbol`, and `interval` values before restarting the runner, so the form actually controls the launched process.
+- `trading_agents/runner.py`
+  - Monitor snapshots now track perp account state with `net_position`, aligning the heartbeat path with full-cycle account snapshots.
+- `trading_agents/main.py`
+  - The selected candidate's live market snapshot is now preserved out-of-band and passed into order building and protection sync, so maker-style limit pricing can use bid/ask context instead of degrading to `last_price`.
+- `trading_agents/service_manager.py`
+  - Runner launchd and detached fallback paths now prefer the project `.venv` interpreter when available instead of hard-coding `/usr/bin/python3`.
+- `Launch Trading Agents.command`, `scripts/launch_trading_runner.sh`, `scripts/run_trading_supervisor.sh`
+  - Startup scripts now prefer `.venv/bin/python3` when present.
+- `README.md`
+  - Clarified that the project is macOS-first for the desktop launcher / launchd path, while Linux support is command-line oriented rather than parity with the macOS helpers.
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for pilot-mode risk review, Web UI settings overrides, and perp monitor account-state tracking.
+
 ## v0.11.41 - Escalate repeated hold-only windows into tiny maker-grid pilot mode
 
 ### Why

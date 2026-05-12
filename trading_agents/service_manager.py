@@ -4,6 +4,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -32,6 +33,16 @@ def runner_state_root() -> Path:
 
 def runner_service_storage():
     return build_storage_layout(str(runner_state_root()))
+
+
+def preferred_python(project_root: Path) -> Path:
+    venv_python = project_root / ".venv" / "bin" / "python3"
+    if venv_python.exists():
+        return venv_python
+    current_python = Path(sys.executable)
+    if current_python.exists():
+        return current_python
+    return Path("/usr/bin/python3")
 
 
 def sync_runner_runtime(project_root: Path) -> Path:
@@ -80,6 +91,7 @@ def sync_runner_runtime(project_root: Path) -> Path:
 def ensure_runner_launch_agent(settings: Settings, project_root: Path) -> tuple[Path, bool]:
     runtime_root = sync_runner_runtime(project_root)
     entrypoint_path = runtime_root / "run_tradepulse_runner.py"
+    python_path = preferred_python(project_root)
     log_dir = Path.home() / "Library" / "Logs" / "TradePulse"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "launchd-runner.log"
@@ -94,7 +106,7 @@ def ensure_runner_launch_agent(settings: Settings, project_root: Path) -> tuple[
   <string>{RUNNER_LABEL}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/python3</string>
+    <string>{python_path}</string>
     <string>{entrypoint_path}</string>
     <string>--mode</string>
     <string>{settings.trading_mode}</string>
@@ -148,6 +160,7 @@ def start_runner_service(settings: Settings, project_root: Path) -> dict[str, st
     storage = runner_service_storage()
     runtime_root = sync_runner_runtime(project_root)
     entrypoint_path = runtime_root / "run_tradepulse_runner.py"
+    python_path = preferred_python(project_root)
     plist_path, _ = ensure_runner_launch_agent(settings, project_root)
     _clear_stale_pid(storage.runner_supervisor_pid)
     _clear_stale_pid(storage.runner_pid)
@@ -169,14 +182,14 @@ def start_runner_service(settings: Settings, project_root: Path) -> dict[str, st
                 "label": RUNNER_LABEL,
                 "pid": str(runner_pid),
                 "plist": str(plist_path),
-                "command": f"/usr/bin/python3 {entrypoint_path}",
+                "command": f"{python_path} {entrypoint_path}",
             }
         time.sleep(0.5)
 
     command = (
         f"cd {shlex.quote(str(runtime_root))} && "
         f"export PYTHONPATH={shlex.quote(str(runtime_root))} && "
-        f"nohup /usr/bin/python3 {shlex.quote(str(entrypoint_path))} "
+        f"nohup {shlex.quote(str(python_path))} {shlex.quote(str(entrypoint_path))} "
         f"--mode {shlex.quote(str(settings.trading_mode))} "
         f"--symbol {shlex.quote(','.join(settings.observation_pool) or settings.symbol)} "
         f"--interval {shlex.quote(str(settings.monitor_interval_seconds))} "
@@ -193,7 +206,7 @@ def start_runner_service(settings: Settings, project_root: Path) -> dict[str, st
                 "label": "detached-runner",
                 "pid": str(runner_pid),
                 "plist": str(plist_path),
-                "command": f"/usr/bin/python3 {entrypoint_path}",
+                "command": f"{python_path} {entrypoint_path}",
             }
         time.sleep(0.5)
     raise RuntimeError("runner service failed to stay alive via launchd or detached fallback")

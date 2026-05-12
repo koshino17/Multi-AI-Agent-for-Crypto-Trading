@@ -4,9 +4,13 @@ set -euo pipefail
 PROJECT_ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 cd "$PROJECT_ROOT"
 export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python3"
+if [ ! -x "$PYTHON_BIN" ]; then
+  PYTHON_BIN="python3"
+fi
 
 eval "$(
-python3 - <<'PY'
+"$PYTHON_BIN" - <<'PY'
 import shlex
 from trading_agents.config import load_settings
 from trading_agents.storage import build_storage_layout
@@ -45,4 +49,4 @@ if [ -f "$NOTION_LOCK" ]; then
 fi
 
 exec >> "$RUNNER_LOG" 2>&1
-exec python3 -m trading_agents.runner --mode "$MODE" --symbol "$SYMBOLS" --interval "$MONITOR_INTERVAL"
+exec "$PYTHON_BIN" -m trading_agents.runner --mode "$MODE" --symbol "$SYMBOLS" --interval "$MONITOR_INTERVAL"
