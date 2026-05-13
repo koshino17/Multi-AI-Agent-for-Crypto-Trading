@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 from trading_agents.agents import RiskSupervisorAgent, StrategyReflectionAgent
+from trading_agents.llm import _trace_date_label
 from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyCandidate, StrategyResearchSnapshot, TradeIdea
+from trading_agents.reporting import write_ground_truth_artifacts, write_oracle_postmortem_artifacts
 from trading_agents.research import StrategyResearchAgent
 from trading_agents.runner import _monitor_snapshot
 from trading_agents_web import _runtime_settings
@@ -140,6 +143,59 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertAlmostEqual(float(reflection.controls.get("hold_bars_scale", 1.0)), 1.0, places=2)
         self.assertTrue(bool(reflection.experiment.get("sample_guard_active")))
 
+    def test_strategy_reflection_clears_stale_pilot_controls_when_not_reaffirmed(self) -> None:
+        agent = StrategyReflectionAgent(llm_client=None)
+        daily_summary = {
+            "blocked_reason_counts": {},
+            "rejection_reason_counts": {},
+            "selected_symbol_counts": {"SOL/USDT": 10},
+            "financial_snapshot": {
+                "daily_pnl_usdt": 0.0,
+                "realized_pnl_usdt": 0.0,
+                "unrealized_pnl_usdt": 0.0,
+                "daily_fees_usdt": 0.0,
+            },
+            "accepted_source_counts": {"fallback": 0, "base_strategy": 0},
+            "accepted_orders": 0,
+            "blocked": 0,
+            "loss_attribution": {"closed_episode_count": 0},
+            "external_benchmarks": {"top_candidates": [{}]},
+        }
+        reflection_context = {
+            "live_symbols": ["SOL/USDT"],
+            "current_live_symbol": "SOL/USDT",
+            "lookback_days": 5,
+            "negative_day_count": 0,
+            "negative_streak": 0,
+            "positive_streak": 2,
+            "low_participation_window_count": 3,
+            "low_participation_streak": 3,
+            "carry_in_loss_window_count": 0,
+            "carry_in_loss_streak": 0,
+            "stagnation_exit_window_count": 0,
+            "stagnation_exit_streak": 0,
+            "previous_controls": {
+                "entry_mode": "capital_preservation_pilot",
+                "pilot_candidate_id": "grid_range_reversion_maker_v1",
+                "pilot_max_position_pct": 0.10,
+            },
+            "current_window_accepted_orders": 0,
+            "current_window_closed_episodes": 0,
+            "strategy_research_recommendation": {
+                "candidate_id": "grid_range_reversion_maker_v1",
+                "verdict": "research_only",
+            },
+            "live_symbol_benchmark": {
+                "candidate_id": "bollinger_keltner_extreme_reversion_v1",
+                "expectancy_pct": -0.01,
+                "profit_factor": 0.95,
+                "uses_custom_cost_model": False,
+            },
+        }
+        reflection = agent.evaluate("2026-05-13-day", daily_summary, reflection_context=reflection_context)
+        self.assertEqual(str(reflection.controls.get("entry_mode", "")), "normal")
+        self.assertNotIn("pilot_candidate_id", reflection.controls)
+
     def test_strategy_research_uses_memory_to_bias_candidate_selection(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             library_path = Path(tmpdir) / "strategy_library.json"
@@ -195,6 +251,65 @@ class RuntimeRegressionTests(unittest.TestCase):
                 },
             )
             self.assertEqual(result.selected_strategy_id, "grid_range_reversion_maker_v1")
+
+    def test_trace_date_label_uses_noon_anchor(self) -> None:
+        before_noon = datetime(2026, 5, 12, 1, 0, tzinfo=timezone.utc)
+        after_noon = datetime(2026, 5, 12, 8, 0, tzinfo=timezone.utc)
+        self.assertEqual(_trace_date_label(before_noon), "2026-05-11")
+        self.assertEqual(_trace_date_label(after_noon), "2026-05-12")
+
+    def test_ground_truth_and_oracle_artifacts_write_expected_content(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            summary = {
+                "date_label": "2026-05-12",
+                "window_start": "2026-05-11T12:00:00+08:00",
+                "window_end": "2026-05-12T12:00:00+08:00",
+                "total": 100,
+                "accepted_orders": 0,
+                "holds": 90,
+                "action_counts": {"hold": 90, "buy": 10},
+                "executed_trade_timeline": [],
+                "financial_snapshot": {
+                    "daily_pnl_usdt": -1.2,
+                    "daily_pnl_pct": -0.25,
+                    "realized_pnl_usdt": -0.8,
+                    "unrealized_pnl_usdt": 0.0,
+                    "daily_fees_usdt": 0.2,
+                },
+                "market_path_review": {
+                    "symbol": "SOL/USDT",
+                    "summary": "rebound dominated the window",
+                    "max_drawdown_pct": -1.5,
+                    "max_rebound_pct": 2.2,
+                    "max_drawdown_action_counts": {"hold": 8, "sell": 0},
+                    "max_rebound_action_counts": {"hold": 20, "buy": 1},
+                },
+                "loss_attribution": {
+                    "carry_in_closed_count": 1,
+                    "focus_symbol_benchmark": {
+                        "candidate_id": "grid_range_reversion_maker_v1",
+                        "expectancy_pct": 0.12,
+                        "profit_factor": 2.0,
+                    },
+                },
+                "strategy_research_latest": {
+                    "recommendation": {
+                        "candidate_id": "grid_range_reversion_maker_v1",
+                        "verdict": "shadow_candidate",
+                    }
+                },
+                "shadow_benchmark_watch": {"watch_candidate_id": "grid_range_reversion_maker_v1"},
+                "trade_review": {"episodes": []},
+                "benchmark_watch_candidate_current": {},
+            }
+            gt_paths = write_ground_truth_artifacts(base, "2026-05-12", summary)
+            oracle_paths = write_oracle_postmortem_artifacts(base, "2026-05-12", summary)
+            self.assertTrue(Path(gt_paths["json_path"]).exists())
+            self.assertTrue(Path(oracle_paths["json_path"]).exists())
+            oracle_payload = json.loads(Path(oracle_paths["json_path"]).read_text())
+            self.assertIn("carry_in_drag", oracle_payload["root_cause_tags"])
+            self.assertIn("missed_rebound_participation", oracle_payload["root_cause_tags"])
 
 
 if __name__ == "__main__":

@@ -16,6 +16,54 @@
 
 ---
 
+## v0.11.46 - Stabilize review/reflection prompt execution
+
+### Why
+
+- The new agent trace archive immediately exposed that `DailyReviewAgent` and `StrategyReflectionAgent` were still using the same short timeout as intraday decision calls.
+- That meant the traces were useful, but they often captured `timed out` rather than a usable review or reflection payload, which blocked the whole point of making the postmortem layer easier to inspect.
+
+### What Changed
+
+- `trading_agents/config.py`
+  - Added `strategy_review_llm_timeout_seconds`, defaulting to `60.0`, so slower review-style prompts can be configured separately from fast intraday calls.
+
+- `trading_agents/main.py`
+  - Added a dedicated review/reflection `OllamaClient`.
+  - `DailyReviewAgent` and `StrategyReflectionAgent` now use this longer-timeout client, while faster strategist / risk / selector calls continue using the regular `LLM_TIMEOUT_SECONDS`.
+
+- `.env.example` / `README.md`
+  - Added `STRATEGY_REVIEW_LLM_TIMEOUT_SECONDS=60` to the documented runtime configuration so repo settings and live runtime knobs stay aligned.
+
+## v0.11.45 - Add agent trace archive and machine-readable ground truth
+
+### Why
+
+- We had richer daily reports, but when a human wanted to inspect “what prompt did the agent actually send?” there was still no direct artifact to open.
+- Market-path review already existed in the daily report, but there was no machine-readable `ground truth` bundle or hindsight-style oracle artifact that could be reused by research or prompt-improvement workflows.
+
+### What Changed
+
+- `trading_agents/llm.py` / `trading_agents/storage.py`
+  - Every LLM-backed agent call now writes an `agent trace` archive under `service/agent_traces/<date_label>/`.
+  - Each agent gets:
+    - `<agent>.md` with timestamped prompt/response sections
+    - `<agent>.jsonl` with structured trace payloads
+  - Trace labels follow the same noon-window date anchor as daily reports.
+- `trading_agents/reporting.py`
+  - Daily summaries now expose artifact paths for:
+    - `Agent Trace Archive`
+    - `Ground Truth`
+    - `Oracle Postmortem`
+  - Added machine-readable + markdown artifact writers for:
+    - `service/ground_truth/<date_label>.json|md`
+    - `service/oracle_postmortems/<date_label>.json|md`
+  - Daily reports now include a `Research Artifacts` section so these paths are visible without digging through the filesystem.
+- `trading_agents/main.py`
+  - Report finalization now refreshes the above artifacts for both active and completed noon windows whenever daily reports are rebuilt.
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for noon-anchor trace labeling and for writing ground-truth/oracle artifacts.
+
 ## v0.11.44 - Turn daily reflection into bounded experiments with control-impact reporting
 
 ### Why

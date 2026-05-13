@@ -74,6 +74,325 @@ def _order_flow_summary(snapshot: MarketSnapshot) -> str:
     )
 
 
+def _daily_summary_llm_context(daily_summary: dict) -> dict[str, object]:
+    financial = daily_summary.get("financial_snapshot") or {}
+    latest = daily_summary.get("latest") or {}
+    symbol_postmortem = daily_summary.get("symbol_postmortem") or {}
+    market_path = daily_summary.get("market_path_review") or {}
+    loss = daily_summary.get("loss_attribution") or {}
+    external_benchmarks = daily_summary.get("external_benchmarks") or {}
+    top_benchmark = (external_benchmarks.get("top_candidates") or [{}])[0]
+    focus_benchmark = loss.get("focus_symbol_benchmark") or {}
+    if not isinstance(top_benchmark, dict):
+        top_benchmark = {}
+    if not isinstance(focus_benchmark, dict):
+        focus_benchmark = {}
+    strategy_memory = daily_summary.get("strategy_memory_current") or {}
+    strategy_research_latest = daily_summary.get("strategy_research_latest") or {}
+    recommendation = strategy_research_latest.get("recommendation") or {}
+    shadow_watch = daily_summary.get("shadow_benchmark_watch") or {}
+    policy_exit = daily_summary.get("policy_exit_diagnostics") or {}
+    latest_idea = latest.get("idea") or {}
+    latest_approval = latest.get("approval") or {}
+    latest_research = latest.get("strategy_research") or {}
+    return {
+        "date_label": daily_summary.get("date_label", ""),
+        "window_start": daily_summary.get("window_start", ""),
+        "window_end": daily_summary.get("window_end", ""),
+        "operations": {
+            "total_decisions": int(daily_summary.get("total", 0) or 0),
+            "trade_proposals": int(daily_summary.get("proposals", 0) or 0),
+            "accepted_orders": int(daily_summary.get("accepted_orders", 0) or 0),
+            "rejected_orders": int(daily_summary.get("rejected_orders", 0) or 0),
+            "holds": int(daily_summary.get("holds", 0) or 0),
+            "blocked": int(daily_summary.get("blocked", 0) or 0),
+            "llm_wake_rate_pct": float(daily_summary.get("llm_wake_rate_pct", 0.0) or 0.0),
+            "action_counts": daily_summary.get("action_counts") or {},
+            "selected_symbol_counts": daily_summary.get("selected_symbol_counts") or {},
+            "blocked_reason_counts": daily_summary.get("blocked_reason_counts") or {},
+            "rejection_reason_counts": daily_summary.get("rejection_reason_counts") or {},
+        },
+        "financial": {
+            "daily_pnl_usdt": float(financial.get("daily_pnl_usdt", 0.0) or 0.0),
+            "daily_pnl_pct": float(financial.get("daily_pnl_pct", 0.0) or 0.0),
+            "realized_pnl_usdt": float(financial.get("realized_pnl_usdt", 0.0) or 0.0),
+            "unrealized_pnl_usdt": float(financial.get("unrealized_pnl_usdt", 0.0) or 0.0),
+            "daily_fees_usdt": float(financial.get("daily_fees_usdt", 0.0) or 0.0),
+            "capital_utilization_pct": float(financial.get("capital_utilization_pct", 0.0) or 0.0),
+            "available_usdt": float(financial.get("available_usdt", 0.0) or 0.0),
+            "gross_exposure_pct": float(financial.get("gross_exposure_pct", financial.get("capital_utilization_pct", 0.0)) or 0.0),
+        },
+        "latest_decision": {
+            "symbol": latest.get("selected_symbol", ""),
+            "action": latest_idea.get("action", ""),
+            "score": float((latest_idea.get("score", 0.0)) or 0.0),
+            "decision_source": latest.get("decision_source", ""),
+            "approval_reason": latest_approval.get("reason", ""),
+            "selected_strategy_id": latest_research.get("selected_strategy_id", ""),
+            "selected_execution_profile": latest_research.get("selected_execution_profile", {}),
+            "current_signal": latest_research.get("current_signal", ""),
+            "current_adx": float(latest_research.get("current_adx", 0.0) or 0.0),
+            "current_volume_ratio": float(latest_research.get("current_volume_ratio", 0.0) or 0.0),
+        },
+        "market_path_review": {
+            "symbol": market_path.get("symbol", ""),
+            "summary": market_path.get("summary", ""),
+            "max_drawdown_pct": float(market_path.get("max_drawdown_pct", 0.0) or 0.0),
+            "max_rebound_pct": float(market_path.get("max_rebound_pct", 0.0) or 0.0),
+            "max_drawdown_action_counts": market_path.get("max_drawdown_action_counts") or {},
+            "max_rebound_action_counts": market_path.get("max_rebound_action_counts") or {},
+        },
+        "symbol_postmortem": {
+            "symbol": symbol_postmortem.get("symbol", ""),
+            "summary": symbol_postmortem.get("summary", ""),
+            "improvement_directions": (symbol_postmortem.get("improvement_directions") or [])[:4],
+        },
+        "loss_attribution": {
+            "primary_driver": loss.get("primary_driver", ""),
+            "carry_in_closed_count": int(loss.get("carry_in_closed_count", 0) or 0),
+            "new_closed_count": int(loss.get("new_closed_count", 0) or 0),
+            "live_trade_expectancy_pct": float(loss.get("live_trade_expectancy_pct", 0.0) or 0.0),
+            "live_profit_factor": float(loss.get("live_profit_factor", 0.0) or 0.0),
+            "cost_impact_ratio": loss.get("cost_impact_ratio"),
+            "closed_episode_count": int(loss.get("closed_episode_count", 0) or 0),
+        },
+        "benchmark_context": {
+            "top_benchmark": {
+                "candidate_id": top_benchmark.get("candidate_id", ""),
+                "symbol": top_benchmark.get("symbol", ""),
+                "expectancy_pct": float(top_benchmark.get("expectancy_pct", 0.0) or 0.0),
+                "profit_factor": float(top_benchmark.get("profit_factor", 0.0) or 0.0),
+            },
+            "focus_symbol_benchmark": {
+                "candidate_id": focus_benchmark.get("candidate_id", ""),
+                "symbol": focus_benchmark.get("symbol", ""),
+                "expectancy_pct": float(focus_benchmark.get("expectancy_pct", 0.0) or 0.0),
+                "profit_factor": float(focus_benchmark.get("profit_factor", 0.0) or 0.0),
+                "trade_count": int(focus_benchmark.get("trade_count", 0) or 0),
+                "uses_custom_cost_model": bool(focus_benchmark.get("uses_custom_cost_model", False)),
+            },
+            "strategy_research_recommendation": {
+                "candidate_id": recommendation.get("candidate_id", ""),
+                "verdict": recommendation.get("verdict", ""),
+                "rationale": recommendation.get("rationale", ""),
+            },
+            "shadow_benchmark_watch": {
+                "watch_candidate_id": shadow_watch.get("watch_candidate_id", ""),
+                "baseline_candidate_id": shadow_watch.get("baseline_candidate_id", ""),
+                "verdict": shadow_watch.get("verdict", ""),
+                "delta_expectancy_pct": float(shadow_watch.get("delta_expectancy_pct", 0.0) or 0.0),
+                "delta_profit_factor": float(shadow_watch.get("delta_profit_factor", 0.0) or 0.0),
+                "next_step": shadow_watch.get("next_step", ""),
+            },
+        },
+        "policy_exit": {
+            "summary": policy_exit.get("summary", ""),
+            "stagnation_exit_count": int(policy_exit.get("stagnation_exit_count", 0) or 0),
+            "accepted_policy_exit_count": int(policy_exit.get("accepted_policy_exit_count", 0) or 0),
+        },
+        "learning_controls": (strategy_memory.get("controls") or {}) if isinstance(strategy_memory, dict) else {},
+        "control_impact": daily_summary.get("control_impact") or {},
+    }
+
+
+def _reflection_context_llm_context(reflection_context: dict | None) -> dict[str, object]:
+    context = reflection_context or {}
+    recent_windows = context.get("recent_windows") or []
+    compact_windows: list[dict[str, object]] = []
+    for item in recent_windows[-5:]:
+        if not isinstance(item, dict):
+            continue
+        compact_windows.append(
+            {
+                "date": item.get("date", ""),
+                "daily_pnl_usdt": float(item.get("daily_pnl_usdt", 0.0) or 0.0),
+                "equity_delta_usdt": float(item.get("equity_delta_usdt", 0.0) or 0.0),
+                "accepted_orders": int(item.get("accepted_orders", 0) or 0),
+                "hold_ratio": float(item.get("hold_ratio", 0.0) or 0.0),
+                "carry_in_closed_count": int(item.get("carry_in_closed_count", 0) or 0),
+                "stagnation_exit_count": int(item.get("stagnation_exit_count", 0) or 0),
+                "benchmark_candidate_id": str(item.get("benchmark_candidate_id", "") or ""),
+                "benchmark_expectancy_pct": float(item.get("benchmark_expectancy_pct", 0.0) or 0.0),
+                "benchmark_profit_factor": float(item.get("benchmark_profit_factor", 0.0) or 0.0),
+                "low_participation_window": bool(item.get("low_participation_window", False)),
+            }
+        )
+    return {
+        "lookback_days": int(context.get("lookback_days", 0) or 0),
+        "recent_windows": compact_windows,
+        "negative_day_count": int(context.get("negative_day_count", 0) or 0),
+        "negative_streak": int(context.get("negative_streak", 0) or 0),
+        "positive_streak": int(context.get("positive_streak", 0) or 0),
+        "low_participation_window_count": int(context.get("low_participation_window_count", 0) or 0),
+        "low_participation_streak": int(context.get("low_participation_streak", 0) or 0),
+        "carry_in_loss_window_count": int(context.get("carry_in_loss_window_count", 0) or 0),
+        "carry_in_loss_streak": int(context.get("carry_in_loss_streak", 0) or 0),
+        "stagnation_exit_window_count": int(context.get("stagnation_exit_window_count", 0) or 0),
+        "stagnation_exit_streak": int(context.get("stagnation_exit_streak", 0) or 0),
+        "benchmark_leader_streak": int(context.get("benchmark_leader_streak", 0) or 0),
+        "repeated_benchmark_leader_id": str(context.get("repeated_benchmark_leader_id", "") or ""),
+        "multi_day_pnl_usdt": float(context.get("multi_day_pnl_usdt", 0.0) or 0.0),
+        "drawdown_pct": float(context.get("drawdown_pct", 0.0) or 0.0),
+        "current_equity_usdt": float(context.get("current_equity_usdt", 0.0) or 0.0),
+        "configured_initial_usdt": float(context.get("configured_initial_usdt", 0.0) or 0.0),
+        "live_trade_expectancy_pct": float(context.get("live_trade_expectancy_pct", 0.0) or 0.0),
+        "live_profit_factor": float(context.get("live_profit_factor", 0.0) or 0.0),
+        "restore_ready": bool(context.get("restore_ready", False)),
+        "force_fallback_base_only": bool(context.get("force_fallback_base_only", False)),
+        "capital_preservation_mode": bool(context.get("capital_preservation_mode", False)),
+        "strategy_research_recommendation": {
+            "candidate_id": ((context.get("strategy_research_recommendation") or {}).get("candidate_id", "")),
+            "verdict": ((context.get("strategy_research_recommendation") or {}).get("verdict", "")),
+            "rationale": ((context.get("strategy_research_recommendation") or {}).get("rationale", "")),
+        },
+        "live_symbol_benchmark": {
+            "candidate_id": ((context.get("live_symbol_benchmark") or {}).get("candidate_id", "")),
+            "expectancy_pct": float(((context.get("live_symbol_benchmark") or {}).get("expectancy_pct", 0.0)) or 0.0),
+            "profit_factor": float(((context.get("live_symbol_benchmark") or {}).get("profit_factor", 0.0)) or 0.0),
+            "trade_count": int(((context.get("live_symbol_benchmark") or {}).get("trade_count", 0)) or 0),
+            "uses_custom_cost_model": bool(((context.get("live_symbol_benchmark") or {}).get("uses_custom_cost_model", False))),
+        },
+        "previous_controls": {
+            "fallback_entry_mode": ((context.get("previous_controls") or {}).get("fallback_entry_mode", "")),
+            "cooldown_scale": float(((context.get("previous_controls") or {}).get("cooldown_scale", 0.0)) or 0.0),
+            "benchmark_watch_candidate": ((context.get("previous_controls") or {}).get("benchmark_watch_candidate", "")),
+            "entry_mode": ((context.get("previous_controls") or {}).get("entry_mode", "")),
+            "pilot_candidate_id": ((context.get("previous_controls") or {}).get("pilot_candidate_id", "")),
+            "pilot_max_position_pct": float(((context.get("previous_controls") or {}).get("pilot_max_position_pct", 0.0)) or 0.0),
+        },
+        "previous_experiment": {
+            "experiment_id": ((context.get("previous_experiment") or {}).get("experiment_id", "")),
+            "trigger": ((context.get("previous_experiment") or {}).get("trigger", "")),
+            "ttl_windows": int(((context.get("previous_experiment") or {}).get("ttl_windows", 0)) or 0),
+            "status": ((context.get("previous_experiment") or {}).get("status", "")),
+        },
+        "current_window_accepted_orders": int(context.get("current_window_accepted_orders", 0) or 0),
+        "current_window_closed_episodes": int(context.get("current_window_closed_episodes", 0) or 0),
+        "completed_date_label": str(context.get("completed_date_label", "") or ""),
+    }
+
+
+def _daily_summary_llm_brief(daily_summary: dict) -> str:
+    operations = daily_summary.get("operations") or {}
+    financial = daily_summary.get("financial") or {}
+    latest = daily_summary.get("latest_decision") or {}
+    market_path = daily_summary.get("market_path_review") or {}
+    symbol_postmortem = daily_summary.get("symbol_postmortem") or {}
+    loss = daily_summary.get("loss_attribution") or {}
+    benchmark = daily_summary.get("benchmark_context") or {}
+    focus_benchmark = benchmark.get("focus_symbol_benchmark") or {}
+    recommendation = benchmark.get("strategy_research_recommendation") or {}
+    shadow_watch = benchmark.get("shadow_benchmark_watch") or {}
+    controls = daily_summary.get("learning_controls") or {}
+    return "\n".join(
+        [
+            f"window={daily_summary.get('window_start', '')} -> {daily_summary.get('window_end', '')}",
+            (
+                "operations: "
+                f"decisions={int(operations.get('total_decisions', 0) or 0)}, "
+                f"proposals={int(operations.get('trade_proposals', 0) or 0)}, "
+                f"accepted={int(operations.get('accepted_orders', 0) or 0)}, "
+                f"holds={int(operations.get('holds', 0) or 0)}, "
+                f"wake_rate={float(operations.get('llm_wake_rate_pct', 0.0) or 0.0):.1f}%"
+            ),
+            (
+                "financial: "
+                f"daily_pnl={float(financial.get('daily_pnl_usdt', 0.0) or 0.0):+.2f}usdt "
+                f"({float(financial.get('daily_pnl_pct', 0.0) or 0.0):+.2f}%), "
+                f"fees={float(financial.get('daily_fees_usdt', 0.0) or 0.0):.2f}, "
+                f"utilization={float(financial.get('capital_utilization_pct', 0.0) or 0.0):.1f}%"
+            ),
+            (
+                "latest_decision: "
+                f"symbol={latest.get('symbol', '')}, action={latest.get('action', '')}, "
+                f"source={latest.get('decision_source', '')}, strategy={latest.get('selected_strategy_id', '')}, "
+                f"signal={latest.get('current_signal', '')}, adx={float(latest.get('current_adx', 0.0) or 0.0):.2f}, "
+                f"volume_ratio={float(latest.get('current_volume_ratio', 0.0) or 0.0):.2f}"
+            ),
+            (
+                "market_path: "
+                f"symbol={market_path.get('symbol', '')}, "
+                f"max_drawdown={float(market_path.get('max_drawdown_pct', 0.0) or 0.0):+.2f}%, "
+                f"max_rebound={float(market_path.get('max_rebound_pct', 0.0) or 0.0):+.2f}%"
+            ),
+            f"symbol_postmortem: {symbol_postmortem.get('summary', '')}",
+            (
+                "loss_attribution: "
+                f"driver={loss.get('primary_driver', '')}, "
+                f"carry_in_closed={int(loss.get('carry_in_closed_count', 0) or 0)}, "
+                f"new_closed={int(loss.get('new_closed_count', 0) or 0)}, "
+                f"expectancy={float(loss.get('live_trade_expectancy_pct', 0.0) or 0.0):+.2f}%, "
+                f"pf={float(loss.get('live_profit_factor', 0.0) or 0.0):.2f}"
+            ),
+            (
+                "benchmark: "
+                f"focus={focus_benchmark.get('candidate_id', '')} "
+                f"exp={float(focus_benchmark.get('expectancy_pct', 0.0) or 0.0):+.2f}% "
+                f"pf={float(focus_benchmark.get('profit_factor', 0.0) or 0.0):.2f}; "
+                f"research={recommendation.get('candidate_id', '')}/{recommendation.get('verdict', '')}; "
+                f"shadow={shadow_watch.get('watch_candidate_id', '')}/{shadow_watch.get('verdict', '')}"
+            ),
+            f"learning_controls: {json.dumps(controls, ensure_ascii=False)}",
+        ]
+    )
+
+
+def _reflection_context_llm_brief(reflection_context: dict) -> str:
+    recent = []
+    for item in reflection_context.get("recent_windows") or []:
+        if not isinstance(item, dict):
+            continue
+        recent.append(
+            (
+                f"{item.get('date', '')}: pnl={float(item.get('daily_pnl_usdt', 0.0) or 0.0):+.2f}, "
+                f"accepted={int(item.get('accepted_orders', 0) or 0)}, "
+                f"hold_ratio={float(item.get('hold_ratio', 0.0) or 0.0):.2f}, "
+                f"benchmark={item.get('benchmark_candidate_id', '')} "
+                f"exp={float(item.get('benchmark_expectancy_pct', 0.0) or 0.0):+.2f}%"
+            )
+        )
+    return "\n".join(
+        [
+            f"lookback_days={int(reflection_context.get('lookback_days', 0) or 0)}",
+            f"recent_windows={'; '.join(recent)}",
+            (
+                "streaks: "
+                f"negative={int(reflection_context.get('negative_streak', 0) or 0)}, "
+                f"positive={int(reflection_context.get('positive_streak', 0) or 0)}, "
+                f"low_participation={int(reflection_context.get('low_participation_streak', 0) or 0)}, "
+                f"carry_in={int(reflection_context.get('carry_in_loss_streak', 0) or 0)}, "
+                f"stagnation={int(reflection_context.get('stagnation_exit_streak', 0) or 0)}"
+            ),
+            (
+                "portfolio: "
+                f"multi_day_pnl={float(reflection_context.get('multi_day_pnl_usdt', 0.0) or 0.0):+.2f}, "
+                f"drawdown={float(reflection_context.get('drawdown_pct', 0.0) or 0.0):+.2f}%, "
+                f"equity={float(reflection_context.get('current_equity_usdt', 0.0) or 0.0):.2f}, "
+                f"initial={float(reflection_context.get('configured_initial_usdt', 0.0) or 0.0):.2f}"
+            ),
+            (
+                "live_metrics: "
+                f"expectancy={float(reflection_context.get('live_trade_expectancy_pct', 0.0) or 0.0):+.2f}%, "
+                f"pf={float(reflection_context.get('live_profit_factor', 0.0) or 0.0):.2f}, "
+                f"capital_preservation={bool(reflection_context.get('capital_preservation_mode', False))}"
+            ),
+            (
+                "research: "
+                f"candidate={((reflection_context.get('strategy_research_recommendation') or {}).get('candidate_id', ''))}, "
+                f"verdict={((reflection_context.get('strategy_research_recommendation') or {}).get('verdict', ''))}, "
+                f"benchmark={((reflection_context.get('live_symbol_benchmark') or {}).get('candidate_id', ''))}"
+            ),
+            f"previous_controls: {json.dumps(reflection_context.get('previous_controls') or {}, ensure_ascii=False)}",
+            f"previous_experiment: {json.dumps(reflection_context.get('previous_experiment') or {}, ensure_ascii=False)}",
+            (
+                "sample_guard: "
+                f"accepted_orders={int(reflection_context.get('current_window_accepted_orders', 0) or 0)}, "
+                f"closed_episodes={int(reflection_context.get('current_window_closed_episodes', 0) or 0)}"
+            ),
+        ]
+    )
+
+
 class MarketCollectorAgent:
     name = "market_collector"
 
@@ -191,7 +510,15 @@ class StrategistAgent:
                     "In perp mode, buy means bullish intent (open long or close short) and sell means bearish intent (open short or close long). "
                     "If there is no available USDT, avoid opening new exposure. "
                     "In demo training mode, prefer positive-expectancy setups even when fear sentiment is elevated."
-                )
+                ),
+                trace={
+                    "agent": self.name,
+                    "stage": "evaluate",
+                    "symbol": snapshot.symbol,
+                    "timeframe": snapshot.timeframe,
+                    "selected_strategy_id": strategy_research.selected_strategy_id,
+                    "trading_mode": trading_mode,
+                },
             )
             action = str(response.get("action", fallback.action)).lower()
             if action not in {"buy", "sell", "hold"}:
@@ -249,7 +576,13 @@ class StrategistAgent:
                     f"position_side={position_side}; "
                     f"trading_mode={trading_mode}; "
                     f"strategy_memory={self._strategy_memory_summary(strategy_memory)}"
-                )
+                ),
+                trace={
+                    "agent": self.name,
+                    "stage": "refine_with_risk_feedback",
+                    "position_side": position_side,
+                    "trading_mode": trading_mode,
+                },
             )
             revised = TradeIdea(
                 action=str(response.get("action", idea.action)).lower(),
@@ -830,7 +1163,15 @@ class RiskSupervisorAgent:
                         f"strategy_memory={json.dumps(strategy_memory or {}, ensure_ascii=False)}; "
                         f"aggressive_demo_mode={str(aggressive_mode).lower()}; "
                         f"trading_mode={trading_mode}"
-                    )
+                    ),
+                    trace={
+                        "agent": self.name,
+                        "stage": "review",
+                        "selected_strategy_id": strategy_research.selected_strategy_id,
+                        "position_side": position_side,
+                        "trading_mode": trading_mode,
+                        "cycle_mode": cycle_mode,
+                    },
                 )
                 llm_approved = bool(response.get("approved", True))
                 llm_reason = str(response.get("reason", "risk checks passed"))
@@ -877,7 +1218,12 @@ class RiskSupervisorAgent:
                     f"backtest_summary={backtest.summary}; "
                     f"strategy_research_summary={strategy_research.summary}; "
                     f"strategy_memory={json.dumps(strategy_memory or {}, ensure_ascii=False)}"
-                )
+                ),
+                trace={
+                    "agent": self.name,
+                    "stage": "critique",
+                    "selected_strategy_id": strategy_research.selected_strategy_id,
+                },
             )
             concern = str(response.get("concern", "")).strip()
             return concern or fallback
@@ -989,7 +1335,12 @@ class PostTradeEvaluatorAgent:
                     f"idea_action={idea.action}; idea_score={idea.score:.2f}; "
                     f"idea_invalidation={idea.invalidation}; result_status={status}; "
                     f"result={result}"
-                )
+                ),
+                trace={
+                    "agent": self.name,
+                    "stage": "evaluate",
+                    "result_status": status,
+                },
             )
             grade = str(response.get("grade", fallback.grade)).upper()
             if grade not in {"A", "B", "C", "D"}:
@@ -1027,6 +1378,8 @@ class DailyReviewAgent:
         fallback = self._fallback_review(date_label, daily_summary)
         if self.llm_client is None:
             return fallback
+        llm_summary = _daily_summary_llm_context(daily_summary)
+        llm_brief = _daily_summary_llm_brief(llm_summary)
         try:
             response = self.llm_client.generate_json(
                 (
@@ -1036,8 +1389,14 @@ class DailyReviewAgent:
                     "improvement_directions, action_items. "
                     "improvement_directions and action_items must be short arrays of concrete next steps. "
                     f"date_label={date_label}; "
-                    f"daily_summary={json.dumps(daily_summary, ensure_ascii=False)}"
-                )
+                    f"daily_summary_brief=\n{llm_brief}"
+                ),
+                trace={
+                    "agent": self.name,
+                    "stage": "evaluate",
+                    "date_label": date_label,
+                    "window": date_label,
+                },
             )
             directions = response.get("improvement_directions", fallback.improvement_directions)
             if not isinstance(directions, list):
@@ -1350,6 +1709,10 @@ class StrategyReflectionAgent:
         fallback = self._fallback(slot, daily_summary, reflection_context=reflection_context)
         if self.llm_client is None:
             return fallback
+        llm_summary = _daily_summary_llm_context(daily_summary)
+        llm_reflection_context = _reflection_context_llm_context(reflection_context)
+        llm_summary_brief = _daily_summary_llm_brief(llm_summary)
+        llm_reflection_brief = _reflection_context_llm_brief(llm_reflection_context)
         try:
             response = self.llm_client.generate_json(
                 (
@@ -1358,9 +1721,16 @@ class StrategyReflectionAgent:
                     "Return JSON with keys summary, biases, risk_adjustments, focus_symbols, controls. "
                     "controls may include fallback_entry_mode (normal/base_only), entry_mode (normal/capital_preservation), cooldown_scale (0.25-1.0), "
                     "and benchmark_watch_candidate / benchmark_watch_symbol. "
-                    f"slot={slot}; daily_summary={json.dumps(daily_summary, ensure_ascii=False)}; "
-                    f"reflection_context={json.dumps(reflection_context or {}, ensure_ascii=False)}"
-                )
+                    f"slot={slot}; daily_summary_brief=\n{llm_summary_brief}\n"
+                    f"reflection_context_brief=\n{llm_reflection_brief}"
+                ),
+                trace={
+                    "agent": self.name,
+                    "stage": "evaluate",
+                    "slot": slot,
+                    "date_label": str((reflection_context or {}).get("completed_date_label", "") or ""),
+                    "window": str((reflection_context or {}).get("completed_date_label", "") or ""),
+                },
             )
             biases = response.get("biases", fallback.biases)
             adjustments = response.get("risk_adjustments", fallback.risk_adjustments)
@@ -1673,7 +2043,7 @@ class StrategyReflectionAgent:
         if mode not in {"normal", "base_only"}:
             mode = "normal"
         normalized["fallback_entry_mode"] = mode
-        entry_mode = str(raw.get("entry_mode", normalized.get("entry_mode", "normal")) or "normal").strip().lower()
+        entry_mode = str(raw.get("entry_mode", "normal") or "normal").strip().lower()
         if entry_mode not in {"normal", "capital_preservation", "capital_preservation_pilot"}:
             entry_mode = "normal"
         normalized["entry_mode"] = entry_mode
@@ -1702,15 +2072,13 @@ class StrategyReflectionAgent:
                 normalized[key] = value
             else:
                 normalized.pop(key, None)
-        pilot_candidate_id = str(raw.get("pilot_candidate_id", normalized.get("pilot_candidate_id", "")) or "").strip()
+        pilot_candidate_id = str(raw.get("pilot_candidate_id", "") or "").strip()
         if pilot_candidate_id:
             normalized["pilot_candidate_id"] = pilot_candidate_id
         else:
             normalized.pop("pilot_candidate_id", None)
         try:
-            pilot_max_position_pct = float(
-                raw.get("pilot_max_position_pct", normalized.get("pilot_max_position_pct", 0.10)) or 0.10
-            )
+            pilot_max_position_pct = float(raw.get("pilot_max_position_pct", 0.10) or 0.10)
         except (TypeError, ValueError):
             pilot_max_position_pct = 0.10
         normalized["pilot_max_position_pct"] = max(0.02, min(pilot_max_position_pct, 0.20))
@@ -1733,6 +2101,8 @@ class StrategyReflectionAgent:
                 )
             except (TypeError, ValueError):
                 pass
+        if normalized.get("entry_mode") != "capital_preservation_pilot":
+            normalized.pop("pilot_candidate_id", None)
         live_symbol_benchmark = reflection_context.get("live_symbol_benchmark") or {}
         current_live_symbol = str(reflection_context.get("current_live_symbol", "") or "").strip()
         research_recommendation = reflection_context.get("strategy_research_recommendation") or {}
@@ -1769,10 +2139,20 @@ class StrategyReflectionAgent:
 
         guarded = dict(previous_controls or {})
         current = dict(controls or {})
-        safety_keys = {"entry_mode", "fallback_entry_mode", "benchmark_watch_candidate", "benchmark_watch_symbol", "pilot_candidate_id"}
+        safety_keys = {"entry_mode", "fallback_entry_mode", "benchmark_watch_candidate", "benchmark_watch_symbol"}
         for key in safety_keys:
             if key in current:
                 guarded[key] = current[key]
+        if "entry_mode" not in current:
+            previous_entry_mode = str((previous_controls or {}).get("entry_mode", "") or "").strip().lower()
+            if previous_entry_mode == "capital_preservation":
+                guarded["entry_mode"] = "capital_preservation"
+            else:
+                guarded.pop("entry_mode", None)
+        if "pilot_candidate_id" in current:
+            guarded["pilot_candidate_id"] = current["pilot_candidate_id"]
+        else:
+            guarded.pop("pilot_candidate_id", None)
 
         try:
             previous_pilot_max = float((previous_controls or {}).get("pilot_max_position_pct", 0.10) or 0.10)
@@ -1783,6 +2163,8 @@ class StrategyReflectionAgent:
         except (TypeError, ValueError):
             current_pilot_max = previous_pilot_max
         guarded["pilot_max_position_pct"] = min(current_pilot_max, previous_pilot_max)
+        if guarded.get("entry_mode") != "capital_preservation_pilot":
+            guarded.pop("pilot_candidate_id", None)
 
         numeric_step_limits = {
             "cooldown_scale": float(self.settings.strategy_learning_cooldown_step_limit or 0.15),
@@ -1950,7 +2332,13 @@ class SelectorAgent:
                     f"strategy_memory={json.dumps(strategy_memory or {}, ensure_ascii=False)}; "
                     f"fallback_symbol={fallback['symbol']}; "
                     f"candidates={json.dumps(candidate_payload, ensure_ascii=False)}"
-                )
+                ),
+                trace={
+                    "agent": self.name,
+                    "stage": "select",
+                    "fallback_symbol": fallback["symbol"],
+                    "candidate_count": len(candidate_payload),
+                },
             )
         except Exception:
             return None

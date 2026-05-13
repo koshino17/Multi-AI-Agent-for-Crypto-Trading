@@ -2971,12 +2971,15 @@ def load_daily_summary_data(
 
     settings = load_settings()
     storage = build_storage_layout(settings.data_root)
-    _, window_end = _window_label_to_bounds(date_label)
+    window_start, window_end = _window_label_to_bounds(date_label)
     records = _filter_records_by_mode(_load_daily_records(trade_logs_dir, date_label), settings.trading_mode)
     all_records = _filter_records_by_mode(_load_all_records(trade_logs_dir), settings.trading_mode)
     runner_event_counts = _load_runner_event_counts(runner_log_path, date_label)
     position_policy_metadata = _load_position_policy_metadata(storage.position_policy_state, settings.trading_mode)
     summary = summarize_daily_records(records, runner_event_counts)
+    summary["date_label"] = date_label
+    summary["window_start"] = window_start.isoformat()
+    summary["window_end"] = window_end.isoformat()
     summary["mode"] = settings.trading_mode
     summary["financial_snapshot"] = _build_financial_snapshot(
         records,
@@ -3046,6 +3049,17 @@ def load_daily_summary_data(
         if settings.external_ai_review_enabled
         else {}
     )
+    summary["agent_trace_archive"] = {
+        "directory": str(storage.agent_traces / date_label),
+    }
+    summary["ground_truth_artifact"] = {
+        "json_path": str(storage.ground_truth_reports / f"{date_label}.json"),
+        "md_path": str(storage.ground_truth_reports / f"{date_label}.md"),
+    }
+    summary["oracle_postmortem_artifact"] = {
+        "json_path": str(storage.oracle_postmortems / f"{date_label}.json"),
+        "md_path": str(storage.oracle_postmortems / f"{date_label}.md"),
+    }
     if include_control_impact:
         previous_summary = {}
         previous_label = _previous_report_date_label(date_label)
@@ -3112,6 +3126,9 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
     daily_strategy_review = summary.get("daily_strategy_review") or {}
     external_ai_review = summary.get("external_ai_review") or {}
     control_impact = summary.get("control_impact") or {}
+    agent_trace_archive = summary.get("agent_trace_archive") or {}
+    ground_truth_artifact = summary.get("ground_truth_artifact") or {}
+    oracle_postmortem_artifact = summary.get("oracle_postmortem_artifact") or {}
 
     lines = [f"# Daily Summary: {date_label}", ""]
     if summary_mode:
@@ -3626,6 +3643,21 @@ def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: 
                 f"(delta {float(control_impact.get('avg_hold_bars_delta', 0.0) or 0.0):+.2f})"
             )
 
+    if agent_trace_archive or ground_truth_artifact or oracle_postmortem_artifact:
+        lines.extend(["", "## Research Artifacts", ""])
+        if agent_trace_archive.get("directory"):
+            lines.append(f"- Agent Trace Archive: {agent_trace_archive.get('directory')}")
+        if ground_truth_artifact.get("json_path") or ground_truth_artifact.get("md_path"):
+            lines.append(
+                f"- Ground Truth: {ground_truth_artifact.get('json_path', 'n/a')} | "
+                f"{ground_truth_artifact.get('md_path', 'n/a')}"
+            )
+        if oracle_postmortem_artifact.get("json_path") or oracle_postmortem_artifact.get("md_path"):
+            lines.append(
+                f"- Oracle Postmortem: {oracle_postmortem_artifact.get('json_path', 'n/a')} | "
+                f"{oracle_postmortem_artifact.get('md_path', 'n/a')}"
+            )
+
     if daily_strategy_review:
         lines.extend(["", "## Strategy Review", ""])
         if daily_strategy_review.get("strategist_review"):
@@ -3810,3 +3842,170 @@ def write_daily_summary(path: Path, date_label: str, content: str) -> Path:
 
 def local_date_label() -> str:
     return active_report_date_label()
+
+
+def _build_ground_truth_payload(summary: dict) -> dict[str, Any]:
+    financial = summary.get("financial_snapshot") or {}
+    market_path = summary.get("market_path_review") or {}
+    loss = summary.get("loss_attribution") or {}
+    trade_review = summary.get("trade_review") or {}
+    focus_benchmark = loss.get("focus_symbol_benchmark") or summary.get("benchmark_watch_candidate_current") or {}
+    if not isinstance(focus_benchmark, dict):
+        focus_benchmark = {}
+    strategy_research_latest = summary.get("strategy_research_latest") or {}
+    recommendation = strategy_research_latest.get("recommendation") or {}
+    if not isinstance(recommendation, dict):
+        recommendation = {}
+    return {
+        "date_label": summary.get("date_label", ""),
+        "window_start": summary.get("window_start", ""),
+        "window_end": summary.get("window_end", ""),
+        "focus_symbol": str(market_path.get("symbol", "") or ""),
+        "market_path_review": market_path,
+        "financial_snapshot": {
+            "daily_pnl_usdt": float(financial.get("daily_pnl_usdt", 0.0) or 0.0),
+            "daily_pnl_pct": float(financial.get("daily_pnl_pct", 0.0) or 0.0),
+            "realized_pnl_usdt": float(financial.get("realized_pnl_usdt", 0.0) or 0.0),
+            "unrealized_pnl_usdt": float(financial.get("unrealized_pnl_usdt", 0.0) or 0.0),
+            "daily_fees_usdt": float(financial.get("daily_fees_usdt", 0.0) or 0.0),
+        },
+        "live_actions": {
+            "total_decisions": int(summary.get("total", 0) or 0),
+            "accepted_orders": int(summary.get("accepted_orders", 0) or 0),
+            "hold_count": int(summary.get("holds", 0) or 0),
+            "action_counts": summary.get("action_counts") or {},
+            "executed_trade_timeline": summary.get("executed_trade_timeline") or [],
+            "trade_review": trade_review,
+        },
+        "benchmark_context": {
+            "focus_symbol_benchmark": focus_benchmark,
+            "strategy_research_recommendation": recommendation,
+            "shadow_benchmark_watch": summary.get("shadow_benchmark_watch") or {},
+        },
+        "loss_attribution": loss,
+    }
+
+
+def _build_oracle_postmortem_payload(summary: dict) -> dict[str, Any]:
+    market_path = summary.get("market_path_review") or {}
+    financial = summary.get("financial_snapshot") or {}
+    loss = summary.get("loss_attribution") or {}
+    focus_benchmark = loss.get("focus_symbol_benchmark") or summary.get("benchmark_watch_candidate_current") or {}
+    if not isinstance(focus_benchmark, dict):
+        focus_benchmark = {}
+    strategy_research_latest = summary.get("strategy_research_latest") or {}
+    recommendation = strategy_research_latest.get("recommendation") or {}
+    if not isinstance(recommendation, dict):
+        recommendation = {}
+    max_drawdown_pct = float(market_path.get("max_drawdown_pct", 0.0) or 0.0)
+    max_rebound_pct = float(market_path.get("max_rebound_pct", 0.0) or 0.0)
+    down_actions = market_path.get("max_drawdown_action_counts") or {}
+    rebound_actions = market_path.get("max_rebound_action_counts") or {}
+    accepted_orders = int(summary.get("accepted_orders", 0) or 0)
+    hold_count = int(summary.get("holds", 0) or 0)
+    total = int(summary.get("total", 0) or 0)
+    hold_ratio = (hold_count / total) if total > 0 else 0.0
+
+    root_causes: list[str] = []
+    if int(loss.get("carry_in_closed_count", 0) or 0) > 0 and float(financial.get("daily_pnl_usdt", 0.0) or 0.0) < 0:
+        root_causes.append("carry_in_drag")
+    if abs(max_rebound_pct) >= 1.0 and int(rebound_actions.get("hold", 0) or 0) >= max(int(rebound_actions.get("buy", 0) or 0), 1):
+        root_causes.append("missed_rebound_participation")
+    if abs(max_drawdown_pct) >= 1.0 and int(down_actions.get("hold", 0) or 0) >= max(int(down_actions.get("sell", 0) or 0), 1):
+        root_causes.append("missed_down_leg_participation")
+    if accepted_orders == 0 and hold_ratio >= 0.85:
+        root_causes.append("under_participation")
+    if float(financial.get("daily_fees_usdt", 0.0) or 0.0) > max(float(financial.get("realized_pnl_usdt", 0.0) or 0.0), 0.0):
+        root_causes.append("fee_drag")
+
+    best_candidate = focus_benchmark if str(focus_benchmark.get("candidate_id", "") or "").strip() else recommendation
+    hindsight_method = "observe_only"
+    if str(best_candidate.get("candidate_id", "") or "").strip():
+        hindsight_method = str(best_candidate.get("candidate_id") or "")
+
+    rationale_parts = []
+    if root_causes:
+        rationale_parts.append(f"root causes: {', '.join(root_causes)}")
+    if hindsight_method != "observe_only":
+        rationale_parts.append(f"best hindsight candidate: {hindsight_method}")
+    if not rationale_parts:
+        rationale_parts.append("no single dominant failure pattern detected")
+
+    return {
+        "date_label": summary.get("date_label", ""),
+        "focus_symbol": str(market_path.get("symbol", "") or ""),
+        "best_hindsight_candidate_id": hindsight_method,
+        "best_hindsight_expectancy_pct": float(best_candidate.get("expectancy_pct", 0.0) or 0.0),
+        "best_hindsight_profit_factor": float(best_candidate.get("profit_factor", 0.0) or 0.0),
+        "root_cause_tags": root_causes,
+        "live_gap": {
+            "accepted_orders": accepted_orders,
+            "hold_ratio": round(hold_ratio, 4),
+            "max_drawdown_pct": round(max_drawdown_pct, 4),
+            "max_rebound_pct": round(max_rebound_pct, 4),
+        },
+        "rationale": "; ".join(rationale_parts),
+        "suggested_experiment": {
+            "candidate_id": hindsight_method,
+            "success_metrics": ["live_trade_expectancy_pct", "live_profit_factor", "cost_impact_ratio"],
+            "window_type": "noon_to_noon",
+        },
+    }
+
+
+def _render_ground_truth_markdown(payload: dict[str, Any]) -> str:
+    market_path = payload.get("market_path_review") or {}
+    live_actions = payload.get("live_actions") or {}
+    benchmark_context = payload.get("benchmark_context") or {}
+    focus_benchmark = benchmark_context.get("focus_symbol_benchmark") or {}
+    recommendation = benchmark_context.get("strategy_research_recommendation") or {}
+    lines = [
+        f"# Ground Truth: {payload.get('date_label', 'n/a')}",
+        "",
+        f"- Window: {payload.get('window_start', 'n/a')} -> {payload.get('window_end', 'n/a')}",
+        f"- Focus Symbol: {payload.get('focus_symbol', 'n/a')}",
+        f"- Market Summary: {market_path.get('summary', 'n/a')}",
+        f"- Largest Down Leg: {float(market_path.get('max_drawdown_pct', 0.0) or 0.0):+.2f}%",
+        f"- Largest Rebound: {float(market_path.get('max_rebound_pct', 0.0) or 0.0):+.2f}%",
+        f"- Live Decisions: total={int(live_actions.get('total_decisions', 0) or 0)} | accepted={int(live_actions.get('accepted_orders', 0) or 0)} | hold={int(live_actions.get('hold_count', 0) or 0)}",
+        f"- Focus Benchmark: {focus_benchmark.get('candidate_id', 'n/a')} (expectancy={float(focus_benchmark.get('expectancy_pct', 0.0) or 0.0):+.2f}% | pf={float(focus_benchmark.get('profit_factor', 0.0) or 0.0):.2f})",
+        f"- Strategy Research Recommendation: {recommendation.get('candidate_id', 'n/a')} / {recommendation.get('verdict', 'n/a')}",
+        "",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _render_oracle_postmortem_markdown(payload: dict[str, Any]) -> str:
+    experiment = payload.get("suggested_experiment") or {}
+    root_causes = payload.get("root_cause_tags") or []
+    live_gap = payload.get("live_gap") or {}
+    lines = [
+        f"# Oracle Postmortem: {payload.get('date_label', 'n/a')}",
+        "",
+        f"- Focus Symbol: {payload.get('focus_symbol', 'n/a')}",
+        f"- Best Hindsight Candidate: {payload.get('best_hindsight_candidate_id', 'n/a')} (expectancy={float(payload.get('best_hindsight_expectancy_pct', 0.0) or 0.0):+.2f}% | pf={float(payload.get('best_hindsight_profit_factor', 0.0) or 0.0):.2f})",
+        f"- Root Causes: {', '.join(str(item) for item in root_causes) if root_causes else 'n/a'}",
+        f"- Live Gap: accepted={int(live_gap.get('accepted_orders', 0) or 0)} | hold_ratio={float(live_gap.get('hold_ratio', 0.0) or 0.0):.2f} | drawdown={float(live_gap.get('max_drawdown_pct', 0.0) or 0.0):+.2f}% | rebound={float(live_gap.get('max_rebound_pct', 0.0) or 0.0):+.2f}%",
+        f"- Rationale: {payload.get('rationale', 'n/a')}",
+        f"- Suggested Experiment: {experiment.get('candidate_id', 'n/a')} | metrics={', '.join(str(item) for item in (experiment.get('success_metrics') or []))}",
+        "",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def write_ground_truth_artifacts(path: Path, date_label: str, summary: dict[str, Any]) -> dict[str, str]:
+    payload = _build_ground_truth_payload(summary)
+    json_path = path / f"{date_label}.json"
+    md_path = path / f"{date_label}.md"
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+    md_path.write_text(_render_ground_truth_markdown(payload))
+    return {"json_path": str(json_path), "md_path": str(md_path)}
+
+
+def write_oracle_postmortem_artifacts(path: Path, date_label: str, summary: dict[str, Any]) -> dict[str, str]:
+    payload = _build_oracle_postmortem_payload(summary)
+    json_path = path / f"{date_label}.json"
+    md_path = path / f"{date_label}.md"
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+    md_path.write_text(_render_oracle_postmortem_markdown(payload))
+    return {"json_path": str(json_path), "md_path": str(md_path)}

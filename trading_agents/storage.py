@@ -19,6 +19,9 @@ class StorageLayout:
     benchmark_reports: Path
     daily_reports: Path
     service: Path
+    agent_traces: Path
+    ground_truth_reports: Path
+    oracle_postmortems: Path
     runner_supervisor_pid: Path
     runner_supervisor_log: Path
     runner_pid: Path
@@ -61,6 +64,9 @@ def build_storage_layout(root: str) -> StorageLayout:
         benchmark_reports=base / "reports" / "benchmarks",
         daily_reports=base / "reports" / "daily",
         service=base / "service",
+        agent_traces=base / "service" / "agent_traces",
+        ground_truth_reports=base / "service" / "ground_truth",
+        oracle_postmortems=base / "service" / "oracle_postmortems",
         runner_supervisor_pid=base / "service" / "runner_supervisor.pid",
         runner_supervisor_log=base / "service" / "runner_supervisor.log",
         runner_pid=base / "service" / "runner.pid",
@@ -89,6 +95,9 @@ def build_storage_layout(root: str) -> StorageLayout:
         layout.benchmark_reports,
         layout.daily_reports,
         layout.service,
+        layout.agent_traces,
+        layout.ground_truth_reports,
+        layout.oracle_postmortems,
     ):
         path.mkdir(parents=True, exist_ok=True)
     return layout

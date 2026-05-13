@@ -64,6 +64,8 @@ from trading_agents.reporting import (
     write_human_report,
     write_json_log,
     write_daily_summary,
+    write_ground_truth_artifacts,
+    write_oracle_postmortem_artifacts,
 )
 from trading_agents.research import StrategyResearchAgent
 from trading_agents.sentiment import SentimentDataProvider, write_sentiment_record
@@ -84,6 +86,20 @@ def _daily_strategy_review_path(storage, date_label: str) -> Path:
 
 def _write_daily_strategy_review(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _refresh_daily_artifacts(storage, date_label: str, summary: dict | None = None) -> dict[str, dict[str, str]]:
+    if summary is None:
+        summary = load_daily_summary_data(storage.trade_logs, date_label, storage.runner_log)
+    if not isinstance(summary, dict):
+        summary = {}
+    summary["date_label"] = date_label
+    ground_truth = write_ground_truth_artifacts(storage.ground_truth_reports, date_label, summary)
+    oracle_postmortem = write_oracle_postmortem_artifacts(storage.oracle_postmortems, date_label, summary)
+    return {
+        "ground_truth": ground_truth,
+        "oracle_postmortem": oracle_postmortem,
+    }
 
 
 def _daily_review_fingerprint(daily_summary: dict) -> str:
@@ -410,6 +426,7 @@ def _build_strategy_reflection_context(settings, storage, current_date_label: st
         "current_window_accepted_orders": int(daily_summary.get("accepted_orders", 0) or 0),
         "current_window_closed_episodes": int(current_loss_attribution.get("closed_episode_count", 0) or 0),
         "current_date_label": current_date_label,
+        "completed_date_label": current_date_label,
     }
 
 
@@ -1483,6 +1500,8 @@ def _finalize_reporting(
     daily_report_path = write_daily_summary(storage.daily_reports, active_date_label, daily_content)
     report["daily_report"] = str(daily_report_path)
     daily_summary = load_daily_summary_data(storage.trade_logs, active_date_label, storage.runner_log)
+    active_artifacts = _refresh_daily_artifacts(storage, active_date_label, daily_summary)
+    report["active_daily_artifacts"] = active_artifacts
     daily_summary["review_history"] = _load_recent_daily_review_history(storage, active_date_label)
     equity_history_path = mode_scoped_path(storage.equity_curve_history_state, mode)
     equity_chart_path = mode_scoped_path(storage.equity_curve_svg, mode)
@@ -1526,6 +1545,8 @@ def _finalize_reporting(
     if runner_heartbeat.get("timestamp") and datetime.now().astimezone().hour >= int(settings.notion_daily_review_hour):
         try:
             completed_daily_summary = load_daily_summary_data(storage.trade_logs, completed_date_label, storage.runner_log)
+            completed_artifacts = _refresh_daily_artifacts(storage, completed_date_label, completed_daily_summary)
+            report["completed_daily_artifacts"] = completed_artifacts
             completed_daily_summary["date_label"] = completed_date_label
             completed_daily_summary["review_history"] = _load_recent_daily_review_history(storage, completed_date_label)
             summary_fingerprint = _daily_review_fingerprint(completed_daily_summary)
@@ -1599,8 +1620,10 @@ def _finalize_reporting(
     if daily_strategy_review_path.exists():
         completed_daily_content = build_daily_summary(storage.trade_logs, completed_date_label, storage.runner_log)
         write_daily_summary(storage.daily_reports, completed_date_label, completed_daily_content)
+        report["completed_daily_artifacts"] = _refresh_daily_artifacts(storage, completed_date_label)
         daily_content = build_daily_summary(storage.trade_logs, active_date_label, storage.runner_log)
         daily_report_path = write_daily_summary(storage.daily_reports, active_date_label, daily_content)
+        report["active_daily_artifacts"] = _refresh_daily_artifacts(storage, active_date_label)
         report["daily_report"] = str(daily_report_path)
         daily_summary = load_daily_summary_data(storage.trade_logs, active_date_label, storage.runner_log)
         daily_summary["equity_curve"] = equity_curve
@@ -1663,8 +1686,10 @@ def _finalize_reporting(
             _write_daily_strategy_review(daily_strategy_review_path, stored_review)
             completed_daily_content = build_daily_summary(storage.trade_logs, completed_date_label, storage.runner_log)
             write_daily_summary(storage.daily_reports, completed_date_label, completed_daily_content)
+            report["completed_daily_artifacts"] = _refresh_daily_artifacts(storage, completed_date_label)
             daily_content = build_daily_summary(storage.trade_logs, active_date_label, storage.runner_log)
             daily_report_path = write_daily_summary(storage.daily_reports, active_date_label, daily_content)
+            report["active_daily_artifacts"] = _refresh_daily_artifacts(storage, active_date_label)
             report["daily_report"] = str(daily_report_path)
         except Exception as exc:
             report["strategy_memory_rebuild"] = {"status": "error", "reason": str(exc)}
@@ -1775,11 +1800,19 @@ def execute_cycle(
     position_policy_state = _load_position_policy_state(storage.position_policy_state)
     progress("setup", "running", "loading settings and models")
     llm_client = None
+    review_llm_client = None
     if settings.model_backend == "ollama":
         llm_client = OllamaClient(
             host=settings.ollama_host,
             model=settings.model_name,
             timeout_seconds=settings.llm_timeout_seconds,
+            trace_root=storage.agent_traces,
+        )
+        review_llm_client = OllamaClient(
+            host=settings.ollama_host,
+            model=settings.model_name,
+            timeout_seconds=settings.strategy_review_llm_timeout_seconds,
+            trace_root=storage.agent_traces,
         )
     analysis_llm_client = llm_client
     if cycle_mode != "full" and settings.llm_full_cycle_only:
@@ -1803,8 +1836,8 @@ def execute_cycle(
     selector = SelectorAgent(llm_client=analysis_llm_client)
     executor = ExecutorAgent()
     evaluator = PostTradeEvaluatorAgent(llm_client=analysis_llm_client)
-    daily_reviewer = DailyReviewAgent(llm_client=llm_client)
-    strategy_reflector = StrategyReflectionAgent(llm_client=llm_client, settings=settings)
+    daily_reviewer = DailyReviewAgent(llm_client=review_llm_client)
+    strategy_reflector = StrategyReflectionAgent(llm_client=review_llm_client, settings=settings)
     strategy_memory = load_strategy_memory(storage.strategy_memory_state)
 
     exchange = _build_exchange(mode, settings)
