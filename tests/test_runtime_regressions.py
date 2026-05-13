@@ -193,8 +193,8 @@ class RuntimeRegressionTests(unittest.TestCase):
             },
         }
         reflection = agent.evaluate("2026-05-13-day", daily_summary, reflection_context=reflection_context)
-        self.assertEqual(str(reflection.controls.get("entry_mode", "")), "normal")
-        self.assertNotIn("pilot_candidate_id", reflection.controls)
+        self.assertEqual(str(reflection.controls.get("entry_mode", "")), "capital_preservation_pilot")
+        self.assertEqual(str(reflection.controls.get("pilot_candidate_id", "")), "grid_range_reversion_maker_v1")
 
     def test_strategy_research_uses_memory_to_bias_candidate_selection(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

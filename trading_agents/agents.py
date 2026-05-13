@@ -1943,7 +1943,17 @@ class StrategyReflectionAgent:
             except (TypeError, ValueError):
                 pass
         benchmark_candidate = {}
-        if isinstance(live_symbol_benchmark, dict) and live_symbol_benchmark.get("candidate_id"):
+        if research_candidate_id and research_verdict in {"shadow_candidate", "promotion_candidate"}:
+            benchmark_candidate = {
+                "candidate_id": research_candidate_id,
+                "symbol": current_live_symbol,
+            }
+        elif (
+            isinstance(live_symbol_benchmark, dict)
+            and live_symbol_benchmark.get("candidate_id")
+            and float(live_symbol_benchmark.get("expectancy_pct", 0.0) or 0.0) > 0.0
+            and float(live_symbol_benchmark.get("profit_factor", 0.0) or 0.0) > 1.0
+        ):
             benchmark_candidate = live_symbol_benchmark
         elif top_benchmark.get("candidate_id"):
             benchmark_candidate = top_benchmark
@@ -2143,14 +2153,21 @@ class StrategyReflectionAgent:
         for key in safety_keys:
             if key in current:
                 guarded[key] = current[key]
+        previous_entry_mode = str((previous_controls or {}).get("entry_mode", "") or "").strip().lower()
+        current_entry_mode = str(current.get("entry_mode", previous_entry_mode or "normal") or "normal").strip().lower()
         if "entry_mode" not in current:
-            previous_entry_mode = str((previous_controls or {}).get("entry_mode", "") or "").strip().lower()
-            if previous_entry_mode == "capital_preservation":
-                guarded["entry_mode"] = "capital_preservation"
+            if previous_entry_mode in {"capital_preservation", "capital_preservation_pilot"}:
+                guarded["entry_mode"] = previous_entry_mode
             else:
                 guarded.pop("entry_mode", None)
+        elif previous_entry_mode == "capital_preservation_pilot" and current_entry_mode == "normal":
+            guarded["entry_mode"] = "capital_preservation_pilot"
+        elif previous_entry_mode == "capital_preservation" and current_entry_mode == "normal":
+            guarded["entry_mode"] = "capital_preservation"
         if "pilot_candidate_id" in current:
             guarded["pilot_candidate_id"] = current["pilot_candidate_id"]
+        elif previous_entry_mode == "capital_preservation_pilot" and str((previous_controls or {}).get("pilot_candidate_id", "") or "").strip():
+            guarded["pilot_candidate_id"] = str((previous_controls or {}).get("pilot_candidate_id", "") or "").strip()
         else:
             guarded.pop("pilot_candidate_id", None)
 
