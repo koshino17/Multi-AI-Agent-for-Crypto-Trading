@@ -16,6 +16,24 @@
 
 ---
 
+## v0.11.47 - Fix unlogged perp close attribution in daily reports
+
+### Why
+
+- A completed noon-window report showed `Daily PnL +12.84 USDT`, but almost all of it was stuck inside `PnL Bridge residual` instead of appearing in `Realized PnL`.
+- The root cause was that `Trade Review` and the financial snapshot only trusted accepted close logs. When a perp position disappeared from account state without a matching accepted reduce-only record, the equity change landed in the account curve but the reporting layer dropped the close.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Added account-state transition inference for perp positions so `non-flat -> flat` transitions can be reconstructed as `account_state_inferred` closes.
+  - `Trade Review` now includes those closes as `unlogged_in_window` episodes instead of silently omitting them.
+  - The noon-window financial snapshot now adds inferred realized PnL for those closes, which materially reduces `PnL Bridge residual`.
+  - Restored the missing `fmean` import so full daily-report rebuilds no longer crash during control-impact rendering.
+
+- `tests/test_runtime_regressions.py`
+  - Added a regression test that simulates an unlogged short close and verifies both the inferred episode and the reduced residual path.
+
 ## v0.11.46 - Stabilize review/reflection prompt execution
 
 ### Why

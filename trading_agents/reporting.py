@@ -5,6 +5,7 @@ import re
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from statistics import fmean
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -202,6 +203,145 @@ def _record_timestamp_local(item: dict[str, Any]) -> str:
     raw = item.get("__record_timestamp_local") or item.get("timestamp") or _accepted_trade_timestamp(item)
     parsed = _parse_timestamp_local(raw)
     return parsed.isoformat() if parsed is not None else "n/a"
+
+
+def _account_position_snapshot(item: dict[str, Any]) -> dict[str, Any]:
+    account = item.get("account") or {}
+    if not isinstance(account, dict):
+        return {}
+    symbol = str(item.get("selected_symbol", "")).strip()
+    if not symbol:
+        return {}
+    market_type = str(account.get("market_type", _record_mode(item))).strip().lower()
+    if "perp" not in market_type:
+        return {}
+    side = str(account.get("position_side", "flat")).strip().lower()
+    net_position = _safe_float(account.get("net_position", account.get("base_asset")))
+    if side not in {"long", "short"} or abs(net_position) <= 1e-12:
+        side = "flat"
+        net_position = 0.0
+    return {
+        "symbol": symbol,
+        "market_type": market_type,
+        "position_side": side,
+        "net_position": net_position,
+        "entry_price": _safe_float(account.get("entry_price")),
+        "mark_price": _safe_float(account.get("mark_price")),
+        "opened_at_local": str(account.get("opened_at_local", "")).strip(),
+        "opened_at_epoch": _safe_float(account.get("opened_at_epoch")),
+        "hold_minutes": _safe_float(account.get("hold_minutes")),
+        "entry_count": max(_safe_int(account.get("entry_count"), 0), 0),
+        "position_notional_usdt": abs(_safe_float(account.get("position_notional_usdt"))),
+        "record_timestamp_local": _record_timestamp_local(item),
+        "record_last_price": _safe_float(item.get("last_price")),
+        "decision_source": _decision_source(item),
+        "accepted_reduce_only": bool(_result_status(item) == "accepted" and bool(_order_payload(item).get("reduce_only"))),
+    }
+
+
+def _infer_unlogged_closing_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    inferred: list[dict[str, Any]] = []
+    previous_by_symbol: dict[str, dict[str, Any]] = {}
+    ordered_records = sorted(
+        records,
+        key=lambda item: _parse_timestamp_local(item.get("__record_timestamp_local") or item.get("timestamp")) or _local_now(),
+    )
+    for item in ordered_records:
+        snapshot = _account_position_snapshot(item)
+        if not snapshot:
+            continue
+        symbol = str(snapshot.get("symbol", "")).strip()
+        if not symbol:
+            continue
+        previous = previous_by_symbol.get(symbol)
+        current_side = str(snapshot.get("position_side", "flat")).strip().lower()
+        if (
+            previous
+            and str(previous.get("position_side", "flat")).strip().lower() in {"long", "short"}
+            and current_side == "flat"
+        ):
+            order = _order_payload(item)
+            if not (
+                (_result_status(item) == "accepted" and bool(order.get("reduce_only")))
+                or bool(previous.get("accepted_reduce_only"))
+            ):
+                previous_side = str(previous.get("position_side", "flat")).strip().lower()
+                close_price = (
+                    snapshot.get("record_last_price")
+                    or _safe_float(order.get("price"))
+                    or _safe_float(previous.get("mark_price"))
+                    or _safe_float(previous.get("entry_price"))
+                )
+                quantity = abs(_safe_float(previous.get("net_position")))
+                notional = quantity * close_price if quantity > 0 and close_price > 0 else _safe_float(previous.get("position_notional_usdt"))
+                inferred.append(
+                    {
+                        "mode": item.get("mode"),
+                        "selected_symbol": symbol,
+                        "decision_source": "account_state_inferred",
+                        "__record_timestamp_local": str(snapshot.get("record_timestamp_local", "")).strip(),
+                        "idea": {
+                            "rationale": "position disappeared from account state without a logged accepted close; report inferred a close from account-state transition",
+                        },
+                        "account": {
+                            "market_type": "perp",
+                            "position_side": previous_side,
+                            "entry_price": _safe_float(previous.get("entry_price")),
+                            "hold_minutes": _safe_float(previous.get("hold_minutes")),
+                            "opened_at_local": str(previous.get("opened_at_local", "")).strip(),
+                            "opened_at_epoch": _safe_float(previous.get("opened_at_epoch")),
+                            "entry_count": max(_safe_int(previous.get("entry_count"), 0), 1),
+                        },
+                        "order": {
+                            "symbol": symbol,
+                            "side": "sell" if previous_side == "long" else "buy",
+                            "quantity": quantity,
+                            "price": close_price,
+                            "notional_usdt": notional,
+                            "reduce_only": True,
+                        },
+                        "result": {
+                            "status": "accepted",
+                            "timestamp": str(snapshot.get("record_timestamp_local", "")).strip(),
+                            "submitted_qty": quantity,
+                            "fee": 0.0,
+                        },
+                    }
+                )
+        previous_by_symbol[symbol] = snapshot
+    return inferred
+
+
+def _infer_unlogged_close_pnl(
+    records: list[dict[str, Any]],
+    *,
+    taker_fee_pct: float,
+) -> dict[str, float]:
+    inferred_records = _infer_unlogged_closing_records(records)
+    realized_long = 0.0
+    realized_short = 0.0
+    effective_fee_pct = min(taker_fee_pct, 0.00055)
+    for item in inferred_records:
+        account = item.get("account") or {}
+        order = _order_payload(item)
+        direction = str(account.get("position_side", "flat")).strip().lower()
+        qty = _safe_float(order.get("quantity"))
+        entry_price = _safe_float(account.get("entry_price"))
+        close_price = _safe_float(order.get("price"))
+        notional = _safe_float(order.get("notional_usdt"))
+        if qty <= 0 or entry_price <= 0 or close_price <= 0 or direction not in {"long", "short"}:
+            continue
+        fee = notional * effective_fee_pct if notional > 0 else qty * close_price * effective_fee_pct
+        pnl = ((close_price - entry_price) * qty) if direction == "long" else ((entry_price - close_price) * qty)
+        if direction == "long":
+            realized_long += pnl - fee
+        else:
+            realized_short += pnl - fee
+    return {
+        "long": realized_long,
+        "short": realized_short,
+        "records": inferred_records,
+    }
 
 
 def _perp_trade_label(side: str, reduce_only: bool) -> str:
@@ -640,7 +780,12 @@ def _build_trade_review(
 ) -> dict[str, Any]:
     financial_snapshot = financial_snapshot or {}
     accepted_records = [item for item in records if _result_status(item) == "accepted"]
-    if not accepted_records:
+    inferred_close_records = _infer_unlogged_closing_records(records)
+    event_records = accepted_records + inferred_close_records
+    event_records.sort(
+        key=lambda item: _parse_timestamp_local(_trade_timestamp_local(item)) or _parse_timestamp_local(_record_timestamp_local(item)) or _local_now(),
+    )
+    if not event_records:
         summary = {
             "episodes": [],
             "long_episodes": 0,
@@ -795,7 +940,7 @@ def _build_trade_review(
         )
         episodes.append(episode)
 
-    for item in accepted_records:
+    for item in event_records:
         symbol = str(item.get("selected_symbol", "")).strip()
         if not symbol:
             continue
@@ -2480,6 +2625,8 @@ def _build_financial_snapshot(
     is_perp = any(item.get("market_type") == "perp" for item in latest_snapshot.get("positions", []))
 
     if is_perp:
+        inferred_close_pnl = _infer_unlogged_close_pnl(records, taker_fee_pct=taker_fee_pct)
+        inferred_close_records = list(inferred_close_pnl.get("records") or [])
         latest_positions = latest_snapshot.get("positions", [])
         invested_value = sum(abs(_safe_float(item.get("value_usdt"))) for item in latest_positions)
         total_portfolio_value = _safe_float(latest_snapshot.get("total_value_usdt")) or initial_balance_usdt
@@ -2555,6 +2702,8 @@ def _build_financial_snapshot(
                 signed_qty = 0.0
             current["signed_qty"] = signed_qty
             current["entry_price"] = entry_price if signed_qty != 0 else 0.0
+        realized_long_pnl += _safe_float(inferred_close_pnl.get("long"))
+        realized_short_pnl += _safe_float(inferred_close_pnl.get("short"))
         realized_pnl = realized_long_pnl + realized_short_pnl
         holdings: list[dict[str, Any]] = []
         current_long_exposure = 0.0
@@ -2621,7 +2770,8 @@ def _build_financial_snapshot(
                 }
             )
         holdings.sort(key=lambda item: float(item["value_usdt"]), reverse=True)
-        daily_fees = sum(item["fee_usdt"] for item in accepted_today)
+        inferred_fee_rows = _accepted_trade_rows(inferred_close_records, taker_fee_pct)
+        daily_fees = sum(item["fee_usdt"] for item in accepted_today) + sum(item["fee_usdt"] for item in inferred_fee_rows)
         daily_pnl = total_portfolio_value - start_value
         cumulative_pnl = total_portfolio_value - initial_balance_usdt
         unrealized_change = unrealized_pnl - day_start_unrealized_pnl

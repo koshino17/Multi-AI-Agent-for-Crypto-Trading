@@ -10,7 +10,12 @@ from types import SimpleNamespace
 from trading_agents.agents import RiskSupervisorAgent, StrategyReflectionAgent
 from trading_agents.llm import _trace_date_label
 from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyCandidate, StrategyResearchSnapshot, TradeIdea
-from trading_agents.reporting import write_ground_truth_artifacts, write_oracle_postmortem_artifacts
+from trading_agents.reporting import (
+    _build_financial_snapshot,
+    _build_trade_review,
+    write_ground_truth_artifacts,
+    write_oracle_postmortem_artifacts,
+)
 from trading_agents.research import StrategyResearchAgent
 from trading_agents.runner import _monitor_snapshot
 from trading_agents_web import _runtime_settings
@@ -257,6 +262,77 @@ class RuntimeRegressionTests(unittest.TestCase):
         after_noon = datetime(2026, 5, 12, 8, 0, tzinfo=timezone.utc)
         self.assertEqual(_trace_date_label(before_noon), "2026-05-11")
         self.assertEqual(_trace_date_label(after_noon), "2026-05-12")
+
+    def test_reporting_infers_unlogged_perp_close_from_account_transition(self) -> None:
+        records = [
+            {
+                "mode": "bybit-demo-perp",
+                "selected_symbol": "SOL/USDT",
+                "last_price": 95.52,
+                "__record_timestamp_local": "2026-05-13T12:01:06.261803+08:00",
+                "account": {
+                    "market_type": "perp",
+                    "position_side": "flat",
+                    "net_position": 0.0,
+                    "entry_price": 0.0,
+                    "mark_price": 0.0,
+                    "total_equity_usdt": 452.0029,
+                    "available_balance_usdt": 452.0029,
+                    "cum_realized_pnl_usdt": 0.0,
+                },
+            },
+            {
+                "mode": "bybit-demo-perp",
+                "selected_symbol": "SOL/USDT",
+                "last_price": 91.47,
+                "__record_timestamp_local": "2026-05-13T23:08:14.862564+08:00",
+                "account": {
+                    "market_type": "perp",
+                    "position_side": "short",
+                    "net_position": -8.6,
+                    "entry_price": 92.759186,
+                    "mark_price": 91.47,
+                    "position_notional_usdt": 797.729,
+                    "unrealized_pnl_usdt": 11.087,
+                    "total_equity_usdt": 462.5378,
+                    "available_balance_usdt": 68.7093,
+                    "hold_minutes": 148.79,
+                    "opened_at_local": "2026-05-13T20:38:36.862173+08:00",
+                    "entry_count": 1,
+                    "cum_realized_pnl_usdt": -52.0006,
+                },
+            },
+            {
+                "mode": "bybit-demo-perp",
+                "selected_symbol": "SOL/USDT",
+                "last_price": 91.30,
+                "__record_timestamp_local": "2026-05-13T23:10:27.616561+08:00",
+                "account": {
+                    "market_type": "perp",
+                    "position_side": "flat",
+                    "net_position": 0.0,
+                    "entry_price": 0.0,
+                    "mark_price": 0.0,
+                    "total_equity_usdt": 465.2268,
+                    "available_balance_usdt": 465.2136,
+                    "cum_realized_pnl_usdt": 0.0,
+                },
+            },
+        ]
+        trade_review = _build_trade_review(records, financial_snapshot={})
+        closed = [item for item in trade_review["episodes"] if item.get("status") in {"win", "loss", "flat"}]
+        self.assertEqual(len(closed), 1)
+        self.assertEqual(closed[0]["entry_source"], "unlogged_in_window")
+        self.assertEqual(closed[0]["close_source"], "account_state_inferred")
+        financial = _build_financial_snapshot(
+            records,
+            records,
+            initial_balance_usdt=500.0,
+            taker_fee_pct=0.001,
+            position_policy_metadata={},
+        )
+        self.assertGreater(float(financial["realized_pnl_usdt"]), 12.0)
+        self.assertLess(abs(float(financial["pnl_bridge_residual_usdt"])), 1.2)
 
     def test_ground_truth_and_oracle_artifacts_write_expected_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
