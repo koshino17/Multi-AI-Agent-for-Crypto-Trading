@@ -89,7 +89,7 @@ class Settings:
     strategy_research_only_when_flat: bool = _bool("STRATEGY_RESEARCH_ONLY_WHEN_FLAT", True)
     strategy_research_focus_limits: tuple[str, ...] = _list("STRATEGY_RESEARCH_FOCUS_LIMITS", "320,1000")
     strategy_research_validation_symbols: tuple[str, ...] = _list("STRATEGY_RESEARCH_VALIDATION_SYMBOLS", "BTC/USDT,ETH/USDT")
-    llm_timeout_seconds: float = _float("LLM_TIMEOUT_SECONDS", 18.0)
+    llm_timeout_seconds: float = _float("LLM_TIMEOUT_SECONDS", 45.0)
     strategy_review_llm_timeout_seconds: float = _float("STRATEGY_REVIEW_LLM_TIMEOUT_SECONDS", 60.0)
     sentiment_request_timeout_seconds: float = _float("SENTIMENT_REQUEST_TIMEOUT_SECONDS", 6.0)
     sentiment_cache_ttl_seconds: float = _float("SENTIMENT_CACHE_TTL_SECONDS", 120.0)
@@ -198,7 +198,19 @@ class Settings:
     )
     strategy_learning_restore_equity_recovery_ratio_pct: float = _float(
         "STRATEGY_LEARNING_RESTORE_EQUITY_RECOVERY_RATIO_PCT",
-        99.0,
+        95.0,
+    )
+    strategy_learning_restore_recent_windows: int = _int(
+        "STRATEGY_LEARNING_RESTORE_RECENT_WINDOWS",
+        2,
+    )
+    strategy_learning_restore_recent_accepted_orders: int = _int(
+        "STRATEGY_LEARNING_RESTORE_RECENT_ACCEPTED_ORDERS",
+        2,
+    )
+    strategy_learning_restore_expectancy_floor_pct: float = _float(
+        "STRATEGY_LEARNING_RESTORE_EXPECTANCY_FLOOR_PCT",
+        -0.02,
     )
     strategy_learning_min_accepted_orders: int = _int("STRATEGY_LEARNING_MIN_ACCEPTED_ORDERS", 2)
     strategy_learning_min_closed_episodes: int = _int("STRATEGY_LEARNING_MIN_CLOSED_EPISODES", 2)

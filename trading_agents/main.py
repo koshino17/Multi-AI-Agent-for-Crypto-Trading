@@ -240,6 +240,7 @@ def _build_strategy_reflection_context(settings, storage, current_date_label: st
                 "benchmark_candidate_id": str(live_symbol_benchmark.get("candidate_id", "") or "").strip(),
                 "benchmark_expectancy_pct": float(live_symbol_benchmark.get("expectancy_pct", 0.0) or 0.0),
                 "benchmark_profit_factor": float(live_symbol_benchmark.get("profit_factor", 0.0) or 0.0),
+                "live_trade_expectancy_pct": float(loss_attribution.get("live_trade_expectancy_pct", 0.0) or 0.0),
             }
         )
 
@@ -343,6 +344,9 @@ def _build_strategy_reflection_context(settings, storage, current_date_label: st
     restore_equity_floor_usdt = configured_initial_usdt * float(
         settings.strategy_learning_restore_equity_recovery_ratio_pct or 0.0
     ) / 100.0
+    restore_recent_windows = max(int(settings.strategy_learning_restore_recent_windows or 0), 1)
+    restore_recent_accepted_orders = max(int(settings.strategy_learning_restore_recent_accepted_orders or 0), 0)
+    restore_expectancy_floor_pct = float(settings.strategy_learning_restore_expectancy_floor_pct or 0.0)
     previous_controls = (previous_memory or {}).get("controls", {})
     previous_mode = ""
     previous_cooldown_scale = None
@@ -353,10 +357,18 @@ def _build_strategy_reflection_context(settings, storage, current_date_label: st
         except (TypeError, ValueError):
             previous_cooldown_scale = None
 
-    restore_ready = (
+    restore_equity_ready = (
         positive_streak >= int(settings.strategy_learning_restore_positive_days or 0)
         and current_equity_usdt >= restore_equity_floor_usdt
     )
+    recent_restore_slice = recent_windows[-restore_recent_windows:]
+    recent_restore_accepted_total = sum(int(item.get("accepted_orders", 0) or 0) for item in recent_restore_slice)
+    latest_window_expectancy_pct = float(recent_restore_slice[-1].get("live_trade_expectancy_pct", live_trade_expectancy_pct) or live_trade_expectancy_pct) if recent_restore_slice else live_trade_expectancy_pct
+    restore_activity_ready = (
+        recent_restore_accepted_total >= restore_recent_accepted_orders
+        and latest_window_expectancy_pct >= restore_expectancy_floor_pct
+    )
+    restore_ready = restore_equity_ready or restore_activity_ready
     force_fallback_base_only = bool(
         current_equity_usdt > 0
         and configured_initial_usdt > 0
@@ -413,6 +425,11 @@ def _build_strategy_reflection_context(settings, storage, current_date_label: st
         "live_profit_factor": round(live_profit_factor, 4),
         "restore_positive_days": int(settings.strategy_learning_restore_positive_days or 0),
         "restore_equity_floor_usdt": round(restore_equity_floor_usdt, 4),
+        "restore_equity_ready": restore_equity_ready,
+        "restore_activity_ready": restore_activity_ready,
+        "restore_recent_windows": restore_recent_windows,
+        "restore_recent_accepted_total": recent_restore_accepted_total,
+        "restore_expectancy_floor_pct": round(restore_expectancy_floor_pct, 4),
         "restore_ready": restore_ready,
         "force_fallback_base_only": force_fallback_base_only,
         "capital_preservation_mode": capital_preservation_mode,

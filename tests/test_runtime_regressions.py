@@ -201,6 +201,32 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(str(reflection.controls.get("entry_mode", "")), "capital_preservation_pilot")
         self.assertEqual(str(reflection.controls.get("pilot_candidate_id", "")), "grid_range_reversion_maker_v1")
 
+    def test_low_sample_guard_does_not_stack_base_only_on_top_of_pilot(self) -> None:
+        agent = StrategyReflectionAgent(llm_client=None)
+        guarded = agent._apply_low_sample_guard(  # type: ignore[attr-defined]
+            {
+                "entry_mode": "capital_preservation_pilot",
+                "pilot_candidate_id": "grid_range_reversion_maker_v1",
+                "pilot_max_position_pct": 0.10,
+                "fallback_entry_mode": "base_only",
+            },
+            {
+                "entry_mode": "capital_preservation_pilot",
+                "pilot_candidate_id": "grid_range_reversion_maker_v1",
+                "pilot_max_position_pct": 0.10,
+                "fallback_entry_mode": "base_only",
+            },
+            accepted_orders=0,
+            closed_episode_count=0,
+        )
+        normalized = agent._normalize_controls(  # type: ignore[attr-defined]
+            guarded,
+            {},
+            reflection_context={},
+        )
+        self.assertEqual(str(normalized.get("entry_mode", "")), "capital_preservation_pilot")
+        self.assertEqual(str(normalized.get("fallback_entry_mode", "")), "normal")
+
     def test_strategy_research_uses_memory_to_bias_candidate_selection(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             library_path = Path(tmpdir) / "strategy_library.json"

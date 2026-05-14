@@ -393,6 +393,47 @@ def _reflection_context_llm_brief(reflection_context: dict) -> str:
     )
 
 
+def _strategy_memory_llm_brief(strategy_memory: dict | None) -> str:
+    payload = strategy_memory if isinstance(strategy_memory, dict) else {}
+    controls = payload.get("controls") if isinstance(payload.get("controls"), dict) else {}
+    experiment = payload.get("experiment") if isinstance(payload.get("experiment"), dict) else {}
+    focus_symbols = payload.get("focus_symbols") if isinstance(payload.get("focus_symbols"), list) else []
+    summary = str(payload.get("summary", "") or "").strip()
+    lines = [
+        f"slot={str(payload.get('slot', '') or '').strip()}",
+        f"summary={summary[:220]}",
+        f"controls={json.dumps(controls, ensure_ascii=False)}",
+    ]
+    if focus_symbols:
+        lines.append(f"focus_symbols={','.join(str(item) for item in focus_symbols[:5])}")
+    if experiment:
+        lines.append(
+            "experiment="
+            + json.dumps(
+                {
+                    "experiment_id": str(experiment.get("experiment_id", "") or ""),
+                    "trigger": str(experiment.get("trigger", "") or ""),
+                    "ttl_windows": int(experiment.get("ttl_windows", 0) or 0),
+                    "status": str(experiment.get("status", "") or ""),
+                },
+                ensure_ascii=False,
+            )
+        )
+    return "\n".join(lines)
+
+
+def _selector_account_brief(account: dict | None) -> dict[str, object]:
+    payload = account if isinstance(account, dict) else {}
+    return {
+        "position_side": str(payload.get("position_side", "") or ""),
+        "available_usdt": round(float(payload.get("available_balance_usdt", payload.get("free_usdt", 0.0)) or 0.0), 4),
+        "total_equity_usdt": round(float(payload.get("total_equity_usdt", 0.0) or 0.0), 4),
+        "position_notional_usdt": round(float(payload.get("position_notional_usdt", 0.0) or 0.0), 4),
+        "current_leverage": round(float(payload.get("current_leverage", 0.0) or 0.0), 4),
+        "entry_count": int(payload.get("entry_count", 0) or 0),
+    }
+
+
 class MarketCollectorAgent:
     name = "market_collector"
 
@@ -473,7 +514,7 @@ class StrategistAgent:
         )
         if self.llm_client is None:
             return fallback
-        memory_summary = self._strategy_memory_summary(strategy_memory)
+        memory_summary = _strategy_memory_llm_brief(strategy_memory)
         market_type = "perp" if "perp" in trading_mode else "spot"
         try:
             response = self.llm_client.generate_json(
@@ -501,7 +542,7 @@ class StrategistAgent:
                     f"position_side={position_side}; "
                     f"selected_expectancy_pct={self._selected_strategy_backtest(strategy_research).expectancy_pct:+.4f}; "
                     f"selected_profit_factor={self._selected_strategy_backtest(strategy_research).profit_factor:.4f}; "
-                    f"strategy_memory={memory_summary}; "
+                    f"strategy_memory_brief=\n{memory_summary}\n"
                     f"risk_feedback={risk_feedback}; "
                     f"aggressive_demo_mode={str(aggressive_mode).lower()}; "
                     f"trading_mode={trading_mode}; "
@@ -575,7 +616,7 @@ class StrategistAgent:
                     f"available_base_asset={available_base_asset:.6f}; "
                     f"position_side={position_side}; "
                     f"trading_mode={trading_mode}; "
-                    f"strategy_memory={self._strategy_memory_summary(strategy_memory)}"
+                    f"strategy_memory_brief=\n{_strategy_memory_llm_brief(strategy_memory)}\n"
                 ),
                 trace={
                     "agent": self.name,
@@ -892,21 +933,6 @@ class StrategistAgent:
                 return cast(BacktestSnapshot, candidate.backtest)
         return BacktestSnapshot(0, 0, 0.0, 0.0, 0.0, "selected strategy replay unavailable")
 
-    def _strategy_memory_summary(self, strategy_memory: dict | None) -> str:
-        strategy_memory = strategy_memory or {}
-        return json.dumps(
-            {
-                "slot": strategy_memory.get("slot", ""),
-                "summary": strategy_memory.get("summary", ""),
-                "biases": strategy_memory.get("biases", []),
-                "risk_adjustments": strategy_memory.get("risk_adjustments", []),
-                "focus_symbols": strategy_memory.get("focus_symbols", []),
-                "controls": strategy_memory.get("controls", {}),
-            },
-            ensure_ascii=False,
-        )
-
-
 class RiskSupervisorAgent:
     name = "risk_supervisor"
 
@@ -1160,7 +1186,7 @@ class RiskSupervisorAgent:
                         f"cycle_mode={cycle_mode}; "
                         f"selected_expectancy_pct={selected_backtest.expectancy_pct:+.4f}; "
                         f"selected_profit_factor={selected_backtest.profit_factor:.4f}; "
-                        f"strategy_memory={json.dumps(strategy_memory or {}, ensure_ascii=False)}; "
+                        f"strategy_memory_brief=\n{_strategy_memory_llm_brief(strategy_memory)}\n"
                         f"aggressive_demo_mode={str(aggressive_mode).lower()}; "
                         f"trading_mode={trading_mode}"
                     ),
@@ -1217,7 +1243,7 @@ class RiskSupervisorAgent:
                     f"sentiment_summary={sentiment.summary}; "
                     f"backtest_summary={backtest.summary}; "
                     f"strategy_research_summary={strategy_research.summary}; "
-                    f"strategy_memory={json.dumps(strategy_memory or {}, ensure_ascii=False)}"
+                    f"strategy_memory_brief=\n{_strategy_memory_llm_brief(strategy_memory)}\n"
                 ),
                 trace={
                     "agent": self.name,
@@ -2113,6 +2139,8 @@ class StrategyReflectionAgent:
                 pass
         if normalized.get("entry_mode") != "capital_preservation_pilot":
             normalized.pop("pilot_candidate_id", None)
+        elif str(normalized.get("fallback_entry_mode", "normal") or "normal").strip().lower() == "base_only":
+            normalized["fallback_entry_mode"] = "normal"
         live_symbol_benchmark = reflection_context.get("live_symbol_benchmark") or {}
         current_live_symbol = str(reflection_context.get("current_live_symbol", "") or "").strip()
         research_recommendation = reflection_context.get("strategy_research_recommendation") or {}
@@ -2182,6 +2210,8 @@ class StrategyReflectionAgent:
         guarded["pilot_max_position_pct"] = min(current_pilot_max, previous_pilot_max)
         if guarded.get("entry_mode") != "capital_preservation_pilot":
             guarded.pop("pilot_candidate_id", None)
+        elif str(guarded.get("fallback_entry_mode", "normal") or "normal").strip().lower() == "base_only":
+            guarded["fallback_entry_mode"] = "normal"
 
         numeric_step_limits = {
             "cooldown_scale": float(self.settings.strategy_learning_cooldown_step_limit or 0.15),
@@ -2323,6 +2353,7 @@ class SelectorAgent:
         candidate_payload = []
         for item in candidates:
             selected = item.get("selected_strategy_backtest") or item.get("backtest", {})
+            strategy_research = item.get("strategy_research") or {}
             candidate_payload.append(
                 {
                     "symbol": item["symbol"],
@@ -2333,8 +2364,12 @@ class SelectorAgent:
                     "selection_edge_expectancy_pct": round(float(selected.get("expectancy_pct", 0.0)), 4),
                     "selection_profit_factor": round(float(selected.get("profit_factor", 0.0)), 4),
                     "baseline_cumulative_return_pct": round(float(item["backtest"]["cumulative_return_pct"]), 4),
-                    "strategy_summary": item["strategy_research"]["summary"],
-                    "account": item.get("account", {}),
+                    "selected_strategy_id": str(strategy_research.get("selected_strategy_id", "") or ""),
+                    "current_signal": str(strategy_research.get("current_signal", "") or ""),
+                    "current_adx": round(float(strategy_research.get("current_adx", 0.0) or 0.0), 4),
+                    "current_volume_ratio": round(float(strategy_research.get("current_volume_ratio", 0.0) or 0.0), 4),
+                    "execution_profile": strategy_research.get("selected_execution_profile", {}),
+                    "account": _selector_account_brief(item.get("account", {})),
                     "strategy_memory_focus": (strategy_memory or {}).get("focus_symbols", []),
                 }
             )
@@ -2346,7 +2381,7 @@ class SelectorAgent:
                     "Return JSON with keys symbol and summary. "
                     "Prefer executable ideas. If no candidate is executable, pick the symbol with the best "
                     "positive-expectancy watch setup instead of blindly defaulting to hold. "
-                    f"strategy_memory={json.dumps(strategy_memory or {}, ensure_ascii=False)}; "
+                    f"strategy_memory_brief=\n{_strategy_memory_llm_brief(strategy_memory)}\n"
                     f"fallback_symbol={fallback['symbol']}; "
                     f"candidates={json.dumps(candidate_payload, ensure_ascii=False)}"
                 ),

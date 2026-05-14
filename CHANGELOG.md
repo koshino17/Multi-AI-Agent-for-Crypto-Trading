@@ -16,6 +16,36 @@
 
 ---
 
+## v0.11.48 - Reduce observe-only lockup from heavy prompts and strict restore rules
+
+### Why
+
+- Recent `agent_traces` showed strategist / selector / risk prompts were still carrying more context than they needed, especially around raw `strategy_memory` and selector account payloads.
+- At the same time, strategy-learning restore logic still expected equity to climb back close to the original `500 USDT` baseline before relaxing controls, which made `base_only` / preservation modes sticky after a drawdown.
+- Under low-sample windows, `capital_preservation_pilot` and `fallback_entry_mode=base_only` could also stack together, leaving the system overly eager to stay in observe-only mode.
+
+### What Changed
+
+- `trading_agents/config.py` / `.env.example` / `README.md`
+  - Raised the default fast-path `LLM_TIMEOUT_SECONDS` from `18` to `45`.
+  - Relaxed `STRATEGY_LEARNING_RESTORE_EQUITY_RECOVERY_RATIO_PCT` from `99` to `95`.
+  - Added recovery knobs so restore can also happen when recent windows have real fills and live expectancy has stabilized:
+    - `STRATEGY_LEARNING_RESTORE_RECENT_WINDOWS`
+    - `STRATEGY_LEARNING_RESTORE_RECENT_ACCEPTED_ORDERS`
+    - `STRATEGY_LEARNING_RESTORE_EXPECTANCY_FLOOR_PCT`
+
+- `trading_agents/agents.py`
+  - Replaced raw `strategy_memory` dumps in strategist / risk / selector prompts with a compact `strategy_memory_brief`.
+  - Slimmed selector payloads so they carry only the account fields needed for choice, instead of the whole account blob.
+  - Prevented low-sample pilot mode from stacking `fallback_entry_mode=base_only` on top of `capital_preservation_pilot`; pilot now stays bounded without double-locking new entries.
+
+- `trading_agents/main.py`
+  - Strategy reflection context now tracks recent live expectancy per window.
+  - Restore readiness now supports an activity-based path in addition to the old equity-floor path, so the system can unlock once it has recent accepted orders and expectancy is no longer deeply negative.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage to ensure low-sample pilot mode does not keep `base_only` stacked on top of it.
+
 ## v0.11.47 - Fix unlogged perp close attribution in daily reports
 
 ### Why

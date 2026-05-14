@@ -442,7 +442,7 @@ FALLBACK_ENTRY_MIN_TRADE_DELTA_RATIO=0.30
 BUY_BALANCE_BUFFER_PCT=0.95
 FEE_HURDLE_MULTIPLIER=1.15
 FAST_CYCLE_SIGNAL_BOOST=0.08
-LLM_TIMEOUT_SECONDS=18
+LLM_TIMEOUT_SECONDS=45
 STRATEGY_REVIEW_LLM_TIMEOUT_SECONDS=60
 SENTIMENT_REQUEST_TIMEOUT_SECONDS=6
 SENTIMENT_CACHE_TTL_SECONDS=120
@@ -505,6 +505,8 @@ INTRADAY_MAX_ENTRIES_PER_EPISODE=3
 - `EXTERNAL_AI_REVIEW_ENABLED=true` 代表中午 daily review 產出後，會再呼叫外部模型幫 `TradePulse` 做一份第二視角審稿。
 - 目前第一版支援 `EXTERNAL_AI_REVIEW_PROVIDER=gemini`，透過 Gemini `generateContent` API 回收結構化評論。
 - `EXTERNAL_AI_REVIEW` 只會進 daily report / Notion `Daily Review`，不會直接影響 live strategist / risk / executor。
+- `LLM_TIMEOUT_SECONDS=45` 會把 strategist / selector / risk 的一般決策 timeout 拉高，避免在 prompt 仍有數千字元上下文時過早掉回 fallback。
+- `STRATEGY_LEARNING_RESTORE_EQUITY_RECOVERY_RATIO_PCT=95.0` 搭配 `STRATEGY_LEARNING_RESTORE_RECENT_WINDOWS=2`、`STRATEGY_LEARNING_RESTORE_RECENT_ACCEPTED_ORDERS=2`、`STRATEGY_LEARNING_RESTORE_EXPECTANCY_FLOOR_PCT=-0.02`，讓 learning controls 不再只靠 equity 幾乎回到初始資金才解鎖，也能在最近窗口已有成交且 expectancy 回穩時逐步恢復。
 
 ## Alpha Arena 第一階段 Benchmark
 
