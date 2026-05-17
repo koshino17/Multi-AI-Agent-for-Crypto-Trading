@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from trading_agents.agents import RiskSupervisorAgent, StrategyReflectionAgent
+from trading_agents.agents import RiskSupervisorAgent, StrategistAgent, StrategyReflectionAgent
 from trading_agents.llm import _trace_date_label
 from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyCandidate, StrategyResearchSnapshot, TradeIdea
 from trading_agents.reporting import (
@@ -282,6 +282,163 @@ class RuntimeRegressionTests(unittest.TestCase):
                 },
             )
             self.assertEqual(result.selected_strategy_id, "grid_range_reversion_maker_v1")
+
+    def test_fee_hurdle_multiplier_applies_in_bybit_demo_perp(self) -> None:
+        agent = RiskSupervisorAgent(llm_client=None)
+        idea = TradeIdea("buy", 0.8, "test buy", "invalidate", "intraday")
+        sentiment = SentimentSnapshot(2, 0.1, "ok", [])
+        fallback_backtest = BacktestSnapshot(0, 0, 0.0, 0.0, 0.0, "no replay")
+        selected_backtest = BacktestSnapshot(10, 3, 0.66, 0.2, 0.6, "selected replay", 0.4, -0.2, 0.12, 2.0)
+        strategy_research = StrategyResearchSnapshot(
+            base_strategy_id="grid_range_reversion_maker_v1",
+            selected_strategy_id="grid_range_reversion_maker_v1",
+            selected_strategy_name="Grid",
+            summary="selected grid maker",
+            candidates=[
+                StrategyCandidate(
+                    strategy_id="grid_range_reversion_maker_v1",
+                    name="Grid",
+                    source="research",
+                    credibility="experimental",
+                    description="maker grid",
+                    backtest=selected_backtest,
+                )
+            ],
+            selected_execution_profile={"entry_order_type": "limit", "entry_liquidity": "maker"},
+        )
+
+        approval = agent.review(
+            idea=idea,
+            sentiment=sentiment,
+            backtest=fallback_backtest,
+            strategy_research=strategy_research,
+            available_usdt=100.0,
+            available_base_asset=0.0,
+            position_side="flat",
+            last_price=95.0,
+            min_order_value_usdt=5.0,
+            min_signal_score=0.55,
+            max_position_pct=0.40,
+            trading_mode="bybit-demo-perp",
+            aggressive_mode=False,
+            expectancy_floor_pct=-0.03,
+            taker_fee_pct=0.001,
+            buy_balance_buffer_pct=0.95,
+            fee_hurdle_multiplier=1.15,
+            cycle_mode="full",
+            strategy_memory={"controls": {}},
+            use_llm=False,
+            total_equity_usdt=100.0,
+            current_position_notional_usdt=0.0,
+            current_leverage=0.0,
+            liq_price=0.0,
+            position_mm_usdt=0.0,
+            perp_max_leverage=2.0,
+            perp_min_available_balance_ratio_pct=10.0,
+            perp_min_liquidation_buffer_pct=8.0,
+        )
+        self.assertFalse(approval.approved)
+        self.assertIn("expected edge below fee hurdle", approval.reason)
+
+    def test_fast_short_flip_can_override_hold_bias(self) -> None:
+        agent = StrategistAgent(llm_client=None)
+        sentiment = SentimentSnapshot(2, 0.0, "balanced", [])
+        baseline_backtest = BacktestSnapshot(6, 2, 0.5, 0.0, 0.0, "baseline replay", 0.3, -0.2, 0.01, 1.05)
+        selected_backtest = BacktestSnapshot(8, 3, 0.55, 0.1, 0.8, "selected replay", 0.4, -0.2, 0.05, 1.25)
+        strategy_research = StrategyResearchSnapshot(
+            base_strategy_id="donchian_adx_keltner_v1",
+            selected_strategy_id="donchian_adx_keltner_v1",
+            selected_strategy_name="Donchian Keltner",
+            summary="selected bearish continuation",
+            candidates=[
+                StrategyCandidate(
+                    strategy_id="donchian_adx_keltner_v1",
+                    name="Donchian Keltner",
+                    source="research",
+                    credibility="experimental",
+                    description="trend strategy",
+                    backtest=selected_backtest,
+                )
+            ],
+            current_signal="short",
+            current_volume_ratio=1.2,
+        )
+        idea = agent._fallback_idea(  # type: ignore[attr-defined]
+            momentum=-0.0018,
+            sentiment=sentiment,
+            backtest=baseline_backtest,
+            strategy_research=strategy_research,
+            order_flow_bias=-0.12,
+            order_flow_summary="ask-side depth dominates",
+            available_usdt=100.0,
+            available_base_asset=8.0,
+            position_side="long",
+            last_price=95.0,
+            min_order_value_usdt=5.0,
+            aggressive_mode=False,
+            trading_mode="bybit-demo-perp",
+        )
+        self.assertEqual(idea.action, "sell")
+        self.assertIn("fast short flip", idea.rationale)
+
+    def test_aligned_add_on_relaxes_available_balance_guard(self) -> None:
+        agent = RiskSupervisorAgent(llm_client=None)
+        idea = TradeIdea("sell", 0.82, "trend add-on", "invalidate", "intraday")
+        sentiment = SentimentSnapshot(2, -0.1, "ok", [])
+        fallback_backtest = BacktestSnapshot(0, 0, 0.0, 0.0, 0.0, "no replay")
+        selected_backtest = BacktestSnapshot(12, 4, 0.58, 0.2, 1.1, "selected replay", 0.5, -0.2, 0.15, 1.35)
+        strategy_research = StrategyResearchSnapshot(
+            base_strategy_id="donchian_adx_keltner_v1",
+            selected_strategy_id="donchian_adx_keltner_v1",
+            selected_strategy_name="Donchian Keltner",
+            summary="selected bearish continuation",
+            candidates=[
+                StrategyCandidate(
+                    strategy_id="donchian_adx_keltner_v1",
+                    name="Donchian Keltner",
+                    source="research",
+                    credibility="experimental",
+                    description="trend strategy",
+                    backtest=selected_backtest,
+                )
+            ],
+            current_signal="short",
+            current_volume_ratio=1.2,
+            selected_execution_profile={"entry_order_type": "market", "entry_liquidity": "taker"},
+        )
+
+        approval = agent.review(
+            idea=idea,
+            sentiment=sentiment,
+            backtest=fallback_backtest,
+            strategy_research=strategy_research,
+            available_usdt=14.0,
+            available_base_asset=8.0,
+            position_side="short",
+            last_price=95.0,
+            min_order_value_usdt=5.0,
+            min_signal_score=0.55,
+            max_position_pct=0.40,
+            trading_mode="bybit-demo-perp",
+            aggressive_mode=False,
+            expectancy_floor_pct=-0.03,
+            taker_fee_pct=0.001,
+            buy_balance_buffer_pct=0.95,
+            fee_hurdle_multiplier=1.15,
+            cycle_mode="full",
+            strategy_memory={"controls": {}},
+            use_llm=False,
+            total_equity_usdt=100.0,
+            current_position_notional_usdt=70.0,
+            current_leverage=0.7,
+            liq_price=0.0,
+            position_mm_usdt=0.0,
+            perp_max_leverage=2.0,
+            perp_min_available_balance_ratio_pct=10.0,
+            perp_min_liquidation_buffer_pct=8.0,
+        )
+        self.assertTrue(approval.approved)
+        self.assertTrue(any("trend add-on balance guard relaxed" in item for item in approval.warnings))
 
     def test_trace_date_label_uses_noon_anchor(self) -> None:
         before_noon = datetime(2026, 5, 12, 1, 0, tzinfo=timezone.utc)

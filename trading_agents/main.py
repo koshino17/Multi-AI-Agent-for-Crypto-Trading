@@ -1434,10 +1434,13 @@ def _intraday_policy_exit(
         minutes_to_handoff = max((next_anchor - now_local).total_seconds() / 60.0, 0.0)
         handoff_window_minutes = max(float(getattr(settings, "intraday_report_handoff_exit_minutes", 30.0) or 30.0), 0.0)
         handoff_max_pnl_pct = float(getattr(settings, "intraday_report_handoff_max_pnl_pct", 0.45) or 0.45)
+        handoff_min_hold_bars = max(2.0, effective_stagnation_bars * 0.75)
         weak_handoff_edge = (
-            pnl_pct <= handoff_max_pnl_pct
-            or trend_has_reversed
-            or hold_bars >= max(1.5, effective_stagnation_bars * 0.5)
+            trend_has_reversed
+            or (
+                pnl_pct <= handoff_max_pnl_pct
+                and hold_bars >= handoff_min_hold_bars
+            )
         )
         if minutes_to_handoff <= handoff_window_minutes and weak_handoff_edge:
             handoff_exit_due = True

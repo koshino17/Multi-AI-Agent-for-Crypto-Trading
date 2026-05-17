@@ -16,6 +16,32 @@
 
 ---
 
+## v0.11.49 - Tighten policy exits and unblock aligned trend entries
+
+### Why
+
+- Recent daily reviews still showed three recurring trade-quality issues:
+  - `policy_exit` was sometimes producing tiny handoff-window closes with almost no edge.
+  - `projected available balance too low of equity` was still blocking add-ons mainly when a position was already open and moving in the right direction.
+  - `long failure -> short flip` remained too slow in clear down legs.
+- In addition, `FEE_HURDLE_MULTIPLIER` looked configurable in demo perp mode, but the risk layer was silently clamping it to `<= 1.0`, which meant the knob could not actually be used to make edge filters stricter.
+
+### What Changed
+
+- `trading_agents/main.py`
+  - Made report-window handoff exits more selective by requiring a stronger weak-edge condition before de-risking carry-in positions near the noon anchor.
+
+- `trading_agents/agents.py`
+  - Added a faster bearish fallback path for `long fail -> short flip` style conditions when signal, momentum, volume, and order-flow all turn down together.
+  - Reworked perp available-balance gating so aligned add-ons can use a dynamically relaxed minimum available-balance threshold instead of being blocked by the same static rule as fresh entries.
+  - Removed the demo-perp clamp that forced `FEE_HURDLE_MULTIPLIER` to `<= 1.0`, so the configured multiplier now genuinely affects cost-aware approval.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for:
+    - fee-hurdle multiplier enforcement in bybit-demo-perp
+    - fast short-flip fallback generation
+    - dynamic balance-guard relaxation for aligned add-ons
+
 ## v0.11.48 - Reduce observe-only lockup from heavy prompts and strict restore rules
 
 ### Why

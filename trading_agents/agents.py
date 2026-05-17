@@ -734,6 +734,15 @@ class StrategistAgent:
         continuation_sell_sentiment_ok = sell_sentiment_ok or (
             continuation_short_ready and sentiment.sentiment_score <= 0.75
         )
+        current_volume_ratio = float(getattr(strategy_research, "current_volume_ratio", 0.0) or 0.0)
+        fast_short_flip_ready = bool(
+            position_side in {"flat", "long"}
+            and current_signal == "short"
+            and momentum <= -0.0015
+            and current_volume_ratio >= 1.05
+            and order_flow_bias <= -0.08
+            and can_sell
+        )
 
         if momentum > (0.0010 if aggressive_mode else 0.0020) and buy_sentiment_ok and buy_flow_ok and (
             backtest_supports_long or selected_edge_positive
@@ -770,6 +779,27 @@ class StrategistAgent:
                     f"position_side={position_side}"
                 ),
                 invalidation="exit if downward momentum fades",
+                holding_horizon="intraday",
+            )
+        if fast_short_flip_ready and (
+            selected_backtest.expectancy_pct >= (-0.02 if aggressive_mode else 0.0)
+            or backtest_supports_short
+        ):
+            return TradeIdea(
+                action="sell",
+                score=min(0.64 + abs(momentum) * 18 + flow_score_boost, 0.94),
+                rationale=(
+                    "fast short flip after long-style continuation failed; "
+                    f"order_flow={order_flow_summary}; "
+                    f"momentum={momentum:+.4%}; "
+                    f"volume_ratio={current_volume_ratio:.2f}; "
+                    f"strategy={strategy_research.selected_strategy_id}; "
+                    f"current_signal={current_signal}; "
+                    f"expectancy={selected_backtest.expectancy_pct:+.2f}%; "
+                    f"profit_factor={selected_backtest.profit_factor:.2f}; "
+                    f"position_side={position_side}"
+                ),
+                invalidation="exit if bearish follow-through fails or volume expansion fades",
                 holding_horizon="intraday",
             )
         if current_signal == "short" and can_sell and continuation_sell_sentiment_ok and (
@@ -1050,7 +1080,6 @@ class RiskSupervisorAgent:
         effective_fee_hurdle_multiplier = fee_hurdle_multiplier
         if perp_mode and demo_mode:
             effective_taker_fee_pct = min(taker_fee_pct, 0.00055)
-            effective_fee_hurdle_multiplier = min(fee_hurdle_multiplier, 1.0)
         round_trip_fee_pct = effective_taker_fee_pct * 200.0
         fee_hurdle_pct = round_trip_fee_pct * max(effective_fee_hurdle_multiplier, 0.0)
         if (
@@ -1124,6 +1153,20 @@ class RiskSupervisorAgent:
             elif closing_position:
                 projected_exposure = max(current_exposure - max_notional, 0.0)
             effective_leverage = projected_exposure / current_equity if current_equity > 0 else 0.0
+            selected_signal = str(getattr(strategy_research, "current_signal", "") or "").strip().lower()
+            selected_volume_ratio = float(getattr(strategy_research, "current_volume_ratio", 0.0) or 0.0)
+            aligned_add_on = bool(
+                current_exposure > 0
+                and (
+                    (opening_long and position_side == "long" and selected_signal == "long")
+                    or (opening_short and position_side == "short" and selected_signal == "short")
+                )
+                and idea.score >= max(effective_min_signal + 0.08, 0.64)
+                and selected_backtest.expectancy_pct >= max(expectancy_floor_pct, 0.0)
+                and selected_backtest.profit_factor >= 1.05
+                and selected_volume_ratio >= 1.05
+                and effective_leverage <= max(perp_max_leverage * 0.75, 1.0)
+            )
             if perp_max_leverage > 0 and effective_leverage > perp_max_leverage + 1e-9:
                 return Approval(
                     False,
@@ -1132,16 +1175,25 @@ class RiskSupervisorAgent:
                     warnings,
                 )
             available_balance_ratio_pct = (projected_available_balance / current_equity * 100.0) if current_equity > 0 else 0.0
+            effective_min_available_balance_ratio_pct = float(perp_min_available_balance_ratio_pct or 0.0)
+            if aligned_add_on and effective_min_available_balance_ratio_pct > 0:
+                effective_min_available_balance_ratio_pct = max(
+                    effective_min_available_balance_ratio_pct * 0.7,
+                    effective_min_available_balance_ratio_pct - 3.0,
+                )
+                warnings.append(
+                    f"trend add-on balance guard relaxed to {effective_min_available_balance_ratio_pct:.1f}% of equity"
+                )
             if (
                 (opening_long or opening_short)
-                and perp_min_available_balance_ratio_pct > 0
-                and available_balance_ratio_pct < perp_min_available_balance_ratio_pct
+                and effective_min_available_balance_ratio_pct > 0
+                and available_balance_ratio_pct < effective_min_available_balance_ratio_pct
             ):
                 return Approval(
                     False,
                     (
                         "projected available balance too low: "
-                        f"{available_balance_ratio_pct:.1f}% < {perp_min_available_balance_ratio_pct:.1f}% of equity"
+                        f"{available_balance_ratio_pct:.1f}% < {effective_min_available_balance_ratio_pct:.1f}% of equity"
                     ),
                     0.0,
                     warnings,
