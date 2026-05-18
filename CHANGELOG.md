@@ -47,6 +47,9 @@
 - `tests/test_runtime_regressions.py`
   - Added regression coverage to ensure `bybit-demo-perp` keeps the canonical root while `mock` is forced into its own scoped state directory.
 
+- `trading_agents/agents.py`
+  - Selector no longer re-centers a no-trade cycle on a watch-only symbol when nothing is executable; it now keeps the fallback/live focus symbol in place for reporting and postmortem consistency.
+
 ## v0.11.49 - Tighten policy exits and unblock aligned trend entries
 
 ### Why
