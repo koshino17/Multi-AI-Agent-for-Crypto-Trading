@@ -16,6 +16,37 @@
 
 ---
 
+## v0.11.50 - Split mock state from live bybit runtime
+
+### Why
+
+- `mock` and `bybit-demo-perp` runners were both writing into the same `DATA_ROOT`, which let mock decisions and reports bleed into the live noon-window summaries.
+- This made recent daily reports look flat at `500 USDT` with `0 trades`, even though the real question was how the bybit-demo-perp line had actually performed.
+- The contamination was not only at the file level; some reporting paths were also reloading mode information from `.env`, which could silently regenerate summaries under the wrong trading mode.
+
+### What Changed
+
+- `trading_agents/storage.py`
+  - Added mode-aware storage root resolution.
+  - Kept `bybit-demo-perp` on the canonical root, while non-live modes such as `mock` now write under their own scoped subdirectories.
+
+- `trading_agents/main.py`
+  - `execute_cycle()` now builds storage from the current cycle mode, not just the shared root.
+  - Daily summary generation, daily review rebuilds, artifact refreshes, and strategy-reflection context now explicitly use the active cycle mode and storage root instead of falling back to `.env`.
+
+- `trading_agents/runner.py`
+  - Runner PID/log/state now follow the mode-aware storage root so concurrent modes stop sharing the same live state files.
+
+- `trading_agents/reporting.py`
+  - `load_daily_summary_data()` and `build_daily_summary()` now accept explicit `trading_mode` and `storage_root` overrides.
+  - This keeps rebuilds and report regeneration aligned with the actual runner that produced the records.
+
+- `trading_agents/service_manager.py` / `trading_agents_web.py`
+  - Service/UI status paths now resolve storage by mode as well, so polling and PID/log lookups follow the correct runtime lane.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage to ensure `bybit-demo-perp` keeps the canonical root while `mock` is forced into its own scoped state directory.
+
 ## v0.11.49 - Tighten policy exits and unblock aligned trend entries
 
 ### Why

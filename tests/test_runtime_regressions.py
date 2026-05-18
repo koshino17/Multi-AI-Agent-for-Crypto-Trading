@@ -18,10 +18,25 @@ from trading_agents.reporting import (
 )
 from trading_agents.research import StrategyResearchAgent
 from trading_agents.runner import _monitor_snapshot
+from trading_agents.storage import mode_storage_root
 from trading_agents_web import _runtime_settings
 
 
 class RuntimeRegressionTests(unittest.TestCase):
+    def test_mode_storage_root_keeps_bybit_live_at_canonical_root_and_scopes_mock(self) -> None:
+        self.assertEqual(
+            mode_storage_root("/tmp/tradepulse-state", "bybit-demo-perp"),
+            Path("/tmp/tradepulse-state"),
+        )
+        self.assertEqual(
+            mode_storage_root("/tmp/tradepulse-state", "mock"),
+            Path("/tmp/tradepulse-state/modes/mock"),
+        )
+        self.assertEqual(
+            mode_storage_root("/tmp/tradepulse-state/modes/mock", "mock"),
+            Path("/tmp/tradepulse-state/modes/mock"),
+        )
+
     def test_pilot_mode_review_uses_warnings_after_initialization(self) -> None:
         agent = RiskSupervisorAgent(llm_client=None)
         idea = TradeIdea("buy", 0.8, "test buy", "invalidate", "intraday")

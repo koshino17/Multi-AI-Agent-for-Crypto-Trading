@@ -16,11 +16,16 @@ from urllib.parse import parse_qs
 from trading_agents.config import load_settings
 from trading_agents.reporting import _format_stage_latency_breakdown, load_daily_summary_data, local_date_label
 from trading_agents.service_manager import start_runner_service, stop_runner_service
-from trading_agents.storage import build_storage_layout
+from trading_agents.storage import build_storage_layout, mode_storage_root
 
 
 settings = load_settings()
 storage = build_storage_layout(settings.data_root)
+
+
+def _storage_for_mode(mode: str | None = None):
+    effective_mode = str(mode or settings.trading_mode)
+    return build_storage_layout(str(mode_storage_root(settings.data_root, effective_mode)))
 
 
 def _parse_symbol_pool(raw: str) -> tuple[str, ...]:
@@ -74,8 +79,9 @@ class AgentController:
         self._runner_log_inode: int | None = None
 
     def _runner_pid(self) -> int | None:
+        current_storage = _storage_for_mode(self.mode)
         try:
-            return int(storage.runner_pid.read_text().strip())
+            return int(current_storage.runner_pid.read_text().strip())
         except Exception:
             try:
                 result = subprocess.run(
@@ -93,8 +99,9 @@ class AgentController:
             return None
 
     def _supervisor_pid(self) -> int | None:
+        current_storage = _storage_for_mode(self.mode)
         try:
-            return int(storage.runner_supervisor_pid.read_text().strip())
+            return int(current_storage.runner_supervisor_pid.read_text().strip())
         except Exception:
             try:
                 result = subprocess.run(
@@ -140,8 +147,9 @@ class AgentController:
         if self._pid_is_running(pid):
             return True
         if pid is not None:
+            current_storage = _storage_for_mode(self.mode)
             try:
-                storage.runner_pid.unlink()
+                current_storage.runner_pid.unlink()
             except OSError:
                 pass
         return False
@@ -157,9 +165,10 @@ class AgentController:
         self.logs.append(f"Runner active: mode={mode}, symbols={symbol}, monitor_poll={interval}s")
 
     def stop(self) -> None:
-        stop_runner_service(settings)
+        stop_runner_service(_runtime_settings(self.mode, self.symbol, self.interval))
+        current_storage = _storage_for_mode(self.mode)
         try:
-            storage.runner_pid.unlink()
+            current_storage.runner_pid.unlink()
         except OSError:
             pass
         self.logs.append("Runner paused for debugging.")
@@ -167,13 +176,14 @@ class AgentController:
         self.current_stage_detail = "Runner paused. Use Resume/Apply to continue continuous trading."
 
     def poll(self) -> None:
-        if not storage.runner_log.exists():
+        current_storage = _storage_for_mode(self.mode)
+        if not current_storage.runner_log.exists():
             return
-        stat = storage.runner_log.stat()
+        stat = current_storage.runner_log.stat()
         if self._runner_log_inode != stat.st_ino or stat.st_size < self._runner_log_offset:
             self._runner_log_offset = max(stat.st_size - 131072, 0)
             self._runner_log_inode = stat.st_ino
-        with storage.runner_log.open("rb") as handle:
+        with current_storage.runner_log.open("rb") as handle:
             handle.seek(self._runner_log_offset)
             chunk = handle.read()
             self._runner_log_offset = handle.tell()
@@ -272,7 +282,14 @@ class AgentController:
         approval = report.get("approval", {})
         result = report.get("result", {})
         order = report.get("order", {})
-        daily_summary = load_daily_summary_data(storage.trade_logs, local_date_label(), storage.runner_log)
+        current_storage = _storage_for_mode(self.mode)
+        daily_summary = load_daily_summary_data(
+            current_storage.trade_logs,
+            local_date_label(),
+            current_storage.runner_log,
+            trading_mode=self.mode,
+            storage_root=current_storage.root,
+        )
         financial = daily_summary.get("financial_snapshot", {})
         blocked_reason_counts = daily_summary.get("blocked_reason_counts", {})
         stage_latency_seconds = daily_summary.get("stage_latency_seconds", {})
@@ -354,7 +371,8 @@ class AgentController:
         return [(key, labels[key], self.stage_states[key]) for key in labels]
 
     def latest_summary_content(self) -> tuple[str, str]:
-        target = storage.daily_reports / f"{local_date_label()}.md"
+        current_storage = _storage_for_mode(controller.mode)
+        target = current_storage.daily_reports / f"{local_date_label()}.md"
         if not target.exists():
             return "No daily summary yet.", str(target)
         try:

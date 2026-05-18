@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from trading_agents.config import Settings
-from trading_agents.storage import build_storage_layout
+from trading_agents.storage import build_storage_layout, mode_storage_root
 
 
 RUNNER_LABEL = "com.koshino.trading-agents.runner"
@@ -31,8 +31,8 @@ def runner_state_root() -> Path:
     return Path.home() / "Library" / "Application Support" / "TradePulse" / "state"
 
 
-def runner_service_storage():
-    return build_storage_layout(str(runner_state_root()))
+def runner_service_storage(mode: str = "bybit-demo-perp"):
+    return build_storage_layout(str(mode_storage_root(runner_state_root(), mode)))
 
 
 def preferred_python(project_root: Path) -> Path:
@@ -157,7 +157,7 @@ def is_runner_launch_agent_loaded() -> bool:
 
 
 def start_runner_service(settings: Settings, project_root: Path) -> dict[str, str]:
-    storage = runner_service_storage()
+    storage = runner_service_storage(settings.trading_mode)
     runtime_root = sync_runner_runtime(project_root)
     entrypoint_path = runtime_root / "run_tradepulse_runner.py"
     python_path = preferred_python(project_root)
@@ -213,7 +213,7 @@ def start_runner_service(settings: Settings, project_root: Path) -> dict[str, st
 
 
 def stop_runner_service(settings: Settings) -> dict[str, str]:
-    storage = runner_service_storage()
+    storage = runner_service_storage(settings.trading_mode)
     if is_runner_launch_agent_loaded():
         subprocess.run(["launchctl", "bootout", runner_launch_target()], capture_output=True, text=True, check=False)
         deadline = time.time() + 10

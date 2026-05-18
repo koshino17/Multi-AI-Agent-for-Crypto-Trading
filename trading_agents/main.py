@@ -69,7 +69,7 @@ from trading_agents.reporting import (
 )
 from trading_agents.research import StrategyResearchAgent
 from trading_agents.sentiment import SentimentDataProvider, write_sentiment_record
-from trading_agents.storage import build_storage_layout, mode_scoped_path
+from trading_agents.storage import build_storage_layout, mode_scoped_path, mode_storage_root
 from trading_agents.strategy_memory import current_strategy_slot, load_strategy_memory, save_strategy_memory
 
 
@@ -88,9 +88,15 @@ def _write_daily_strategy_review(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
-def _refresh_daily_artifacts(storage, date_label: str, summary: dict | None = None) -> dict[str, dict[str, str]]:
+def _refresh_daily_artifacts(storage, date_label: str, mode: str, summary: dict | None = None) -> dict[str, dict[str, str]]:
     if summary is None:
-        summary = load_daily_summary_data(storage.trade_logs, date_label, storage.runner_log)
+        summary = load_daily_summary_data(
+            storage.trade_logs,
+            date_label,
+            storage.runner_log,
+            trading_mode=mode,
+            storage_root=storage.root,
+        )
     if not isinstance(summary, dict):
         summary = {}
     summary["date_label"] = date_label
@@ -200,14 +206,27 @@ def _recent_local_date_labels(count: int, *, end: datetime | None = None) -> lis
     ]
 
 
-def _build_strategy_reflection_context(settings, storage, current_date_label: str, daily_summary: dict, previous_memory: dict) -> dict[str, object]:
+def _build_strategy_reflection_context(
+    settings,
+    storage,
+    mode: str,
+    current_date_label: str,
+    daily_summary: dict,
+    previous_memory: dict,
+) -> dict[str, object]:
     live_symbols = _parse_symbol_pool(None, settings)
     current_live_symbol = live_symbols[0] if len(live_symbols) == 1 else ""
     lookback_days = max(int(settings.strategy_learning_lookback_days or 0), 1)
     recent_windows: list[dict[str, object]] = []
     for label in _recent_local_date_labels(lookback_days):
         try:
-            summary = load_daily_summary_data(storage.trade_logs, label, storage.runner_log)
+            summary = load_daily_summary_data(
+                storage.trade_logs,
+                label,
+                storage.runner_log,
+                trading_mode=mode,
+                storage_root=storage.root,
+            )
         except Exception:
             continue
         if not isinstance(summary, dict):
@@ -1516,11 +1535,23 @@ def _finalize_reporting(
     report["human_report"] = str(human_report_path)
     active_date_label = local_date_label()
     completed_date_label = completed_report_date_label()
-    daily_content = build_daily_summary(storage.trade_logs, active_date_label, storage.runner_log)
+    daily_content = build_daily_summary(
+        storage.trade_logs,
+        active_date_label,
+        storage.runner_log,
+        trading_mode=mode,
+        storage_root=storage.root,
+    )
     daily_report_path = write_daily_summary(storage.daily_reports, active_date_label, daily_content)
     report["daily_report"] = str(daily_report_path)
-    daily_summary = load_daily_summary_data(storage.trade_logs, active_date_label, storage.runner_log)
-    active_artifacts = _refresh_daily_artifacts(storage, active_date_label, daily_summary)
+    daily_summary = load_daily_summary_data(
+        storage.trade_logs,
+        active_date_label,
+        storage.runner_log,
+        trading_mode=mode,
+        storage_root=storage.root,
+    )
+    active_artifacts = _refresh_daily_artifacts(storage, active_date_label, mode, daily_summary)
     report["active_daily_artifacts"] = active_artifacts
     daily_summary["review_history"] = _load_recent_daily_review_history(storage, active_date_label)
     equity_history_path = mode_scoped_path(storage.equity_curve_history_state, mode)
@@ -1564,8 +1595,14 @@ def _finalize_reporting(
     completed_daily_summary: dict | None = None
     if runner_heartbeat.get("timestamp") and datetime.now().astimezone().hour >= int(settings.notion_daily_review_hour):
         try:
-            completed_daily_summary = load_daily_summary_data(storage.trade_logs, completed_date_label, storage.runner_log)
-            completed_artifacts = _refresh_daily_artifacts(storage, completed_date_label, completed_daily_summary)
+            completed_daily_summary = load_daily_summary_data(
+                storage.trade_logs,
+                completed_date_label,
+                storage.runner_log,
+                trading_mode=mode,
+                storage_root=storage.root,
+            )
+            completed_artifacts = _refresh_daily_artifacts(storage, completed_date_label, mode, completed_daily_summary)
             report["completed_daily_artifacts"] = completed_artifacts
             completed_daily_summary["date_label"] = completed_date_label
             completed_daily_summary["review_history"] = _load_recent_daily_review_history(storage, completed_date_label)
@@ -1638,14 +1675,32 @@ def _finalize_reporting(
         report["external_ai_review_sync"] = external_ai_review_sync
     report["daily_review_sync"] = daily_review_sync
     if daily_strategy_review_path.exists():
-        completed_daily_content = build_daily_summary(storage.trade_logs, completed_date_label, storage.runner_log)
+        completed_daily_content = build_daily_summary(
+            storage.trade_logs,
+            completed_date_label,
+            storage.runner_log,
+            trading_mode=mode,
+            storage_root=storage.root,
+        )
         write_daily_summary(storage.daily_reports, completed_date_label, completed_daily_content)
-        report["completed_daily_artifacts"] = _refresh_daily_artifacts(storage, completed_date_label)
-        daily_content = build_daily_summary(storage.trade_logs, active_date_label, storage.runner_log)
+        report["completed_daily_artifacts"] = _refresh_daily_artifacts(storage, completed_date_label, mode)
+        daily_content = build_daily_summary(
+            storage.trade_logs,
+            active_date_label,
+            storage.runner_log,
+            trading_mode=mode,
+            storage_root=storage.root,
+        )
         daily_report_path = write_daily_summary(storage.daily_reports, active_date_label, daily_content)
-        report["active_daily_artifacts"] = _refresh_daily_artifacts(storage, active_date_label)
+        report["active_daily_artifacts"] = _refresh_daily_artifacts(storage, active_date_label, mode)
         report["daily_report"] = str(daily_report_path)
-        daily_summary = load_daily_summary_data(storage.trade_logs, active_date_label, storage.runner_log)
+        daily_summary = load_daily_summary_data(
+            storage.trade_logs,
+            active_date_label,
+            storage.runner_log,
+            trading_mode=mode,
+            storage_root=storage.root,
+        )
         daily_summary["equity_curve"] = equity_curve
 
     strategy_memory_sync = {"status": "skipped", "reason": "12h reflection already up to date"}
@@ -1660,6 +1715,7 @@ def _finalize_reporting(
             reflection_context = _build_strategy_reflection_context(
                 settings,
                 storage,
+                mode,
                 completed_date_label,
                 reflection_summary,
                 strategy_memory,
@@ -1693,7 +1749,13 @@ def _finalize_reporting(
 
     if strategy_memory_updated and completed_daily_summary is not None:
         try:
-            completed_daily_summary = load_daily_summary_data(storage.trade_logs, completed_date_label, storage.runner_log)
+            completed_daily_summary = load_daily_summary_data(
+                storage.trade_logs,
+                completed_date_label,
+                storage.runner_log,
+                trading_mode=mode,
+                storage_root=storage.root,
+            )
             completed_daily_summary["date_label"] = completed_date_label
             completed_daily_summary["review_history"] = _load_recent_daily_review_history(storage, completed_date_label)
             refreshed_fingerprint = _daily_review_fingerprint(completed_daily_summary)
@@ -1704,12 +1766,24 @@ def _finalize_reporting(
                 **refreshed_review.__dict__,
             }
             _write_daily_strategy_review(daily_strategy_review_path, stored_review)
-            completed_daily_content = build_daily_summary(storage.trade_logs, completed_date_label, storage.runner_log)
+            completed_daily_content = build_daily_summary(
+                storage.trade_logs,
+                completed_date_label,
+                storage.runner_log,
+                trading_mode=mode,
+                storage_root=storage.root,
+            )
             write_daily_summary(storage.daily_reports, completed_date_label, completed_daily_content)
-            report["completed_daily_artifacts"] = _refresh_daily_artifacts(storage, completed_date_label)
-            daily_content = build_daily_summary(storage.trade_logs, active_date_label, storage.runner_log)
+            report["completed_daily_artifacts"] = _refresh_daily_artifacts(storage, completed_date_label, mode)
+            daily_content = build_daily_summary(
+                storage.trade_logs,
+                active_date_label,
+                storage.runner_log,
+                trading_mode=mode,
+                storage_root=storage.root,
+            )
             daily_report_path = write_daily_summary(storage.daily_reports, active_date_label, daily_content)
-            report["active_daily_artifacts"] = _refresh_daily_artifacts(storage, active_date_label)
+            report["active_daily_artifacts"] = _refresh_daily_artifacts(storage, active_date_label, mode)
             report["daily_report"] = str(daily_report_path)
         except Exception as exc:
             report["strategy_memory_rebuild"] = {"status": "error", "reason": str(exc)}
@@ -1814,7 +1888,7 @@ def execute_cycle(
         )
 
     settings = load_settings()
-    storage = build_storage_layout(settings.data_root)
+    storage = build_storage_layout(str(mode_storage_root(settings.data_root, mode)))
     now_epoch = datetime.now(timezone.utc).timestamp()
     cooldowns = _load_trade_cooldowns(storage.trade_cooldown_state)
     position_policy_state = _load_position_policy_state(storage.position_policy_state)

@@ -3113,24 +3113,28 @@ def load_daily_summary_data(
     runner_log_path: Path | None = None,
     *,
     include_control_impact: bool = True,
+    trading_mode: str | None = None,
+    storage_root: str | Path | None = None,
 ) -> dict[str, Any]:
     from trading_agents.config import load_settings
     from trading_agents.external_benchmarks import load_external_benchmark_summary
     from trading_agents.external_ai_review import external_ai_review_path, load_external_ai_review
-    from trading_agents.storage import build_storage_layout, mode_scoped_path
+    from trading_agents.storage import build_storage_layout, mode_scoped_path, mode_storage_root
 
     settings = load_settings()
-    storage = build_storage_layout(settings.data_root)
+    effective_mode = str(trading_mode or settings.trading_mode)
+    effective_root = storage_root if storage_root is not None else settings.data_root
+    storage = build_storage_layout(str(mode_storage_root(effective_root, effective_mode)))
     window_start, window_end = _window_label_to_bounds(date_label)
-    records = _filter_records_by_mode(_load_daily_records(trade_logs_dir, date_label), settings.trading_mode)
-    all_records = _filter_records_by_mode(_load_all_records(trade_logs_dir), settings.trading_mode)
+    records = _filter_records_by_mode(_load_daily_records(trade_logs_dir, date_label), effective_mode)
+    all_records = _filter_records_by_mode(_load_all_records(trade_logs_dir), effective_mode)
     runner_event_counts = _load_runner_event_counts(runner_log_path, date_label)
-    position_policy_metadata = _load_position_policy_metadata(storage.position_policy_state, settings.trading_mode)
+    position_policy_metadata = _load_position_policy_metadata(storage.position_policy_state, effective_mode)
     summary = summarize_daily_records(records, runner_event_counts)
     summary["date_label"] = date_label
     summary["window_start"] = window_start.isoformat()
     summary["window_end"] = window_end.isoformat()
-    summary["mode"] = settings.trading_mode
+    summary["mode"] = effective_mode
     summary["financial_snapshot"] = _build_financial_snapshot(
         records,
         all_records,
@@ -3139,8 +3143,8 @@ def load_daily_summary_data(
         position_policy_metadata=position_policy_metadata,
     )
     summary["equity_curve"] = load_equity_curve_summary(
-        mode_scoped_path(storage.equity_curve_history_state, settings.trading_mode),
-        mode_scoped_path(storage.equity_curve_svg, settings.trading_mode),
+        mode_scoped_path(storage.equity_curve_history_state, effective_mode),
+        mode_scoped_path(storage.equity_curve_svg, effective_mode),
     )
     summary["external_benchmarks"] = _load_external_benchmark_summary_for_window(
         storage.external_benchmark_state,
@@ -3219,6 +3223,8 @@ def load_daily_summary_data(
                 previous_label,
                 runner_log_path,
                 include_control_impact=False,
+                trading_mode=effective_mode,
+                storage_root=effective_root,
             )
         except Exception:
             previous_summary = {}
@@ -3228,8 +3234,21 @@ def load_daily_summary_data(
     return summary
 
 
-def build_daily_summary(trade_logs_dir: Path, date_label: str, runner_log_path: Path | None = None) -> str:
-    summary = load_daily_summary_data(trade_logs_dir, date_label, runner_log_path)
+def build_daily_summary(
+    trade_logs_dir: Path,
+    date_label: str,
+    runner_log_path: Path | None = None,
+    *,
+    trading_mode: str | None = None,
+    storage_root: str | Path | None = None,
+) -> str:
+    summary = load_daily_summary_data(
+        trade_logs_dir,
+        date_label,
+        runner_log_path,
+        trading_mode=trading_mode,
+        storage_root=storage_root,
+    )
     window_start, window_end = _window_label_to_bounds(date_label)
     summary_mode = str(summary.get("mode", ""))
     total = summary["total"]

@@ -45,6 +45,20 @@ def mode_scoped_path(path: Path, mode: str) -> Path:
     return path.with_name(f"{stem}-{safe_mode}{suffix}")
 
 
+def mode_storage_root(root: str | Path, mode: str, canonical_mode: str = "bybit-demo-perp") -> Path:
+    base = Path(root).expanduser()
+    if not base.is_absolute():
+        base = (Path.cwd() / base).resolve()
+    normalized_mode = str(mode or "").strip().lower()
+    if not normalized_mode or normalized_mode == canonical_mode:
+        return base
+    safe_mode = "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in normalized_mode)
+    safe_mode = safe_mode.strip("-_") or "default"
+    if len(base.parts) >= 2 and base.parts[-2:] == ("modes", safe_mode):
+        return base
+    return base / "modes" / safe_mode
+
+
 def build_storage_layout(root: str) -> StorageLayout:
     base = Path(root).expanduser()
     if not base.is_absolute():

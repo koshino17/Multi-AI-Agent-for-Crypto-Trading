@@ -19,7 +19,7 @@ from trading_agents.main import _build_exchange, _parse_symbol_pool, execute_cyc
 from trading_agents.notion_sync import sync_notion_heartbeat
 from trading_agents.reporting import load_daily_summary_data, local_date_label
 from trading_agents.strategy_research import run_strategy_research_cycle
-from trading_agents.storage import build_storage_layout
+from trading_agents.storage import build_storage_layout, mode_storage_root
 
 
 _running = True
@@ -221,7 +221,7 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
     signal.signal(signal.SIGTERM, _stop)
 
     settings = load_settings()
-    storage = build_storage_layout(settings.data_root)
+    storage = build_storage_layout(str(mode_storage_root(settings.data_root, mode)))
     _RUNNER_LOG_PATH = storage.runner_log
     _write_pid(storage.runner_pid)
     exchange = _build_exchange(mode, settings)
