@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 from trading_agents.agents import RiskSupervisorAgent, StrategistAgent, StrategyReflectionAgent
 from trading_agents.llm import _trace_date_label
+from trading_agents.main import _prefilter_untradeable_candidate, _resolve_daily_review
 from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyCandidate, StrategyResearchSnapshot, TradeIdea
 from trading_agents.reporting import (
     _build_financial_snapshot,
@@ -584,6 +585,92 @@ class RuntimeRegressionTests(unittest.TestCase):
             oracle_payload = json.loads(Path(oracle_paths["json_path"]).read_text())
             self.assertIn("carry_in_drag", oracle_payload["root_cause_tags"])
             self.assertIn("missed_rebound_participation", oracle_payload["root_cause_tags"])
+
+    def test_daily_review_fallback_error_is_persisted_without_repeat_for_same_fingerprint(self) -> None:
+        class StubReviewer:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def evaluate_with_metadata(self, date_label: str, daily_summary: dict):
+                from trading_agents.models import DailyReviewSnapshot
+
+                self.calls += 1
+                return (
+                    DailyReviewSnapshot(
+                        title=f"Trading Agents Daily Review - {date_label}",
+                        operations_summary="ops",
+                        decision_summary="decision",
+                        improvement_directions=["one"],
+                        action_items=["two"],
+                    ),
+                    {"review_status": "fallback_error", "review_error": "timeout", "used_fallback": True},
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            storage = SimpleNamespace(service=root)
+            summary = {
+                "financial_snapshot": {"daily_pnl_usdt": -1.0, "realized_pnl_usdt": 0.0, "unrealized_pnl_usdt": 0.0},
+                "loss_attribution": {},
+                "symbol_postmortem": {"symbol": "SOL/USDT"},
+                "external_benchmarks": {},
+                "strategy_memory_current": {},
+            }
+            reviewer = StubReviewer()
+            first = _resolve_daily_review(
+                storage=storage,
+                date_label="2026-05-19",
+                daily_summary=summary,
+                daily_reviewer=reviewer,
+            )
+            second = _resolve_daily_review(
+                storage=storage,
+                date_label="2026-05-19",
+                daily_summary=summary,
+                daily_reviewer=reviewer,
+            )
+            self.assertEqual(reviewer.calls, 1)
+            self.assertEqual(first.get("review_status"), "fallback_error")
+            self.assertEqual(second.get("review_status"), "fallback_error")
+
+    def test_prefilter_blocks_negative_edge_candidate_before_risk(self) -> None:
+        strategy_research = StrategyResearchSnapshot(
+            base_strategy_id="grid_range_reversion_maker_v1",
+            selected_strategy_id="grid_range_reversion_maker_v1",
+            selected_strategy_name="Grid",
+            summary="selected grid maker",
+            candidates=[
+                StrategyCandidate(
+                    strategy_id="grid_range_reversion_maker_v1",
+                    name="Grid",
+                    source="research",
+                    credibility="experimental",
+                    description="maker grid",
+                    backtest=BacktestSnapshot(
+                        sample_count=100,
+                        trade_count=6,
+                        win_rate=0.33,
+                        avg_return_pct=-0.08,
+                        cumulative_return_pct=-0.12,
+                        summary="weak candidate",
+                        avg_win_pct=0.10,
+                        avg_loss_pct=-0.14,
+                        expectancy_pct=-0.05,
+                        profit_factor=0.70,
+                    ),
+                )
+            ],
+        )
+        idea, reason = _prefilter_untradeable_candidate(
+            idea=TradeIdea("buy", 0.71, "try long", "invalidate", "intraday"),
+            strategy_research=strategy_research,
+            position_side="flat",
+            mode="bybit-demo-perp",
+            aggressive_mode=False,
+            policy_exit=False,
+        )
+        self.assertEqual(idea.action, "hold")
+        self.assertIn("candidate prefiltered before risk", reason)
 
 
 if __name__ == "__main__":

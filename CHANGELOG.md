@@ -1771,3 +1771,14 @@ What Changed:
 - Added `scripts/run_strategy_research_cycle.py` for manual invocation of the same research loop used by the runner.
 - The runner now performs low-frequency strategy research automatically during flat periods, using configurable intervals, candle windows, and validation symbols.
 - New settings expose this behavior explicitly: `STRATEGY_RESEARCH_*` now controls whether idle-time research runs, how often it runs, which windows it tests, and which validation symbols it uses.
+# v0.11.51 - Stop daily-review storms and prefilter weak candidates
+
+Why:
+- `daily-reviewer` could keep getting retriggered for the same noon window when the same completed summary fingerprint repeatedly failed through the LLM path, creating noisy trace files and unstable review quality.
+- Strategy candidates that were already negative after costs and weak on profit factor were still flowing into risk approval, only to be rejected later by the fee hurdle. That created noisy proposals without adding useful learning.
+
+What Changed:
+- Added fingerprint-aware daily review resolution so a fallback/error review is persisted once per summary fingerprint and reused instead of retriggering the reviewer again in the same window.
+- `DailyReviewAgent` now returns review metadata (`review_status`, `review_error`, `used_fallback`) alongside the snapshot so report artifacts can distinguish true LLM success from stable fallback output.
+- Added a pre-risk candidate filter that converts clearly weak opening ideas into `hold` before the risk layer when the selected strategy replay is already negative after costs and weak on profit factor.
+- Added regression tests to lock both behaviors: no repeated fallback-error review attempts for the same fingerprint, and pre-risk filtering of clearly weak candidates.

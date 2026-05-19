@@ -88,6 +88,36 @@ def _write_daily_strategy_review(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
+def _stored_daily_review_matches_fingerprint(stored_review: dict, summary_fingerprint: str) -> bool:
+    return bool(
+        stored_review
+        and stored_review.get("summary_fingerprint") == summary_fingerprint
+    )
+
+
+def _resolve_daily_review(
+    *,
+    storage,
+    date_label: str,
+    daily_summary: dict,
+    daily_reviewer: DailyReviewAgent,
+) -> dict:
+    summary_fingerprint = _daily_review_fingerprint(daily_summary)
+    stored_review = _read_json_file(_daily_strategy_review_path(storage, date_label))
+    if _stored_daily_review_matches_fingerprint(stored_review, summary_fingerprint):
+        return stored_review
+
+    snapshot, metadata = daily_reviewer.evaluate_with_metadata(date_label, daily_summary)
+    stored_review = {
+        "date_label": date_label,
+        "summary_fingerprint": summary_fingerprint,
+        **snapshot.__dict__,
+        **metadata,
+    }
+    _write_daily_strategy_review(_daily_strategy_review_path(storage, date_label), stored_review)
+    return stored_review
+
+
 def _refresh_daily_artifacts(storage, date_label: str, mode: str, summary: dict | None = None) -> dict[str, dict[str, str]]:
     if summary is None:
         summary = load_daily_summary_data(
@@ -822,6 +852,64 @@ def _guard_fallback_open_exposure(
         f"base={current_signal}, score={score:.2f}, momentum={momentum_pct:.2f}%, "
         f"volume={volume_ratio:.2f}x, trade_delta={trade_delta_ratio:+.2f}"
     )
+
+
+def _prefilter_untradeable_candidate(
+    *,
+    idea: TradeIdea,
+    strategy_research,
+    position_side: str,
+    mode: str,
+    aggressive_mode: bool,
+    policy_exit: bool,
+) -> tuple[TradeIdea, str]:
+    if policy_exit:
+        return idea, ""
+    action = str(getattr(idea, "action", "hold") or "hold").lower()
+    if action not in {"buy", "sell"}:
+        return idea, ""
+    if not _opens_new_exposure(action, position_side=position_side, mode=mode):
+        return idea, ""
+
+    selected_backtest = None
+    for candidate in getattr(strategy_research, "candidates", []) or []:
+        if getattr(candidate, "strategy_id", "") == getattr(strategy_research, "selected_strategy_id", ""):
+            selected_backtest = candidate.backtest
+            break
+    if selected_backtest is None:
+        return idea, ""
+
+    trade_count = int(getattr(selected_backtest, "trade_count", 0) or 0)
+    expectancy_pct = float(getattr(selected_backtest, "expectancy_pct", 0.0) or 0.0)
+    profit_factor = float(getattr(selected_backtest, "profit_factor", 0.0) or 0.0)
+    cumulative_return_pct = float(getattr(selected_backtest, "cumulative_return_pct", 0.0) or 0.0)
+    min_trade_count = 3
+    expectancy_floor = -0.02 if aggressive_mode else -0.01
+    pf_floor = 0.95 if aggressive_mode else 1.0
+    cumulative_floor = -0.05 if aggressive_mode else 0.0
+
+    if (
+        trade_count >= min_trade_count
+        and expectancy_pct <= expectancy_floor
+        and profit_factor < pf_floor
+        and cumulative_return_pct <= cumulative_floor
+    ):
+        filtered = TradeIdea(
+            action="hold",
+            score=min(float(getattr(idea, "score", 0.40) or 0.40), 0.42),
+            rationale=(
+                f"{idea.rationale}; converted to hold before risk because selected strategy replay is already "
+                f"negative after costs (expectancy {expectancy_pct:+.2f}%, PF {profit_factor:.2f}, "
+                f"cumulative {cumulative_return_pct:+.2f}%)"
+            ),
+            invalidation="wait for research recovery, a stronger benchmark window, or the next reflection cycle",
+            holding_horizon="none",
+        )
+        return (
+            filtered,
+            f"candidate prefiltered before risk: expectancy {expectancy_pct:+.2f}% / pf {profit_factor:.2f} / cumulative {cumulative_return_pct:+.2f}%",
+        )
+    return idea, ""
 
 
 def _load_position_policy_state(path: Path) -> dict[str, dict]:
@@ -1606,20 +1694,12 @@ def _finalize_reporting(
             report["completed_daily_artifacts"] = completed_artifacts
             completed_daily_summary["date_label"] = completed_date_label
             completed_daily_summary["review_history"] = _load_recent_daily_review_history(storage, completed_date_label)
-            summary_fingerprint = _daily_review_fingerprint(completed_daily_summary)
-            stored_review = _read_json_file(daily_strategy_review_path)
-            if (
-                not stored_review
-                or stored_review.get("date_label") != completed_date_label
-                or stored_review.get("summary_fingerprint") != summary_fingerprint
-            ):
-                daily_review = daily_reviewer.evaluate(completed_date_label, completed_daily_summary)
-                stored_review = {
-                    "date_label": completed_date_label,
-                    "summary_fingerprint": summary_fingerprint,
-                    **daily_review.__dict__,
-                }
-                _write_daily_strategy_review(daily_strategy_review_path, stored_review)
+            stored_review = _resolve_daily_review(
+                storage=storage,
+                date_label=completed_date_label,
+                daily_summary=completed_daily_summary,
+                daily_reviewer=daily_reviewer,
+            )
             daily_review_payload = {key: value for key, value in stored_review.items() if key != "date_label"}
             if _daily_review_already_published(storage.notion_daily_review_state, completed_date_label):
                 state = _read_json_file(storage.notion_daily_review_state)
@@ -1758,14 +1838,12 @@ def _finalize_reporting(
             )
             completed_daily_summary["date_label"] = completed_date_label
             completed_daily_summary["review_history"] = _load_recent_daily_review_history(storage, completed_date_label)
-            refreshed_fingerprint = _daily_review_fingerprint(completed_daily_summary)
-            refreshed_review = daily_reviewer.evaluate(completed_date_label, completed_daily_summary)
-            stored_review = {
-                "date_label": completed_date_label,
-                "summary_fingerprint": refreshed_fingerprint,
-                **refreshed_review.__dict__,
-            }
-            _write_daily_strategy_review(daily_strategy_review_path, stored_review)
+            stored_review = _resolve_daily_review(
+                storage=storage,
+                date_label=completed_date_label,
+                daily_summary=completed_daily_summary,
+                daily_reviewer=daily_reviewer,
+            )
             completed_daily_content = build_daily_summary(
                 storage.trade_logs,
                 completed_date_label,
@@ -2114,6 +2192,14 @@ def execute_cycle(
         else:
             # Keep a single guard reason in the report for attribution/reporting simplicity.
             fallback_guard_reason = str(fallback_guard_reason)
+        idea, prefilter_reason = _prefilter_untradeable_candidate(
+            idea=idea,
+            strategy_research=strategy_research,
+            position_side=position_side,
+            mode=mode,
+            aggressive_mode=settings.demo_aggressive_mode,
+            policy_exit=bool(policy_idea is not None),
+        )
         decision_source = _derive_decision_source(
             idea=idea,
             strategy_research=strategy_research,
@@ -2321,6 +2407,7 @@ def execute_cycle(
                     "risk_feedback": risk_feedback,
                     "fallback_guard_reason": fallback_guard_reason,
                     "memory_guard_reason": memory_guard_reason,
+                    "prefilter_reason": prefilter_reason,
                 },
                 "position_context": position_context,
                 "policy_exit": bool(policy_idea is not None),

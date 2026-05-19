@@ -1453,9 +1453,13 @@ class DailyReviewAgent:
         self.llm_client = llm_client
 
     def evaluate(self, date_label: str, daily_summary: dict) -> DailyReviewSnapshot:
+        snapshot, _metadata = self.evaluate_with_metadata(date_label, daily_summary)
+        return snapshot
+
+    def evaluate_with_metadata(self, date_label: str, daily_summary: dict) -> tuple[DailyReviewSnapshot, dict[str, object]]:
         fallback = self._fallback_review(date_label, daily_summary)
         if self.llm_client is None:
-            return fallback
+            return fallback, {"review_status": "fallback_no_llm", "review_error": "", "used_fallback": True}
         llm_summary = _daily_summary_llm_context(daily_summary)
         llm_brief = _daily_summary_llm_brief(llm_summary)
         try:
@@ -1488,7 +1492,7 @@ class DailyReviewAgent:
             normalized_actions = [str(item).strip() for item in action_items if str(item).strip()]
             if not normalized_actions:
                 normalized_actions = fallback.action_items
-            return DailyReviewSnapshot(
+            snapshot = DailyReviewSnapshot(
                 title=str(response.get("title", fallback.title)).strip() or fallback.title,
                 operations_summary=str(response.get("operations_summary", fallback.operations_summary)).strip()
                 or fallback.operations_summary,
@@ -1502,8 +1506,13 @@ class DailyReviewAgent:
                 consensus_summary=str(response.get("consensus_summary", fallback.consensus_summary)).strip() or fallback.consensus_summary,
                 action_items=normalized_actions[:5],
             )
-        except Exception:
-            return fallback
+            return snapshot, {"review_status": "ok", "review_error": "", "used_fallback": False}
+        except Exception as exc:
+            return fallback, {
+                "review_status": "fallback_error",
+                "review_error": str(exc),
+                "used_fallback": True,
+            }
 
     def _fallback_review(self, date_label: str, daily_summary: dict) -> DailyReviewSnapshot:
         action_counts = daily_summary.get("action_counts", {})
