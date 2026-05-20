@@ -3931,6 +3931,21 @@ def build_daily_summary(
         strategy_research = latest.get("strategy_research")
         if strategy_research:
             lines.append(f"- Strategy Research: {strategy_research['summary']}")
+        market_structure = latest.get("market_structure") or {}
+        if market_structure:
+            lines.append(
+                "- Market Structure: "
+                f"PO3={market_structure.get('po3_phase_hint', 'unknown')} | "
+                f"POC {float(market_structure.get('poc_distance_bps', 0.0)):+.1f}bps | "
+                f"VAH {float(market_structure.get('value_area_high_distance_bps', 0.0)):+.1f}bps | "
+                f"VAL {float(market_structure.get('value_area_low_distance_bps', 0.0)):+.1f}bps"
+            )
+            lines.append(
+                "- FVG Context: "
+                f"bullish {float(market_structure.get('nearest_bullish_fvg_distance_bps', 0.0)):+.1f}bps | "
+                f"bearish {float(market_structure.get('nearest_bearish_fvg_distance_bps', 0.0)):+.1f}bps | "
+                f"fill {float(market_structure.get('fvg_fill_ratio', 0.0)):.2f}"
+            )
         if latest.get("idea", {}).get("rationale"):
             lines.append(f"- Why This Decision: {latest['idea']['rationale']}")
         strategy_memory = summary.get("strategy_memory_current") or latest.get("strategy_memory") or {}

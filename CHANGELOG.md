@@ -16,6 +16,41 @@
 
 ---
 
+## v0.11.53 - Add deterministic market-structure features
+
+### Why
+
+- We wanted to explore PO3 / POC / VAL / FVG ideas without turning `TradePulse` into an LLM-driven pattern-guessing engine.
+- The safest first step was to compute these as deterministic snapshot features, then expose them in reports and traces before letting them influence live execution.
+
+### What Changed
+
+- `trading_agents/models.py`
+  - Extended `MarketSnapshot` with deterministic market-structure fields:
+    - `poc_*`
+    - `value_area_*`
+    - `nearest_*_fvg_distance_bps`
+    - `fvg_fill_ratio`
+    - `po3_phase_hint`
+
+- `trading_agents/exchange.py`
+  - Added lightweight value-profile, fair-value-gap, and PO3-hint feature builders.
+  - Wired those features into spot, perp, and ccxt-backed market snapshots.
+
+- `trading_agents/main.py`
+  - Decision payloads now carry a `market_structure` section so runtime logs and downstream artifacts can inspect the new features.
+
+- `trading_agents/reporting.py`
+  - `Latest Decision` now shows a compact `Market Structure` and `FVG Context` summary.
+
+- `tests/test_runtime_regressions.py`
+  - Added a regression test to ensure the new snapshot features are present and non-empty.
+
+### Result
+
+- `TradePulse` now records deterministic PO3 / POC / VAL / FVG-style structure hints in the snapshot layer.
+- We can inspect them in daily reports and traces before deciding whether they deserve a role inside fallback guards or execution logic.
+
 ## v0.11.50 - Split mock state from live bybit runtime
 
 ### Why

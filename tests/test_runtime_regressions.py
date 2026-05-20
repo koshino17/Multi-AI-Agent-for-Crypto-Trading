@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from trading_agents.agents import RiskSupervisorAgent, StrategistAgent, StrategyReflectionAgent
+from trading_agents.exchange import _build_microstructure_features
 from trading_agents.llm import _trace_date_label
 from trading_agents.main import _prefilter_untradeable_candidate, _resolve_daily_review
 from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyCandidate, StrategyResearchSnapshot, TradeIdea
@@ -767,6 +768,29 @@ class RuntimeRegressionTests(unittest.TestCase):
         }
         reflection = agent.evaluate("2026-05-20-day", daily_summary, reflection_context=reflection_context)
         self.assertGreaterEqual(float(reflection.controls.get("cooldown_scale", 0.0) or 0.0), 0.75)
+
+    def test_microstructure_features_include_value_profile_fvg_and_po3_hints(self) -> None:
+        features = _build_microstructure_features(
+            bids=[[99.9, 10], [99.8, 8]],
+            asks=[[100.1, 9], [100.2, 7]],
+            trades=[
+                {"price": 100.0, "size": 2.0, "side": "Buy"},
+                {"price": 99.95, "size": 1.5, "side": "Sell"},
+            ],
+            last_price=100.0,
+            highs=[100.0, 100.1, 100.2, 100.3, 100.4, 100.45, 100.5, 100.55, 100.6, 100.65, 100.7, 100.75],
+            lows=[99.8, 99.85, 99.9, 99.95, 100.0, 100.05, 100.1, 100.15, 100.2, 100.25, 100.5, 100.55],
+            closes=[99.9, 99.95, 100.0, 100.05, 100.1, 100.15, 100.2, 100.25, 100.3, 100.35, 100.6, 100.62],
+            volumes=[10, 12, 11, 14, 13, 15, 16, 12, 13, 14, 20, 18],
+        )
+        self.assertIn("poc_price", features)
+        self.assertIn("value_area_high_price", features)
+        self.assertIn("value_area_low_price", features)
+        self.assertIn("nearest_bullish_fvg_distance_bps", features)
+        self.assertIn("nearest_bearish_fvg_distance_bps", features)
+        self.assertIn("fvg_fill_ratio", features)
+        self.assertIn("po3_phase_hint", features)
+        self.assertTrue(str(features["po3_phase_hint"]))
 
 
 if __name__ == "__main__":

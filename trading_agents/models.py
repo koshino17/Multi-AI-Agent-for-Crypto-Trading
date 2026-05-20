@@ -38,6 +38,16 @@ class MarketSnapshot:
     large_buy_count: int = 0
     large_sell_count: int = 0
     orderbook_levels: int = 0
+    poc_price: float = 0.0
+    poc_distance_bps: float = 0.0
+    value_area_high_price: float = 0.0
+    value_area_low_price: float = 0.0
+    value_area_high_distance_bps: float = 0.0
+    value_area_low_distance_bps: float = 0.0
+    nearest_bullish_fvg_distance_bps: float = 0.0
+    nearest_bearish_fvg_distance_bps: float = 0.0
+    fvg_fill_ratio: float = 0.0
+    po3_phase_hint: str = "unknown"
 
 
 @dataclass(frozen=True)

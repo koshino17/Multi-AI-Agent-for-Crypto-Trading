@@ -50,6 +50,10 @@ def _build_microstructure_features(
     asks: list,
     trades: list[dict],
     last_price: float,
+    highs: list[float] | None = None,
+    lows: list[float] | None = None,
+    closes: list[float] | None = None,
+    volumes: list[float] | None = None,
 ) -> dict:
     normalized_bids = [(float(item[0]), float(item[1])) for item in bids if len(item) >= 2]
     normalized_asks = [(float(item[0]), float(item[1])) for item in asks if len(item) >= 2]
@@ -113,6 +117,25 @@ def _build_microstructure_features(
     large_buy_count = sum(1 for side, notional in trade_notionals if side == "Buy" and notional >= large_threshold)
     large_sell_count = sum(1 for side, notional in trade_notionals if side == "Sell" and notional >= large_threshold)
 
+    profile = _build_value_profile_features(
+        last_price=last_price,
+        highs=highs or [],
+        lows=lows or [],
+        closes=closes or [],
+        volumes=volumes or [],
+    )
+    fvg = _build_fvg_features(
+        last_price=last_price,
+        highs=highs or [],
+        lows=lows or [],
+    )
+    po3_hint = _infer_po3_phase_hint(
+        last_price=last_price,
+        highs=highs or [],
+        lows=lows or [],
+        closes=closes or [],
+    )
+
     return {
         "best_bid_price": round(best_bid, 6),
         "best_ask_price": round(best_ask, 6),
@@ -139,7 +162,195 @@ def _build_microstructure_features(
         "large_buy_count": large_buy_count,
         "large_sell_count": large_sell_count,
         "orderbook_levels": min(len(normalized_bids), len(normalized_asks)),
+        **profile,
+        **fvg,
+        "po3_phase_hint": po3_hint,
     }
+
+
+def _distance_bps(last_price: float, reference_price: float) -> float:
+    if last_price <= 0 or reference_price <= 0:
+        return 0.0
+    return ((reference_price - last_price) / last_price) * 10000.0
+
+
+def _build_value_profile_features(
+    *,
+    last_price: float,
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    volumes: list[float],
+) -> dict:
+    if not closes or not volumes:
+        return {
+            "poc_price": 0.0,
+            "poc_distance_bps": 0.0,
+            "value_area_high_price": 0.0,
+            "value_area_low_price": 0.0,
+            "value_area_high_distance_bps": 0.0,
+            "value_area_low_distance_bps": 0.0,
+        }
+
+    window_closes = closes[-24:]
+    window_volumes = volumes[-24:]
+    if not window_closes or not window_volumes:
+        return {
+            "poc_price": 0.0,
+            "poc_distance_bps": 0.0,
+            "value_area_high_price": 0.0,
+            "value_area_low_price": 0.0,
+            "value_area_high_distance_bps": 0.0,
+            "value_area_low_distance_bps": 0.0,
+        }
+    price_high = max(highs[-24:] or window_closes)
+    price_low = min(lows[-24:] or window_closes)
+    if price_high <= price_low:
+        price_high = max(window_closes)
+        price_low = min(window_closes)
+    if price_high <= price_low:
+        poc_price = window_closes[-1]
+        return {
+            "poc_price": round(poc_price, 6),
+            "poc_distance_bps": round(_distance_bps(last_price, poc_price), 4),
+            "value_area_high_price": round(poc_price, 6),
+            "value_area_low_price": round(poc_price, 6),
+            "value_area_high_distance_bps": round(_distance_bps(last_price, poc_price), 4),
+            "value_area_low_distance_bps": round(_distance_bps(last_price, poc_price), 4),
+        }
+
+    bucket_count = max(min(len(window_closes), 24), 8)
+    step = (price_high - price_low) / float(bucket_count)
+    if step <= 0:
+        step = max(price_high * 0.0005, 0.0001)
+
+    bucket_volumes = [0.0 for _ in range(bucket_count)]
+    bucket_centers = [price_low + (index + 0.5) * step for index in range(bucket_count)]
+    for close, volume in zip(window_closes, window_volumes):
+        idx = int((close - price_low) / step) if step > 0 else 0
+        idx = max(0, min(idx, bucket_count - 1))
+        bucket_volumes[idx] += float(volume)
+
+    poc_index = max(range(bucket_count), key=lambda index: bucket_volumes[index])
+    poc_price = bucket_centers[poc_index]
+    total_volume = sum(bucket_volumes)
+    if total_volume <= 0:
+        vah = val = poc_price
+    else:
+        included = {poc_index}
+        value_area_volume = bucket_volumes[poc_index]
+        left = poc_index - 1
+        right = poc_index + 1
+        target = total_volume * 0.70
+        while value_area_volume < target and (left >= 0 or right < bucket_count):
+            left_volume = bucket_volumes[left] if left >= 0 else -1.0
+            right_volume = bucket_volumes[right] if right < bucket_count else -1.0
+            if right_volume >= left_volume:
+                if right < bucket_count:
+                    included.add(right)
+                    value_area_volume += bucket_volumes[right]
+                    right += 1
+                elif left >= 0:
+                    included.add(left)
+                    value_area_volume += bucket_volumes[left]
+                    left -= 1
+            else:
+                if left >= 0:
+                    included.add(left)
+                    value_area_volume += bucket_volumes[left]
+                    left -= 1
+                elif right < bucket_count:
+                    included.add(right)
+                    value_area_volume += bucket_volumes[right]
+                    right += 1
+        vah = max(bucket_centers[index] for index in included)
+        val = min(bucket_centers[index] for index in included)
+
+    return {
+        "poc_price": round(poc_price, 6),
+        "poc_distance_bps": round(_distance_bps(last_price, poc_price), 4),
+        "value_area_high_price": round(vah, 6),
+        "value_area_low_price": round(val, 6),
+        "value_area_high_distance_bps": round(_distance_bps(last_price, vah), 4),
+        "value_area_low_distance_bps": round(_distance_bps(last_price, val), 4),
+    }
+
+
+def _build_fvg_features(
+    *,
+    last_price: float,
+    highs: list[float],
+    lows: list[float],
+) -> dict:
+    bullish_gap_midpoints: list[float] = []
+    bearish_gap_midpoints: list[float] = []
+    nearest_fill_ratio = 0.0
+    window_highs = highs[-32:]
+    window_lows = lows[-32:]
+    for index in range(2, min(len(window_highs), len(window_lows))):
+        prior_high = float(window_highs[index - 2])
+        prior_low = float(window_lows[index - 2])
+        current_high = float(window_highs[index])
+        current_low = float(window_lows[index])
+        if current_low > prior_high:
+            midpoint = (current_low + prior_high) / 2.0
+            bullish_gap_midpoints.append(midpoint)
+            if prior_high <= last_price <= current_low:
+                gap_size = max(current_low - prior_high, 0.000001)
+                nearest_fill_ratio = max(nearest_fill_ratio, min((last_price - prior_high) / gap_size, 1.0))
+        if current_high < prior_low:
+            midpoint = (current_high + prior_low) / 2.0
+            bearish_gap_midpoints.append(midpoint)
+            if current_high <= last_price <= prior_low:
+                gap_size = max(prior_low - current_high, 0.000001)
+                nearest_fill_ratio = max(nearest_fill_ratio, min((prior_low - last_price) / gap_size, 1.0))
+
+    nearest_bullish = (
+        min((_distance_bps(last_price, midpoint) for midpoint in bullish_gap_midpoints), key=abs)
+        if bullish_gap_midpoints
+        else 0.0
+    )
+    nearest_bearish = (
+        min((_distance_bps(last_price, midpoint) for midpoint in bearish_gap_midpoints), key=abs)
+        if bearish_gap_midpoints
+        else 0.0
+    )
+    return {
+        "nearest_bullish_fvg_distance_bps": round(nearest_bullish, 4),
+        "nearest_bearish_fvg_distance_bps": round(nearest_bearish, 4),
+        "fvg_fill_ratio": round(max(0.0, min(nearest_fill_ratio, 1.0)), 4),
+    }
+
+
+def _infer_po3_phase_hint(
+    *,
+    last_price: float,
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+) -> str:
+    if len(closes) < 12 or len(highs) < 12 or len(lows) < 12:
+        return "unknown"
+    recent_high = max(highs[-8:])
+    recent_low = min(lows[-8:])
+    broader_high = max(highs[-24:])
+    broader_low = min(lows[-24:])
+    recent_range = recent_high - recent_low
+    broader_range = max(broader_high - broader_low, 0.000001)
+    recent_trend = closes[-1] - closes[-4]
+    prior_close = closes[-2] if len(closes) >= 2 else closes[-1]
+
+    if recent_range / broader_range <= 0.38:
+        return "accumulation"
+    if recent_high >= broader_high * 0.9995 and closes[-1] < recent_high and closes[-1] < prior_close:
+        return "manipulation_up"
+    if recent_low <= broader_low * 1.0005 and closes[-1] > recent_low and closes[-1] > prior_close:
+        return "manipulation_down"
+    if last_price >= recent_high * 0.998 and recent_trend > 0:
+        return "expansion_up"
+    if last_price <= recent_low * 1.002 and recent_trend < 0:
+        return "expansion_down"
+    return "unknown"
 
 
 class MockExchangeClient:
@@ -323,6 +534,10 @@ class BinanceTestnetExchangeClient:
                         for item in trades
                     ],
                     last_price=closes[-1],
+                    highs=highs,
+                    lows=lows,
+                    closes=closes,
+                    volumes=volumes,
                 )
             except Exception:
                 microstructure = {}
@@ -473,7 +688,19 @@ class BybitDemoExchangeClient:
         lows = [float(row[3]) for row in rows]
         closes = [float(row[4]) for row in rows]
         volumes = [float(row[5]) for row in rows]
-        microstructure = self._market_microstructure(symbol, "spot", closes[-1]) if include_microstructure else {}
+        microstructure = (
+            self._market_microstructure(
+                symbol,
+                "spot",
+                closes[-1],
+                highs=highs,
+                lows=lows,
+                closes=closes,
+                volumes=volumes,
+            )
+            if include_microstructure
+            else {}
+        )
         return MarketSnapshot(
             symbol=symbol,
             timeframe=timeframe,
@@ -486,7 +713,17 @@ class BybitDemoExchangeClient:
             **microstructure,
         )
 
-    def _market_microstructure(self, symbol: str, category: str, last_price: float) -> dict:
+    def _market_microstructure(
+        self,
+        symbol: str,
+        category: str,
+        last_price: float,
+        *,
+        highs: list[float] | None = None,
+        lows: list[float] | None = None,
+        closes: list[float] | None = None,
+        volumes: list[float] | None = None,
+    ) -> dict:
         if not self.microstructure_enabled:
             return {}
         cache_key = (category, self._symbol(symbol))
@@ -538,6 +775,10 @@ class BybitDemoExchangeClient:
             asks=asks,
             trades=trades,
             last_price=last_price,
+            highs=highs,
+            lows=lows,
+            closes=closes,
+            volumes=volumes,
         )
         self._microstructure_cache[cache_key] = (now, features)
         return features
@@ -769,7 +1010,19 @@ class BybitDemoPerpExchangeClient(BybitDemoExchangeClient):
         lows = [float(row[3]) for row in rows]
         closes = [float(row[4]) for row in rows]
         volumes = [float(row[5]) for row in rows]
-        microstructure = self._market_microstructure(symbol, "linear", closes[-1]) if include_microstructure else {}
+        microstructure = (
+            self._market_microstructure(
+                symbol,
+                "linear",
+                closes[-1],
+                highs=highs,
+                lows=lows,
+                closes=closes,
+                volumes=volumes,
+            )
+            if include_microstructure
+            else {}
+        )
         return MarketSnapshot(
             symbol=symbol,
             timeframe=timeframe,
