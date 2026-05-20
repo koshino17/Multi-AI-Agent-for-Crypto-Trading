@@ -278,6 +278,7 @@ def _build_strategy_reflection_context(
                 "date": label,
                 "daily_pnl_usdt": float(financial.get("daily_pnl_usdt", 0.0) or 0.0),
                 "total_portfolio_value_usdt": float(financial.get("total_portfolio_value_usdt", 0.0) or 0.0),
+                "daily_fees_usdt": float(financial.get("daily_fees_usdt", 0.0) or 0.0),
                 "total_decisions": int(summary.get("total", 0) or 0),
                 "hold_count": int(summary.get("holds", 0) or 0),
                 "accepted_orders": int(summary.get("accepted_orders", 0) or 0),
@@ -285,6 +286,7 @@ def _build_strategy_reflection_context(
                 "carry_in_closed_count": int(loss_attribution.get("carry_in_closed_count", 0) or 0),
                 "new_closed_count": int(loss_attribution.get("new_closed_count", 0) or 0),
                 "primary_driver": str(loss_attribution.get("primary_driver", "") or "").strip(),
+                "realized_after_fees_usdt": float(loss_attribution.get("realized_after_fees_usdt", 0.0) or 0.0),
                 "stagnation_exit_count": int(policy_exit_diagnostics.get("stagnation_exit_count", 0) or 0),
                 "benchmark_candidate_id": str(live_symbol_benchmark.get("candidate_id", "") or "").strip(),
                 "benchmark_expectancy_pct": float(live_symbol_benchmark.get("expectancy_pct", 0.0) or 0.0),
@@ -883,6 +885,21 @@ def _prefilter_untradeable_candidate(
     expectancy_pct = float(getattr(selected_backtest, "expectancy_pct", 0.0) or 0.0)
     profit_factor = float(getattr(selected_backtest, "profit_factor", 0.0) or 0.0)
     cumulative_return_pct = float(getattr(selected_backtest, "cumulative_return_pct", 0.0) or 0.0)
+    if trade_count < 5 and (expectancy_pct <= 0.0 or profit_factor <= 1.10):
+        filtered = TradeIdea(
+            action="hold",
+            score=min(float(getattr(idea, "score", 0.40) or 0.40), 0.41),
+            rationale=(
+                f"{idea.rationale}; converted to hold before risk because low-sample selected strategy replay "
+                f"is not yet strong enough (trades {trade_count}, expectancy {expectancy_pct:+.2f}%, PF {profit_factor:.2f})"
+            ),
+            invalidation="wait for at least five recent trades with positive expectancy and PF above 1.10",
+            holding_horizon="none",
+        )
+        return (
+            filtered,
+            f"candidate prefiltered before risk: low-sample replay weak (trades={trade_count}, expectancy {expectancy_pct:+.2f}%, pf {profit_factor:.2f})",
+        )
     min_trade_count = 3
     expectancy_floor = -0.02 if aggressive_mode else -0.01
     pf_floor = 0.95 if aggressive_mode else 1.0

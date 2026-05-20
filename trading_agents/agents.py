@@ -735,6 +735,19 @@ class StrategistAgent:
             continuation_short_ready and sentiment.sentiment_score <= 0.75
         )
         current_volume_ratio = float(getattr(strategy_research, "current_volume_ratio", 0.0) or 0.0)
+        countertrend_long_requires_stronger_confirmation = bool(
+            can_buy
+            and current_signal != "long"
+            and order_flow_bias < 0.0
+        )
+        countertrend_long_ready = bool(
+            momentum >= 0.0035
+            and current_volume_ratio >= 1.10
+            and selected_backtest.expectancy_pct >= 0.05
+            and selected_backtest.profit_factor >= 1.10
+            and sentiment.sentiment_score >= -0.15
+            and order_flow_bias >= -0.02
+        )
         fast_short_flip_ready = bool(
             position_side in {"flat", "long"}
             and current_signal == "short"
@@ -746,7 +759,9 @@ class StrategistAgent:
 
         if momentum > (0.0010 if aggressive_mode else 0.0020) and buy_sentiment_ok and buy_flow_ok and (
             backtest_supports_long or selected_edge_positive
-        ) and can_buy:
+        ) and can_buy and (
+            not countertrend_long_requires_stronger_confirmation or countertrend_long_ready
+        ):
             return TradeIdea(
                 action="buy",
                 score=min((0.54 if aggressive_mode else 0.50) + momentum * 28 + flow_score_boost, 0.99),
@@ -825,6 +840,8 @@ class StrategistAgent:
         if current_signal == "long" and can_buy and continuation_buy_sentiment_ok and (
             selected_backtest.expectancy_pct >= (-0.02 if aggressive_mode else 0.0)
             or backtest_supports_long
+        ) and (
+            not countertrend_long_requires_stronger_confirmation or countertrend_long_ready
         ):
             return TradeIdea(
                 action="buy",
@@ -849,6 +866,7 @@ class StrategistAgent:
             and momentum > (-0.002 if aggressive_mode else -0.001)
             and order_flow_bias > (-0.10 if aggressive_mode else -0.04)
             and sentiment.sentiment_score >= -0.95
+            and (not countertrend_long_requires_stronger_confirmation or countertrend_long_ready)
         ):
             confidence = min(
                 0.59
@@ -1903,6 +1921,9 @@ class StrategyReflectionAgent:
         research_candidate_id = str(research_recommendation.get("candidate_id", "") or "").strip()
         research_verdict = str(research_recommendation.get("verdict", "") or "").strip().lower()
         low_participation_threshold = int(self.settings.strategy_learning_pilot_low_participation_windows or 0)
+        recent_windows = reflection_context.get("recent_windows") or []
+        if not isinstance(recent_windows, list):
+            recent_windows = []
         def _tighten_control_max(key: str, target: float) -> None:
             try:
                 current = float(controls.get(key, 1.0) or 1.0)
@@ -1932,7 +1953,16 @@ class StrategyReflectionAgent:
         if unrealized_pnl_usdt > max(realized_pnl_usdt, 0.0) * 2 and daily_fees_usdt > 0:
             biases.append("open-profit giveback risk remains high when unrealized gains dominate realized results")
             risk_adjustments.append("prefer earlier profit-lock activation when intraday moves often stall before the current take-profit target")
-        if cooldown_blocks >= max(10, total_blocked // 2):
+        recent_fee_negative_windows = [
+            item for item in recent_windows[-2:]
+            if float(item.get("realized_after_fees_usdt", 0.0) or 0.0) < 0.0
+        ]
+        fee_pressure_active = len(recent_windows) >= 2 and len(recent_fee_negative_windows) == 2
+        if fee_pressure_active:
+            biases.append("recent trades were still net negative after fees, so new-entry frequency should stay tighter until edge quality improves")
+            risk_adjustments.append("temporarily increase trade cooldown so weak setups do not churn fees while expectancy remains fragile")
+            _raise_control_min("cooldown_scale", 0.75)
+        if cooldown_blocks >= max(10, total_blocked // 2) and not fee_pressure_active:
             biases.append("cooldown blocked too many valid opportunities in the last window")
             risk_adjustments.append("shorten cooldown in the next 12h window and re-check if fee bleed stays contained")
             controls["cooldown_scale"] = 0.5

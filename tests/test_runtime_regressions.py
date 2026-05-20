@@ -672,6 +672,102 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(idea.action, "hold")
         self.assertIn("candidate prefiltered before risk", reason)
 
+    def test_prefilter_blocks_low_sample_candidate_without_positive_edge(self) -> None:
+        strategy_research = StrategyResearchSnapshot(
+            base_strategy_id="grid_range_reversion_maker_v1",
+            selected_strategy_id="grid_range_reversion_maker_v1",
+            selected_strategy_name="Grid",
+            summary="selected grid maker",
+            candidates=[
+                StrategyCandidate(
+                    strategy_id="grid_range_reversion_maker_v1",
+                    name="Grid",
+                    source="research",
+                    credibility="experimental",
+                    description="maker grid",
+                    backtest=BacktestSnapshot(
+                        sample_count=50,
+                        trade_count=4,
+                        win_rate=0.50,
+                        avg_return_pct=0.01,
+                        cumulative_return_pct=0.04,
+                        summary="tiny sample",
+                        avg_win_pct=0.10,
+                        avg_loss_pct=-0.08,
+                        expectancy_pct=0.00,
+                        profit_factor=1.05,
+                    ),
+                )
+            ],
+        )
+        idea, reason = _prefilter_untradeable_candidate(
+            idea=TradeIdea("buy", 0.68, "test long", "invalidate", "intraday"),
+            strategy_research=strategy_research,
+            position_side="flat",
+            mode="bybit-demo-perp",
+            aggressive_mode=False,
+            policy_exit=False,
+        )
+        self.assertEqual(idea.action, "hold")
+        self.assertIn("low-sample replay weak", reason)
+
+    def test_strategy_reflection_raises_cooldown_when_recent_realized_after_fees_stays_negative(self) -> None:
+        agent = StrategyReflectionAgent(llm_client=None)
+        daily_summary = {
+            "blocked_reason_counts": {},
+            "rejection_reason_counts": {},
+            "selected_symbol_counts": {"SOL/USDT": 20},
+            "financial_snapshot": {
+                "daily_pnl_usdt": -0.6,
+                "realized_pnl_usdt": 0.0,
+                "unrealized_pnl_usdt": 0.0,
+                "daily_fees_usdt": 0.3,
+            },
+            "accepted_source_counts": {"fallback": 0, "base_strategy": 2},
+            "accepted_orders": 2,
+            "blocked": 0,
+            "loss_attribution": {
+                "closed_episode_count": 2,
+                "realized_after_fees_usdt": -0.32,
+            },
+            "external_benchmarks": {"top_candidates": [{}]},
+        }
+        reflection_context = {
+            "lookback_days": 5,
+            "negative_day_count": 4,
+            "negative_streak": 1,
+            "positive_streak": 0,
+            "low_participation_window_count": 0,
+            "low_participation_streak": 0,
+            "carry_in_loss_window_count": 0,
+            "carry_in_loss_streak": 0,
+            "stagnation_exit_window_count": 0,
+            "stagnation_exit_streak": 0,
+            "multi_day_pnl_usdt": -44.0,
+            "current_equity_usdt": 455.0,
+            "configured_initial_usdt": 500.0,
+            "live_trade_expectancy_pct": -0.01,
+            "live_profit_factor": 0.40,
+            "restore_positive_days": 2,
+            "restore_equity_floor_usdt": 475.0,
+            "force_fallback_base_only": True,
+            "capital_preservation_mode": False,
+            "live_symbols": ["SOL/USDT"],
+            "current_live_symbol": "SOL/USDT",
+            "live_symbol_benchmark": {},
+            "strategy_research_recommendation": {},
+            "previous_controls": {"cooldown_scale": 0.5, "fallback_entry_mode": "base_only"},
+            "previous_experiment": {},
+            "current_window_accepted_orders": 2,
+            "current_window_closed_episodes": 2,
+            "recent_windows": [
+                {"realized_after_fees_usdt": -0.19},
+                {"realized_after_fees_usdt": -0.32},
+            ],
+        }
+        reflection = agent.evaluate("2026-05-20-day", daily_summary, reflection_context=reflection_context)
+        self.assertGreaterEqual(float(reflection.controls.get("cooldown_scale", 0.0) or 0.0), 0.75)
+
 
 if __name__ == "__main__":
     unittest.main()

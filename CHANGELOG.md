@@ -1782,3 +1782,15 @@ What Changed:
 - `DailyReviewAgent` now returns review metadata (`review_status`, `review_error`, `used_fallback`) alongside the snapshot so report artifacts can distinguish true LLM success from stable fallback output.
 - Added a pre-risk candidate filter that converts clearly weak opening ideas into `hold` before the risk layer when the selected strategy replay is already negative after costs and weak on profit factor.
 - Added regression tests to lock both behaviors: no repeated fallback-error review attempts for the same fingerprint, and pre-risk filtering of clearly weak candidates.
+
+# v0.11.52 - Tighten low-sample entries and add fee-pressure throttling
+
+Why:
+- `2026-05-20` showed a familiar failure mode: more proposals cleared risk, but the realized edge was still too thin to survive fees.
+- Low-sample strategy replays were still being allowed into live decision-making too easily, and countertrend longs were slipping through on down days without strong enough confirmation.
+
+What Changed:
+- Pre-risk candidate filtering is now stricter for low-sample setups: when recent replay has fewer than five trades, the candidate must already show positive expectancy and profit factor above 1.10 or it is downgraded to `hold`.
+- Countertrend long entries now require stronger confirmation when the active signal is not bullish and order-flow still leans negative.
+- Strategy reflection now watches recent realized-after-fees results and raises cooldown pressure when the last two windows were both net negative after fees, instead of continuing to loosen entry cadence into fee drag.
+- Added regression tests to lock the low-sample prefilter and the fee-pressure cooldown response.
