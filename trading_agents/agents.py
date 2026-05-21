@@ -74,6 +74,86 @@ def _order_flow_summary(snapshot: MarketSnapshot) -> str:
     )
 
 
+def _market_structure_summary(snapshot: MarketSnapshot) -> str:
+    po3 = str(getattr(snapshot, "po3_phase_hint", "unknown") or "unknown")
+    poc_bps = float(getattr(snapshot, "poc_distance_bps", 0.0) or 0.0)
+    vah_bps = float(getattr(snapshot, "value_area_high_distance_bps", 0.0) or 0.0)
+    val_bps = float(getattr(snapshot, "value_area_low_distance_bps", 0.0) or 0.0)
+    bullish_fvg_bps = float(getattr(snapshot, "nearest_bullish_fvg_distance_bps", 0.0) or 0.0)
+    bearish_fvg_bps = float(getattr(snapshot, "nearest_bearish_fvg_distance_bps", 0.0) or 0.0)
+    fvg_fill_ratio = float(getattr(snapshot, "fvg_fill_ratio", 0.0) or 0.0)
+    return (
+        f"po3={po3}; poc={poc_bps:+.1f}bps; vah={vah_bps:+.1f}bps; val={val_bps:+.1f}bps; "
+        f"bullish_fvg={bullish_fvg_bps:+.1f}bps; bearish_fvg={bearish_fvg_bps:+.1f}bps; fill={fvg_fill_ratio:.2f}"
+    )
+
+
+def _apply_market_structure_soft_adjustment(
+    idea: TradeIdea,
+    *,
+    snapshot: MarketSnapshot,
+    strategy_research: StrategyResearchSnapshot,
+    position_side: str,
+    trading_mode: str,
+) -> TradeIdea:
+    action = str(idea.action or "hold").lower()
+    if action not in {"buy", "sell"}:
+        return idea
+    if "perp" in trading_mode:
+        opens_new_exposure = position_side == "flat" or (position_side == "long" and action == "sell") or (position_side == "short" and action == "buy")
+    else:
+        opens_new_exposure = action == "buy" or (action == "sell" and position_side not in {"flat", ""})
+    if not opens_new_exposure:
+        return idea
+
+    po3 = str(getattr(snapshot, "po3_phase_hint", "unknown") or "unknown").strip().lower()
+    poc_bps = float(getattr(snapshot, "poc_distance_bps", 0.0) or 0.0)
+    vah_bps = float(getattr(snapshot, "value_area_high_distance_bps", 0.0) or 0.0)
+    val_bps = float(getattr(snapshot, "value_area_low_distance_bps", 0.0) or 0.0)
+    current_signal = str(getattr(strategy_research, "current_signal", "hold") or "hold").lower()
+    current_signal_type = str(getattr(strategy_research, "current_signal_type", "hold") or "hold").lower()
+
+    score_delta = 0.0
+    notes: list[str] = []
+
+    if action == "sell" and po3 == "expansion_up":
+        score_delta -= 0.08
+        notes.append("PO3 suggests upside expansion, so fresh shorting is de-emphasized")
+    if action == "buy" and po3 == "expansion_down":
+        score_delta -= 0.08
+        notes.append("PO3 suggests downside expansion, so fresh longs are de-emphasized")
+
+    if po3 == "accumulation" and current_signal_type not in {"hold", ""}:
+        if action == "buy" and vah_bps <= -8.0:
+            score_delta -= 0.05
+            notes.append("accumulation regime above value area favors waiting for a cleaner reclaim/retest")
+        elif action == "sell" and val_bps >= 8.0:
+            score_delta -= 0.05
+            notes.append("accumulation regime below value area favors waiting for a cleaner rejection/retest")
+        elif abs(poc_bps) >= 12.0:
+            score_delta -= 0.03
+            notes.append("accumulation regime far from POC discourages chasing extended moves")
+
+    if current_signal == "long" and action == "buy" and po3 == "expansion_up":
+        score_delta += 0.03
+        notes.append("PO3 and research signal both lean toward upside expansion")
+    if current_signal == "short" and action == "sell" and po3 == "expansion_down":
+        score_delta += 0.03
+        notes.append("PO3 and research signal both lean toward downside expansion")
+
+    if abs(score_delta) < 0.0001:
+        return idea
+    adjusted_score = max(0.0, min(float(idea.score) + score_delta, 0.99))
+    rationale_suffix = "; ".join(notes)
+    return TradeIdea(
+        action=idea.action,
+        score=adjusted_score,
+        rationale=f"{idea.rationale}; market_structure={_market_structure_summary(snapshot)}; {rationale_suffix}",
+        invalidation=idea.invalidation,
+        holding_horizon=idea.holding_horizon,
+    )
+
+
 def _daily_summary_llm_context(daily_summary: dict) -> dict[str, object]:
     financial = daily_summary.get("financial_snapshot") or {}
     latest = daily_summary.get("latest") or {}
@@ -496,6 +576,7 @@ class StrategistAgent:
         momentum = (short_avg - long_avg) / long_avg if long_avg else 0.0
         order_flow_summary = _order_flow_summary(snapshot)
         order_flow_bias = _order_flow_bias(snapshot)
+        market_structure_summary = _market_structure_summary(snapshot)
 
         fallback = self._fallback_idea(
             momentum,
@@ -531,6 +612,7 @@ class StrategistAgent:
                     f"top_book_imbalance={float(getattr(snapshot, 'top_book_imbalance', 0.0) or 0.0):+.4f}; "
                     f"depth_imbalance={float(getattr(snapshot, 'depth_imbalance', 0.0) or 0.0):+.4f}; "
                     f"trade_delta_ratio={float(getattr(snapshot, 'trade_delta_ratio', 0.0) or 0.0):+.4f}; "
+                    f"market_structure={market_structure_summary}; "
                     f"large_buy_count={int(getattr(snapshot, 'large_buy_count', 0) or 0)}; "
                     f"large_sell_count={int(getattr(snapshot, 'large_sell_count', 0) or 0)}; "
                     f"sentiment_score={sentiment.sentiment_score:.2f}; "
@@ -571,6 +653,13 @@ class StrategistAgent:
                 invalidation=str(response.get("invalidation", fallback.invalidation)),
                 holding_horizon=str(response.get("holding_horizon", fallback.holding_horizon)),
             )
+            idea = _apply_market_structure_soft_adjustment(
+                idea,
+                snapshot=snapshot,
+                strategy_research=strategy_research,
+                position_side=position_side,
+                trading_mode=trading_mode,
+            )
             return self._align_with_account(
                 idea,
                 fallback,
@@ -580,7 +669,13 @@ class StrategistAgent:
                 trading_mode,
             )
         except Exception:
-            return fallback
+            return _apply_market_structure_soft_adjustment(
+                fallback,
+                snapshot=snapshot,
+                strategy_research=strategy_research,
+                position_side=position_side,
+                trading_mode=trading_mode,
+            )
 
     def refine_with_risk_feedback(
         self,

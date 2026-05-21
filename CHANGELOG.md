@@ -16,6 +16,38 @@
 
 ---
 
+## v0.11.55 - Soft-integrate PO3 into decisions and reporting
+
+### Why
+
+- PO3 / POC / VAL / FVG had reached the snapshot and report layers, but they still had almost no influence on actual decision quality.
+- We needed a safer bridge between “interesting structure features” and “live behavior” than jumping straight to hard decision gates.
+- Daily reports also lacked a practical way to see whether specific PO3 phases were helping or hurting execution quality.
+
+### What Changed
+
+- `trading_agents/agents.py`
+  - Strategist prompts now receive a compact deterministic `market_structure` briefing.
+  - Added a soft PO3-based score adjustment layer:
+    - downside expansion de-emphasizes fresh longs,
+    - upside expansion de-emphasizes fresh shorts,
+    - accumulation de-emphasizes chasing value-area extremes,
+    - aligned expansion can add a small positive score bump.
+
+- `trading_agents/reporting.py`
+  - Added `PO3 Phase Performance` to daily reports so we can inspect proposals, approvals, executions, closed episodes, win rate, and approximate after-fee expectancy by `po3_phase_hint`.
+  - Tightened shadow benchmark promotion hygiene so candidates with fewer than 8 trades stay research-only and do not steer promotion logic.
+  - Improved inferred account-state close attribution so same-window unlogged openings are less likely to be mislabeled as `carry_in`.
+
+- `tests/test_runtime_regressions.py`
+  - Added semantic regression tests for `_infer_po3_phase_hint` and `_build_fvg_features`, not just presence checks.
+
+### Result
+
+- PO3 is no longer just “shown in the report”; it now has a bounded, reviewable influence on decision scoring.
+- Daily reports can start telling us which PO3 phases are producing useful participation versus noisy proposals.
+- Low-sample benchmark spikes are less likely to distort strategy promotion decisions.
+
 ## v0.11.53 - Add deterministic market-structure features
 
 ### Why

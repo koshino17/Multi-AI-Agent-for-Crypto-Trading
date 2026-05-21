@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from trading_agents.agents import RiskSupervisorAgent, StrategistAgent, StrategyReflectionAgent
-from trading_agents.exchange import _build_microstructure_features
+from trading_agents.exchange import _build_fvg_features, _build_microstructure_features, _infer_po3_phase_hint
 from trading_agents.llm import _trace_date_label
 from trading_agents.main import (
     _guard_market_structure_false_breakout,
@@ -823,6 +823,30 @@ class RuntimeRegressionTests(unittest.TestCase):
         )
         self.assertEqual(idea.action, "hold")
         self.assertIn("market-structure guard", reason)
+
+    def test_infer_po3_phase_hint_accumulation_for_compressed_recent_range(self) -> None:
+        highs = [100.0, 110.0, 120.0, 118.0, 104.8, 104.6, 104.4, 104.2, 104.1, 104.0, 103.95, 103.9]
+        lows = [80.0, 82.0, 84.0, 86.0, 103.5, 103.6, 103.7, 103.8, 103.85, 103.9, 103.88, 103.87]
+        closes = [90.0, 95.0, 100.0, 105.0, 104.0, 104.05, 104.1, 104.0, 104.02, 104.01, 104.0, 103.99]
+        phase = _infer_po3_phase_hint(last_price=103.99, highs=highs, lows=lows, closes=closes)
+        self.assertEqual(phase, "accumulation")
+
+    def test_infer_po3_phase_hint_expansion_down_for_selloff_near_recent_low(self) -> None:
+        highs = [104.0, 103.8, 103.5, 103.2, 103.0, 102.8, 102.5, 102.0, 101.8, 101.3, 100.9, 100.6]
+        lows = [103.4, 103.1, 102.8, 102.4, 102.0, 101.8, 101.3, 100.9, 100.5, 100.1, 99.8, 99.4]
+        closes = [103.6, 103.2, 102.9, 102.5, 102.2, 101.9, 101.5, 101.1, 100.8, 100.3, 99.9, 99.45]
+        phase = _infer_po3_phase_hint(last_price=99.45, highs=highs, lows=lows, closes=closes)
+        self.assertEqual(phase, "expansion_down")
+
+    def test_build_fvg_features_detects_bullish_gap_and_fill_ratio(self) -> None:
+        features = _build_fvg_features(
+            last_price=104.5,
+            highs=[100.0, 101.0, 102.0, 103.0, 104.0],
+            lows=[99.0, 99.5, 102.8, 103.4, 104.2],
+        )
+        self.assertNotEqual(features["nearest_bullish_fvg_distance_bps"], 0.0)
+        self.assertGreaterEqual(features["fvg_fill_ratio"], 0.0)
+        self.assertLessEqual(features["fvg_fill_ratio"], 1.0)
 
 
 if __name__ == "__main__":

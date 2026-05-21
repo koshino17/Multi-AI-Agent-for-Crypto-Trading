@@ -858,6 +858,8 @@ def _build_trade_review(
         else:
             direction = "long" if side == "sell" else "short"
         close_time = _trade_timestamp_local(close_record)
+        if str(close_time).strip().lower() in {"", "n/a", "none"}:
+            close_time = _record_timestamp_local(close_record)
         avg_entry = _safe_float(account.get("entry_price"))
         close_price = _safe_float(order.get("price")) or _safe_float(close_record.get("last_price"))
         quantity = _safe_float(order.get("quantity")) or _safe_float((close_record.get("result") or {}).get("submitted_qty"))
@@ -883,8 +885,9 @@ def _build_trade_review(
         )
         entry_count = max(1, int(round(_safe_float(account.get("entry_count", 1)))))
         if inferred_open:
-            if not carry_in:
-                entry_source = str(inferred_open.get("decision_source", "")).strip().lower() or "inferred_position_context"
+            inferred_source = str(inferred_open.get("decision_source", "")).strip().lower()
+            if not carry_in and inferred_source and inferred_source != "unknown":
+                entry_source = inferred_source
             entry_reason = str(inferred_open.get("entry_reason", "")).strip() or entry_reason
             entry_count = max(entry_count, _safe_int(inferred_open.get("entry_count", 1)), 1)
         edge_pct = 0.0
@@ -1449,6 +1452,7 @@ def _build_shadow_benchmark_watch(
             and recommended_watch_id in allowed_shadow_candidates
             and bool(recommended_row)
             and recommended_verdict in {"shadow_candidate", "promotion_candidate"}
+            and int(recommended_row.get("trade_count", 0) or 0) >= 8
             and (
                 float(recommended_row.get("expectancy_pct", 0.0) or 0.0) > 0.0
                 or float(recommended_row.get("profit_factor", 0.0) or 0.0) > 1.0
@@ -1458,7 +1462,12 @@ def _build_shadow_benchmark_watch(
         if recommended_is_eligible:
             chosen_watch_id = recommended_watch_id
             selection_source = "strategy_research"
-        elif leader_id and leader_id != baseline_id and leader_id in allowed_shadow_candidates:
+        elif (
+            leader_id
+            and leader_id != baseline_id
+            and leader_id in allowed_shadow_candidates
+            and int(leader.get("trade_count", 0) or 0) >= 8
+        ):
             chosen_watch_id = leader_id
             selection_source = "external_benchmark_leader"
         else:
@@ -1630,6 +1639,7 @@ def _shadow_snapshot_qualified(
         min_expectancy_delta = 0.05
         min_pf_delta = 0.50
         min_trades = 10
+    min_trades = max(min_trades, 8)
     return (
         watch_expectancy_pct > 0.0
         and watch_profit_factor > 1.0
@@ -1638,6 +1648,186 @@ def _shadow_snapshot_qualified(
         and profit_factor_delta >= min_pf_delta
         and trade_count >= min_trades
     )
+
+
+def _phase_sort_key(value: str) -> tuple[int, str]:
+    order = {
+        "accumulation": 0,
+        "manipulation_up": 1,
+        "manipulation_down": 2,
+        "expansion_up": 3,
+        "expansion_down": 4,
+        "unknown": 9,
+    }
+    label = str(value or "unknown").strip().lower() or "unknown"
+    return (order.get(label, 8), label)
+
+
+def _record_timestamp_local_dt(item: dict[str, Any]) -> datetime | None:
+    for key in ("timestamp_local", "timestamp"):
+        raw = item.get(key)
+        if not raw:
+            continue
+        try:
+            parsed = datetime.fromisoformat(str(raw))
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(LOCAL_TZ)
+    return None
+
+
+def _episode_timestamp_local(item: dict[str, Any], key: str) -> datetime | None:
+    raw = item.get(key)
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=LOCAL_TZ)
+    return parsed.astimezone(LOCAL_TZ)
+
+
+def _find_episode_po3_phase(
+    episode: dict[str, Any],
+    accepted_records: list[dict[str, Any]],
+) -> str:
+    symbol = str(episode.get("symbol", "") or "").strip()
+    opened_at = _episode_timestamp_local(episode, "opened_at")
+    if not symbol or opened_at is None:
+        return "unknown"
+    direction = str(episode.get("direction", "") or "").strip().lower()
+    candidates: list[tuple[float, str]] = []
+    for record in accepted_records:
+        if str(record.get("selected_symbol", "") or "").strip() != symbol:
+            continue
+        action = str((record.get("idea") or {}).get("action", "") or "").strip().lower()
+        if direction == "long" and action != "buy":
+            continue
+        if direction == "short" and action != "sell":
+            continue
+        phase = str(((record.get("market_structure") or {}).get("po3_phase_hint", "unknown")) or "unknown").strip().lower() or "unknown"
+        record_ts = _record_timestamp_local_dt(record)
+        if record_ts is None:
+            continue
+        candidates.append((abs((record_ts - opened_at).total_seconds()), phase))
+    if not candidates:
+        return "unknown"
+    candidates.sort(key=lambda item: item[0])
+    nearest_delta, nearest_phase = candidates[0]
+    return nearest_phase if nearest_delta <= 3600 else "unknown"
+
+
+def _build_po3_phase_performance(
+    records: list[dict[str, Any]],
+    trade_review: dict[str, Any] | None,
+    *,
+    taker_fee_pct: float,
+) -> dict[str, Any]:
+    phase_rows: dict[str, dict[str, Any]] = {}
+
+    def ensure_row(phase: str) -> dict[str, Any]:
+        label = str(phase or "unknown").strip().lower() or "unknown"
+        row = phase_rows.get(label)
+        if row is None:
+            row = {
+                "phase": label,
+                "proposal_count": 0,
+                "approved_count": 0,
+                "executed_count": 0,
+                "hold_count": 0,
+                "selected_expectancy_total": 0.0,
+                "selected_expectancy_count": 0,
+                "closed_count": 0,
+                "winning_count": 0,
+                "losing_count": 0,
+                "flat_count": 0,
+                "after_fee_edge_total_pct": 0.0,
+                "after_fee_edge_count": 0,
+            }
+            phase_rows[label] = row
+        return row
+
+    accepted_records = [item for item in records if _result_status(item) == "accepted"]
+    for item in records:
+        phase = str(((item.get("market_structure") or {}).get("po3_phase_hint", "unknown")) or "unknown").strip().lower() or "unknown"
+        row = ensure_row(phase)
+        action = str((item.get("idea") or {}).get("action", "hold") or "hold").strip().lower()
+        if action == "hold":
+            row["hold_count"] += 1
+        else:
+            row["proposal_count"] += 1
+            if bool((item.get("approval") or {}).get("approved")):
+                row["approved_count"] += 1
+        if _result_status(item) == "accepted":
+            row["executed_count"] += 1
+        expectancy_pct = _safe_float((item.get("selected_strategy_backtest") or {}).get("expectancy_pct"))
+        if expectancy_pct != 0.0:
+            row["selected_expectancy_total"] += expectancy_pct
+            row["selected_expectancy_count"] += 1
+
+    for episode in ((trade_review or {}).get("episodes") or []):
+        status = str(episode.get("status", "") or "").strip().lower()
+        if status not in {"win", "loss", "flat"}:
+            continue
+        phase = _find_episode_po3_phase(episode, accepted_records)
+        row = ensure_row(phase)
+        row["closed_count"] += 1
+        if status == "win":
+            row["winning_count"] += 1
+        elif status == "loss":
+            row["losing_count"] += 1
+        else:
+            row["flat_count"] += 1
+        edge_pct = _safe_float(episode.get("estimated_edge_pct"))
+        after_fee_edge_pct = edge_pct - float(taker_fee_pct or 0.0) * 200.0
+        row["after_fee_edge_total_pct"] += after_fee_edge_pct
+        row["after_fee_edge_count"] += 1
+
+    rows: list[dict[str, Any]] = []
+    for phase, row in sorted(phase_rows.items(), key=lambda item: _phase_sort_key(item[0])):
+        selected_expectancy_pct = (
+            row["selected_expectancy_total"] / row["selected_expectancy_count"]
+            if row["selected_expectancy_count"]
+            else None
+        )
+        win_rate_pct = (
+            row["winning_count"] / row["closed_count"] * 100.0
+            if row["closed_count"]
+            else None
+        )
+        expectancy_after_fees_pct = (
+            row["after_fee_edge_total_pct"] / row["after_fee_edge_count"]
+            if row["after_fee_edge_count"]
+            else None
+        )
+        rows.append(
+            {
+                "phase": phase,
+                "proposal_count": row["proposal_count"],
+                "approved_count": row["approved_count"],
+                "executed_count": row["executed_count"],
+                "hold_count": row["hold_count"],
+                "closed_count": row["closed_count"],
+                "winning_count": row["winning_count"],
+                "losing_count": row["losing_count"],
+                "flat_count": row["flat_count"],
+                "win_rate_pct": round(win_rate_pct, 2) if win_rate_pct is not None else None,
+                "selected_expectancy_pct": round(selected_expectancy_pct, 4) if selected_expectancy_pct is not None else None,
+                "expectancy_after_fees_pct": round(expectancy_after_fees_pct, 4) if expectancy_after_fees_pct is not None else None,
+            }
+        )
+    return {
+        "rows": rows,
+        "note": (
+            "closed-episode metrics are approximated by matching each closed episode to the nearest accepted entry decision for the same symbol and direction"
+            if rows
+            else ""
+        ),
+    }
 
 
 def _benchmark_cost_note(payload: dict[str, Any]) -> str:
@@ -3155,6 +3345,11 @@ def load_daily_summary_data(
         records,
         financial_snapshot=summary["financial_snapshot"],
     )
+    summary["po3_phase_performance"] = _build_po3_phase_performance(
+        records,
+        summary["trade_review"],
+        taker_fee_pct=settings.taker_fee_pct,
+    )
     summary["policy_exit_diagnostics"] = _build_policy_exit_diagnostics(records, summary["trade_review"])
     focus_symbol = settings.observation_pool[0] if len(settings.observation_pool) == 1 else ""
     summary["market_path_review"] = _build_market_path_review(
@@ -3550,6 +3745,8 @@ def build_daily_summary(
             f"profit_factor={float(top_benchmark.get('profit_factor', 0.0)):.2f} | "
             f"trades={int(top_benchmark.get('trade_count', 0))})"
         )
+        if int(top_benchmark.get("trade_count", 0) or 0) < 8:
+            lines.append("- Benchmark Guard: top benchmark remains low-sample (<8 trades); keep it research-only and do not use it as a promotion basis yet.")
         top_cost_note = _benchmark_cost_note(top_benchmark)
         if top_cost_note:
             lines.append(f"  cost={top_cost_note}")
@@ -3762,6 +3959,39 @@ def build_daily_summary(
             )
         for item in loss_attribution.get("observations", [])[:5]:
             lines.append(f"- Observation: {item}")
+
+    po3_phase_performance = summary.get("po3_phase_performance") or {}
+    po3_rows = po3_phase_performance.get("rows") or []
+    if po3_rows:
+        lines.extend(["", "## PO3 Phase Performance", ""])
+        for row in po3_rows:
+            phase = str(row.get("phase", "unknown") or "unknown")
+            expectancy_label = (
+                f"{float(row.get('expectancy_after_fees', row.get('expectancy_after_fees_pct', 0.0))):+.2f}%"
+                if row.get("expectancy_after_fees_pct") is not None
+                else "n/a"
+            )
+            win_rate_label = (
+                f"{float(row.get('win_rate_pct', 0.0)):.1f}%"
+                if row.get("win_rate_pct") is not None
+                else "n/a"
+            )
+            selected_expectancy_label = (
+                f"{float(row.get('selected_expectancy_pct', 0.0)):+.2f}%"
+                if row.get("selected_expectancy_pct") is not None
+                else "n/a"
+            )
+            lines.append(
+                f"- {phase}: proposals={int(row.get('proposal_count', 0) or 0)} | "
+                f"approved={int(row.get('approved_count', 0) or 0)} | "
+                f"executed={int(row.get('executed_count', 0) or 0)} | "
+                f"closed={int(row.get('closed_count', 0) or 0)} | "
+                f"win_rate={win_rate_label} | "
+                f"expectancy_after_fees={expectancy_label} | "
+                f"selected_replay_expectancy={selected_expectancy_label}"
+            )
+        if po3_phase_performance.get("note"):
+            lines.append(f"- Attribution Note: {po3_phase_performance.get('note')}")
 
     if control_impact:
         lines.extend(["", "## Control Impact", ""])
