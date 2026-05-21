@@ -735,6 +735,7 @@ def _derive_decision_source(
 def _guard_range_fallback_override(
     *,
     idea: TradeIdea,
+    snapshot,
     strategy_research,
     llm_wake: dict,
     position_side: str,
@@ -790,9 +791,98 @@ def _guard_range_fallback_override(
     return guarded, f"neutral-base guard: ADX {current_adx:.2f}, volume {volume_ratio:.2f}x, trade_delta {trade_delta_ratio:+.2f}"
 
 
+def _guard_market_structure_false_breakout(
+    *,
+    idea: TradeIdea,
+    snapshot,
+    strategy_research,
+    llm_wake: dict,
+    position_side: str,
+    mode: str,
+    settings,
+) -> tuple[TradeIdea, str]:
+    if not bool(getattr(settings, "market_structure_guard_enabled", True)):
+        return idea, ""
+    action = str(getattr(idea, "action", "hold") or "hold").lower()
+    if action not in {"buy", "sell"}:
+        return idea, ""
+    if not _opens_new_exposure(action, position_side=position_side, mode=mode):
+        return idea, ""
+
+    current_signal = str(getattr(strategy_research, "current_signal", "hold") or "hold").lower()
+    if (action == "buy" and current_signal == "long") or (action == "sell" and current_signal == "short"):
+        return idea, ""
+
+    po3_phase_hint = str(getattr(snapshot, "po3_phase_hint", "unknown") or "unknown").strip().lower()
+    vah_distance_bps = float(getattr(snapshot, "value_area_high_distance_bps", 0.0) or 0.0)
+    val_distance_bps = float(getattr(snapshot, "value_area_low_distance_bps", 0.0) or 0.0)
+    bearish_fvg_distance_bps = float(getattr(snapshot, "nearest_bearish_fvg_distance_bps", 0.0) or 0.0)
+    bullish_fvg_distance_bps = float(getattr(snapshot, "nearest_bullish_fvg_distance_bps", 0.0) or 0.0)
+    fvg_fill_ratio = float(getattr(snapshot, "fvg_fill_ratio", 0.0) or 0.0)
+    metrics = llm_wake.get("metrics") or {}
+    trade_delta_ratio = float(metrics.get("trade_delta_ratio", getattr(snapshot, "trade_delta_ratio", 0.0)) or 0.0)
+    volume_ratio = max(
+        float(metrics.get("volume_ratio", 0.0) or 0.0),
+        float(getattr(strategy_research, "current_volume_ratio", 0.0) or 0.0),
+    )
+
+    value_area_breach_bps = float(getattr(settings, "market_structure_guard_value_area_breach_bps", 8.0) or 8.0)
+    fvg_near_bps = float(getattr(settings, "market_structure_guard_fvg_near_bps", 30.0) or 30.0)
+    min_trade_delta = float(getattr(settings, "market_structure_guard_trade_delta_ratio", 0.20) or 0.20)
+    min_volume_ratio = float(getattr(settings, "market_structure_guard_volume_ratio", 1.10) or 1.10)
+    max_fill_ratio = float(getattr(settings, "market_structure_guard_fill_ratio", 0.25) or 0.25)
+
+    weak_long_followthrough = trade_delta_ratio < min_trade_delta or volume_ratio < min_volume_ratio
+    weak_short_followthrough = trade_delta_ratio > -min_trade_delta or volume_ratio < min_volume_ratio
+    near_bearish_fvg = 0.0 < bearish_fvg_distance_bps <= fvg_near_bps
+    near_bullish_fvg = -fvg_near_bps <= bullish_fvg_distance_bps < 0.0
+    above_value_area = vah_distance_bps <= -value_area_breach_bps
+    below_value_area = val_distance_bps >= value_area_breach_bps
+
+    suspicious_long = (
+        action == "buy"
+        and weak_long_followthrough
+        and (
+            (po3_phase_hint == "manipulation_up")
+            or above_value_area
+            or (near_bearish_fvg and fvg_fill_ratio <= max_fill_ratio)
+        )
+    )
+    suspicious_short = (
+        action == "sell"
+        and weak_short_followthrough
+        and (
+            (po3_phase_hint == "manipulation_down")
+            or below_value_area
+            or (near_bullish_fvg and fvg_fill_ratio <= max_fill_ratio)
+        )
+    )
+    if not (suspicious_long or suspicious_short):
+        return idea, ""
+
+    guarded = TradeIdea(
+        action="hold",
+        score=min(float(getattr(idea, "score", 0.40) or 0.40), 0.43),
+        rationale=(
+            f"{idea.rationale}; converted to hold because market-structure guard flagged a likely false breakout "
+            f"(po3={po3_phase_hint}, vah={vah_distance_bps:+.1f}bps, val={val_distance_bps:+.1f}bps, "
+            f"trade_delta={trade_delta_ratio:+.2f}, volume={volume_ratio:.2f}x, fvg_fill={fvg_fill_ratio:.2f})"
+        ),
+        invalidation="wait for stronger continuation flow or a cleaner reclaim/rejection around value-area structure",
+        holding_horizon="none",
+    )
+    return guarded, (
+        "market-structure guard: "
+        f"po3={po3_phase_hint}, vah={vah_distance_bps:+.1f}bps, val={val_distance_bps:+.1f}bps, "
+        f"bearish_fvg={bearish_fvg_distance_bps:+.1f}bps, bullish_fvg={bullish_fvg_distance_bps:+.1f}bps, "
+        f"trade_delta={trade_delta_ratio:+.2f}, volume={volume_ratio:.2f}x"
+    )
+
+
 def _guard_fallback_open_exposure(
     *,
     idea: TradeIdea,
+    snapshot,
     strategy_research,
     llm_wake: dict,
     position_side: str,
@@ -2189,8 +2279,9 @@ def execute_cycle(
                 mode=mode,
                 strategy_memory=strategy_memory,
             )
-        idea, fallback_guard_reason = _guard_fallback_open_exposure(
+        idea, fallback_guard_reason = _guard_market_structure_false_breakout(
             idea=idea,
+            snapshot=snapshot,
             strategy_research=strategy_research,
             llm_wake=llm_wake,
             position_side=position_side,
@@ -2198,8 +2289,19 @@ def execute_cycle(
             settings=settings,
         )
         if not fallback_guard_reason:
+            idea, fallback_guard_reason = _guard_fallback_open_exposure(
+                idea=idea,
+                snapshot=snapshot,
+                strategy_research=strategy_research,
+                llm_wake=llm_wake,
+                position_side=position_side,
+                mode=mode,
+                settings=settings,
+            )
+        if not fallback_guard_reason:
             idea, fallback_guard_reason = _guard_range_fallback_override(
                 idea=idea,
+                snapshot=snapshot,
                 strategy_research=strategy_research,
                 llm_wake=llm_wake,
                 position_side=position_side,

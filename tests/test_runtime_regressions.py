@@ -10,7 +10,11 @@ from types import SimpleNamespace
 from trading_agents.agents import RiskSupervisorAgent, StrategistAgent, StrategyReflectionAgent
 from trading_agents.exchange import _build_microstructure_features
 from trading_agents.llm import _trace_date_label
-from trading_agents.main import _prefilter_untradeable_candidate, _resolve_daily_review
+from trading_agents.main import (
+    _guard_market_structure_false_breakout,
+    _prefilter_untradeable_candidate,
+    _resolve_daily_review,
+)
 from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyCandidate, StrategyResearchSnapshot, TradeIdea
 from trading_agents.reporting import (
     _build_financial_snapshot,
@@ -791,6 +795,34 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertIn("fvg_fill_ratio", features)
         self.assertIn("po3_phase_hint", features)
         self.assertTrue(str(features["po3_phase_hint"]))
+
+    def test_market_structure_guard_blocks_weak_buy_above_value_area(self) -> None:
+        idea, reason = _guard_market_structure_false_breakout(
+            idea=TradeIdea("buy", 0.72, "test breakout long", "invalidate", "intraday"),
+            snapshot=SimpleNamespace(
+                po3_phase_hint="manipulation_up",
+                value_area_high_distance_bps=-12.0,
+                value_area_low_distance_bps=-35.0,
+                nearest_bearish_fvg_distance_bps=18.0,
+                nearest_bullish_fvg_distance_bps=-120.0,
+                fvg_fill_ratio=0.10,
+                trade_delta_ratio=0.05,
+            ),
+            strategy_research=SimpleNamespace(current_signal="hold", current_volume_ratio=0.95),
+            llm_wake={"metrics": {"trade_delta_ratio": 0.05, "volume_ratio": 0.95}},
+            position_side="flat",
+            mode="bybit-demo-perp",
+            settings=SimpleNamespace(
+                market_structure_guard_enabled=True,
+                market_structure_guard_value_area_breach_bps=8.0,
+                market_structure_guard_fvg_near_bps=30.0,
+                market_structure_guard_trade_delta_ratio=0.20,
+                market_structure_guard_volume_ratio=1.10,
+                market_structure_guard_fill_ratio=0.25,
+            ),
+        )
+        self.assertEqual(idea.action, "hold")
+        self.assertIn("market-structure guard", reason)
 
 
 if __name__ == "__main__":

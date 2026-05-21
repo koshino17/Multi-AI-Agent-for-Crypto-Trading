@@ -51,6 +51,36 @@
 - `TradePulse` now records deterministic PO3 / POC / VAL / FVG-style structure hints in the snapshot layer.
 - We can inspect them in daily reports and traces before deciding whether they deserve a role inside fallback guards or execution logic.
 
+## v0.11.54 - Use market-structure features as fallback guards
+
+### Why
+
+- Once the deterministic PO3 / POC / VAL / FVG features were visible, the next safe step was to use them as guardrails instead of full strategy drivers.
+- We especially wanted to stop fallback-style longs and shorts from chasing likely false breaks around value-area edges without real flow confirmation.
+
+### What Changed
+
+- `trading_agents/main.py`
+  - Added a market-structure guard that converts weak fallback breakouts into `hold` when:
+    - price is already stretched beyond value area,
+    - PO3 hint looks like manipulation,
+    - nearby FVG structure suggests an unfinished imbalance,
+    - and trade delta / volume confirmation is still weak.
+  - Wired the guard ahead of the existing fallback entry / neutral-base guards.
+
+- `trading_agents/config.py`
+  - Added dedicated `MARKET_STRUCTURE_GUARD_*` settings so thresholds can be tuned without touching code.
+
+- `.env.example`
+  - Documented the new market-structure guard knobs.
+
+- `tests/test_runtime_regressions.py`
+  - Added a regression test to ensure a weak long above value area is blocked by the new guard.
+
+### Result
+
+- `TradePulse` still treats PO3 / POC / VAL / FVG as deterministic hints, but it now actively uses them to avoid some obvious false-break fallback entries.
+
 ## v0.11.50 - Split mock state from live bybit runtime
 
 ### Why
