@@ -2673,6 +2673,7 @@ def execute_cycle(
         "position_context": selected.get("position_context", {}),
         "execution_constraints": selected.get("execution_constraints", {}),
         "llm_wake": selected.get("llm_wake", {}),
+        "market_structure": selected.get("market_structure", {}),
         "decision_source": selected.get("decision_source", "unknown"),
         "strategy_memory": selected.get("strategy_memory", {}),
         "debate": selected.get("debate", {}),
