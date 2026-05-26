@@ -16,6 +16,46 @@
 
 ---
 
+## v0.11.56 - Stabilize local LLM runtime and observability after reboot
+
+### Why
+
+- After the Mac reboot, `TradePulse` kept running but Ollama was not available, causing local LLM calls to fail with connection-refused errors and leaving fallback logic to carry most decisions.
+- The launchd runner also needed a more self-contained runtime path so macOS permission / virtualenv issues would not break service startup after restarts.
+- Daily review evidence needed to show whether orders expired / cancelled and whether the LLM backend was actually healthy, not just whether prompts were configured.
+
+### What Changed
+
+- `trading_agents/llm.py`
+  - Added an Ollama `/api/tags` health check that verifies both backend reachability and configured model availability before a cycle uses LLM clients.
+
+- `trading_agents/main.py`
+  - Records `llm_health` in cycle reports and disables LLM clients cleanly when the backend is unavailable.
+  - Added deterministic PO3 score adjustment for fallback / base ideas so PO3 can influence scoring even when the strategist LLM is skipped.
+  - Restored the missing `time` import needed by runner sleep / monitoring paths.
+
+- `trading_agents/reporting.py`
+  - Daily summaries now include `Order Statuses` with accepted / filled / expired / cancelled / rejected counts.
+  - Daily summaries now include `LLM Backend Health` so connection failures are visible in the report itself.
+
+- `trading_agents/service_manager.py`
+  - Syncs a launchd-safe runtime copy under `~/Library/Application Support/TradePulse/runtime`.
+  - Uses the runtime virtualenv when available and strips stale `distutils-precedence.pth` files that can trigger Python startup errors.
+  - Reloads the launch agent when the generated plist changes.
+
+- `scripts/export_tradepulse_logs_and_prompts.py`
+  - Added a reusable exporter that gathers runner logs and agent prompt traces into `~/Desktop/TradePulse_Exports/`.
+  - Supports date windows such as `--since-days 7`, `--start-date`, and `--end-date`.
+
+- `.env.example`
+  - Documented the deterministic PO3 scoring knobs.
+
+### Result
+
+- A reboot no longer silently leaves the local LLM layer unavailable without a visible health signal.
+- Daily reports now expose both order lifecycle quality and LLM backend health.
+- Logs and prompts can be collected into one stable desktop folder instead of scattering ad-hoc exports around the Desktop.
+
 ## v0.11.55 - Soft-integrate PO3 into decisions and reporting
 
 ### Why

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 from statistics import fmean
+import time
 from time import perf_counter, sleep
 import warnings
 
@@ -877,6 +878,53 @@ def _guard_market_structure_false_breakout(
         f"bearish_fvg={bearish_fvg_distance_bps:+.1f}bps, bullish_fvg={bullish_fvg_distance_bps:+.1f}bps, "
         f"trade_delta={trade_delta_ratio:+.2f}, volume={volume_ratio:.2f}x"
     )
+
+
+def _apply_po3_deterministic_score(
+    *,
+    idea: TradeIdea,
+    snapshot,
+    llm_wake: dict,
+    settings,
+) -> tuple[TradeIdea, str]:
+    if not bool(getattr(settings, "po3_deterministic_score_enabled", True)):
+        return idea, ""
+    action = str(getattr(idea, "action", "hold") or "hold").lower()
+    if action not in {"buy", "sell"}:
+        return idea, ""
+
+    phase = str(getattr(snapshot, "po3_phase_hint", "unknown") or "unknown").strip().lower()
+    if phase not in {"expansion_up", "expansion_down", "manipulation_up", "manipulation_down"}:
+        return idea, ""
+
+    metrics = llm_wake.get("metrics") or {}
+    trade_delta_ratio = float(metrics.get("trade_delta_ratio", getattr(snapshot, "trade_delta_ratio", 0.0)) or 0.0)
+    min_flow = abs(float(getattr(settings, "po3_deterministic_score_min_flow", 0.20) or 0.20))
+    if action == "buy":
+        aligned = phase == "expansion_up" and trade_delta_ratio >= min_flow
+        misaligned = phase in {"manipulation_up", "expansion_down"} or trade_delta_ratio <= -min_flow
+    else:
+        aligned = phase == "expansion_down" and trade_delta_ratio <= -min_flow
+        misaligned = phase in {"manipulation_down", "expansion_up"} or trade_delta_ratio >= min_flow
+
+    if not aligned and not misaligned:
+        return idea, ""
+
+    delta = abs(float(getattr(settings, "po3_deterministic_score_delta", 0.06) or 0.06))
+    signed_delta = delta if aligned else -delta
+    new_score = max(0.0, min(1.0, float(getattr(idea, "score", 0.0) or 0.0) + signed_delta))
+    label = "boost" if aligned else "penalty"
+    adjusted = TradeIdea(
+        action=idea.action,
+        score=new_score,
+        rationale=(
+            f"{idea.rationale}; PO3 deterministic {label} {signed_delta:+.2f} "
+            f"(phase={phase}, trade_delta={trade_delta_ratio:+.2f})"
+        ),
+        invalidation=idea.invalidation,
+        holding_horizon=idea.holding_horizon,
+    )
+    return adjusted, f"po3 {label}: phase={phase}, trade_delta={trade_delta_ratio:+.2f}, score_delta={signed_delta:+.2f}"
 
 
 def _guard_fallback_open_exposure(
@@ -2080,19 +2128,32 @@ def execute_cycle(
     progress("setup", "running", "loading settings and models")
     llm_client = None
     review_llm_client = None
+    llm_health = {
+        "status": "disabled",
+        "backend": settings.model_backend,
+        "host": settings.ollama_host,
+        "model": settings.model_name,
+        "model_available": False,
+    }
     if settings.model_backend == "ollama":
-        llm_client = OllamaClient(
+        candidate_llm = OllamaClient(
             host=settings.ollama_host,
             model=settings.model_name,
             timeout_seconds=settings.llm_timeout_seconds,
             trace_root=storage.agent_traces,
         )
-        review_llm_client = OllamaClient(
-            host=settings.ollama_host,
-            model=settings.model_name,
-            timeout_seconds=settings.strategy_review_llm_timeout_seconds,
-            trace_root=storage.agent_traces,
-        )
+        llm_health = candidate_llm.health(timeout_seconds=3.0)
+        llm_health["backend"] = settings.model_backend
+        if llm_health.get("status") == "ok":
+            llm_client = candidate_llm
+            review_llm_client = OllamaClient(
+                host=settings.ollama_host,
+                model=settings.model_name,
+                timeout_seconds=settings.strategy_review_llm_timeout_seconds,
+                trace_root=storage.agent_traces,
+            )
+        else:
+            progress("setup", "warning", f"LLM backend unavailable: {llm_health.get('status')}")
     analysis_llm_client = llm_client
     if cycle_mode != "full" and settings.llm_full_cycle_only:
         analysis_llm_client = None
@@ -2279,6 +2340,12 @@ def execute_cycle(
                 mode=mode,
                 strategy_memory=strategy_memory,
             )
+        idea, po3_score_reason = _apply_po3_deterministic_score(
+            idea=idea,
+            snapshot=snapshot,
+            llm_wake=llm_wake,
+            settings=settings,
+        )
         idea, fallback_guard_reason = _guard_market_structure_false_breakout(
             idea=idea,
             snapshot=snapshot,
@@ -2539,6 +2606,7 @@ def execute_cycle(
                     "fallback_guard_reason": fallback_guard_reason,
                     "memory_guard_reason": memory_guard_reason,
                     "prefilter_reason": prefilter_reason,
+                    "po3_score_reason": po3_score_reason,
                 },
                 "position_context": position_context,
                 "policy_exit": bool(policy_idea is not None),
@@ -2657,6 +2725,7 @@ def execute_cycle(
         "cycle_mode": cycle_mode,
         "cycle_reason": cycle_reason,
         "llm_enabled_for_cycle": bool(analysis_llm_client),
+        "llm_health": llm_health,
         "selection_summary": selection_summary,
         "selected_symbol": selected["symbol"],
         "candidates": candidates,

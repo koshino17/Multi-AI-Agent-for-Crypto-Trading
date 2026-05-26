@@ -35,7 +35,15 @@ def runner_service_storage(mode: str = "bybit-demo-perp"):
     return build_storage_layout(str(mode_storage_root(runner_state_root(), mode)))
 
 
-def preferred_python(project_root: Path) -> Path:
+def runtime_python_path(runtime_root: Path) -> Path:
+    return runtime_root / ".venv" / "bin" / "python3"
+
+
+def preferred_python(project_root: Path, runtime_root: Path | None = None) -> Path:
+    if runtime_root is not None:
+        runtime_python = runtime_python_path(runtime_root)
+        if runtime_python.exists():
+            return runtime_python
     venv_python = project_root / ".venv" / "bin" / "python3"
     if venv_python.exists():
         return venv_python
@@ -85,13 +93,25 @@ def sync_runner_runtime(project_root: Path) -> Path:
     if entrypoint_source.exists():
         _copy_file(entrypoint_source, runtime_root / "run_tradepulse_runner.py")
 
+    venv_source = project_root / ".venv"
+    venv_target = runtime_root / ".venv"
+    if venv_source.exists():
+        if venv_target.exists():
+            shutil.rmtree(venv_target)
+        shutil.copytree(venv_source, venv_target, symlinks=True)
+        for path in venv_target.rglob("distutils-precedence.pth"):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
     return runtime_root
 
 
 def ensure_runner_launch_agent(settings: Settings, project_root: Path) -> tuple[Path, bool]:
     runtime_root = sync_runner_runtime(project_root)
     entrypoint_path = runtime_root / "run_tradepulse_runner.py"
-    python_path = preferred_python(project_root)
+    python_path = preferred_python(project_root, runtime_root)
     log_dir = Path.home() / "Library" / "Logs" / "TradePulse"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "launchd-runner.log"
@@ -160,11 +180,14 @@ def start_runner_service(settings: Settings, project_root: Path) -> dict[str, st
     storage = runner_service_storage(settings.trading_mode)
     runtime_root = sync_runner_runtime(project_root)
     entrypoint_path = runtime_root / "run_tradepulse_runner.py"
-    python_path = preferred_python(project_root)
-    plist_path, _ = ensure_runner_launch_agent(settings, project_root)
+    python_path = preferred_python(project_root, runtime_root)
+    plist_path, plist_changed = ensure_runner_launch_agent(settings, project_root)
     _clear_stale_pid(storage.runner_supervisor_pid)
     _clear_stale_pid(storage.runner_pid)
     _clear_stale_lock(storage.notion_sync_lock, max_age_seconds=180)
+
+    if is_runner_launch_agent_loaded() and plist_changed:
+        subprocess.run(["launchctl", "bootout", runner_launch_target()], capture_output=True, text=True, check=False)
 
     if is_runner_launch_agent_loaded():
         subprocess.run(["launchctl", "kickstart", "-k", runner_launch_target()], capture_output=True, text=True, check=False)

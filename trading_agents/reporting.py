@@ -3153,8 +3153,12 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
     llm_wake_candidates = 0
     llm_wake_enabled = 0
     llm_wake_selected_enabled = 0
+    llm_backend_ok = 0
+    llm_backend_unavailable = 0
+    llm_enabled_cycles = 0
     decision_source_counts: Counter[str] = Counter()
     accepted_source_counts: Counter[str] = Counter()
+    result_status_counts: Counter[str] = Counter()
     projected_balance_blocked_while_exposed = 0
     projected_balance_blocked_while_flat = 0
     long_proposals = 0
@@ -3218,6 +3222,17 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
         selected_wake = item.get("llm_wake", {})
         if isinstance(selected_wake, dict) and selected_wake.get("enabled"):
             llm_wake_selected_enabled += 1
+        llm_health = item.get("llm_health", {})
+        if isinstance(llm_health, dict):
+            if str(llm_health.get("status", "")).lower() == "ok":
+                llm_backend_ok += 1
+            elif str(llm_health.get("status", "")).strip():
+                llm_backend_unavailable += 1
+        if bool(item.get("llm_enabled_for_cycle")):
+            llm_enabled_cycles += 1
+        status = _result_status(item)
+        if status:
+            result_status_counts[status] += 1
         stage_metrics = item.get("stage_metrics", {})
         if isinstance(stage_metrics, dict):
             for stage, metrics in stage_metrics.items():
@@ -3289,6 +3304,10 @@ def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: 
         "llm_wake_rate_pct": llm_wake_rate_pct,
         "llm_selected_wake_enabled": llm_wake_selected_enabled,
         "llm_selected_wake_rate_pct": llm_selected_wake_rate_pct,
+        "llm_backend_ok": llm_backend_ok,
+        "llm_backend_unavailable": llm_backend_unavailable,
+        "llm_enabled_cycles": llm_enabled_cycles,
+        "result_status_counts": dict(result_status_counts.most_common()),
         "decision_source_counts": dict(decision_source_counts.most_common()),
         "accepted_source_counts": dict(accepted_source_counts.most_common()),
         "projected_balance_blocked_while_exposed": projected_balance_blocked_while_exposed,
@@ -3469,6 +3488,12 @@ def build_daily_summary(
     llm_wake_candidates = int(summary.get("llm_wake_candidates", 0))
     llm_wake_enabled = int(summary.get("llm_wake_enabled", 0))
     llm_wake_rate_pct = float(summary.get("llm_wake_rate_pct", 0.0))
+    llm_backend_ok = int(summary.get("llm_backend_ok", 0) or 0)
+    llm_backend_unavailable = int(summary.get("llm_backend_unavailable", 0) or 0)
+    llm_enabled_cycles = int(summary.get("llm_enabled_cycles", 0) or 0)
+    result_status_counts = summary.get("result_status_counts", {})
+    if not isinstance(result_status_counts, dict):
+        result_status_counts = {}
     decision_source_counts = summary.get("decision_source_counts", {})
     accepted_source_counts = summary.get("accepted_source_counts", {})
     trade_review = summary.get("trade_review", {})
@@ -3681,6 +3706,13 @@ def build_daily_summary(
             f"- Orders submitted: {submitted_orders}",
             f"- Executed trades: {executed}",
             f"- Rejected orders: {rejected_orders}",
+            (
+                f"- Order Statuses: accepted={int(result_status_counts.get('accepted', 0))} | "
+                f"filled={int(result_status_counts.get('filled', 0))} | "
+                f"expired={int(result_status_counts.get('expired', 0))} | "
+                f"cancelled={int(result_status_counts.get('cancelled', result_status_counts.get('canceled', 0)))} | "
+                f"rejected={int(result_status_counts.get('rejected', 0))}"
+            ),
             f"- Hold decisions: {holds}",
             f"- Blocked proposals: {blocked}",
             f"- Blocked by exchange minimum: {exchange_minimum_blocked}",
@@ -3688,6 +3720,10 @@ def build_daily_summary(
             f"- Latency Breakdown Avg: {_format_stage_latency_breakdown(stage_latency_seconds)}",
             f"- Latency Breakdown P95: {_format_stage_latency_breakdown(stage_latency_p95_seconds)}",
             f"- LLM Wake Rate: {llm_wake_enabled}/{llm_wake_candidates} candidates ({llm_wake_rate_pct:.1f}%)",
+            (
+                f"- LLM Backend Health: ok={llm_backend_ok}, unavailable={llm_backend_unavailable}, "
+                f"enabled_cycles={llm_enabled_cycles}"
+            ),
             (
                 f"- Agent Confidence Distribution: "
                 f"buy={float(avg_scores.get('buy', 0.0)):.2f} | "

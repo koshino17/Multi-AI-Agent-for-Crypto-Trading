@@ -26,6 +26,7 @@
 - 12 小時 strategy reflection 現在不只會改 controls，還會產生有 `ttl_windows` 與 success metrics 的小型 experiment，並在 daily report 顯示 `Control Impact`
 - Daily report 與 Notion `Daily Review` 的主窗口現在是 **台灣時間前一天 12:00 -> 當天 12:00**，不再是曆日 `00:00 -> 24:00`
 - 每次 LLM agent 真正送出的 prompt / response 現在會自動寫入 `service/agent_traces/<date_label>/<agent>.md` 與 `.jsonl`，方便追問題時看實際上下文
+- 若你想把目前的 runner log 與 prompt traces 整理到同一個桌面資料夾，請執行 `python3 scripts/export_tradepulse_logs_and_prompts.py`；輸出會放到 `~/Desktop/TradePulse_Exports/`，也支援像 `--since-days 7` 這種最近幾天的整理
 - 每個 noon window 也會自動產出 machine-readable 的 `Ground Truth` 與 `Oracle Postmortem` artifact，方便把盤面路徑、live 行為與 hindsight 候選放在同一份證據鏈裡
 - daily report 現在也會區分 `carry-in` 倉位關閉與「本窗口新交易」，避免把前一窗口留下來的部位管理和今天的新進場混在一起
 - 若設定外部模型 API key，Daily 也可以額外產出 `External AI Review`，把同一天的摘要送去給外部模型做第二視角審稿；這層只用於研究與檢討，不直接影響 live 下單

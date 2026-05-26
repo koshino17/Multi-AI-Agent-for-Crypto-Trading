@@ -91,6 +91,33 @@ class OllamaClient:
     timeout_seconds: float = 60.0
     trace_root: Path | None = None
 
+    def health(self, timeout_seconds: float = 3.0) -> dict:
+        try:
+            request = Request(f"{self.host.rstrip('/')}/api/tags", method="GET")
+            with urlopen(request, timeout=max(timeout_seconds, 1.0)) as response:
+                body = json.loads(response.read().decode("utf-8"))
+            models = [
+                str(item.get("name") or item.get("model") or "")
+                for item in body.get("models", [])
+                if isinstance(item, dict)
+            ]
+            model_available = self.model in models
+            return {
+                "status": "ok" if model_available else "model_missing",
+                "host": self.host,
+                "model": self.model,
+                "model_available": model_available,
+                "available_models": models,
+            }
+        except Exception as exc:
+            return {
+                "status": "unavailable",
+                "host": self.host,
+                "model": self.model,
+                "model_available": False,
+                "reason": str(exc),
+            }
+
     def generate_json(self, prompt: str, trace: dict | None = None) -> dict:
         payload = {
             "model": self.model,
