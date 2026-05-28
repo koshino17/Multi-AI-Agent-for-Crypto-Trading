@@ -25,6 +25,7 @@ class StorageLayout:
     runner_supervisor_pid: Path
     runner_supervisor_log: Path
     runner_pid: Path
+    runner_lock: Path
     runner_log: Path
     notion_sync_lock: Path
     notion_daily_review_state: Path
@@ -84,6 +85,7 @@ def build_storage_layout(root: str) -> StorageLayout:
         runner_supervisor_pid=base / "service" / "runner_supervisor.pid",
         runner_supervisor_log=base / "service" / "runner_supervisor.log",
         runner_pid=base / "service" / "runner.pid",
+        runner_lock=base / "service" / "runner.lock",
         runner_log=base / "service" / "runner.log",
         notion_sync_lock=base / "service" / "notion_sync.lock",
         notion_daily_review_state=base / "service" / "notion_daily_review.json",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 from statistics import fmean
 import time
@@ -1191,7 +1192,9 @@ def _load_runner_heartbeat(storage) -> dict[str, str]:
     latest_timestamp = ""
     latest_detail = ""
     try:
-        for line in storage.runner_log.read_text(errors="replace").splitlines():
+        for line in _iter_recent_log_lines(storage.runner_log):
+            if '"event"' not in line[:256] or '"monitor"' not in line[:512]:
+                continue
             try:
                 payload = json.loads(line)
             except Exception:
@@ -1206,6 +1209,16 @@ def _load_runner_heartbeat(storage) -> dict[str, str]:
     if not latest_timestamp:
         return {"text": "No monitor heartbeat yet", "timestamp": ""}
     return {"text": f"{latest_timestamp} ({latest_detail or 'runner heartbeat'})", "timestamp": latest_timestamp}
+
+
+def _iter_recent_log_lines(path: Path, max_bytes: int = 16 * 1024 * 1024):
+    size = path.stat().st_size
+    with path.open("rb") as handle:
+        if size > max_bytes:
+            handle.seek(-max_bytes, os.SEEK_END)
+            handle.readline()
+        for raw_line in handle:
+            yield raw_line.decode("utf-8", errors="replace").rstrip("\n")
 
 
 def _record_stage_metric(stage_metrics: dict[str, dict[str, float]], stage: str, elapsed_seconds: float) -> None:

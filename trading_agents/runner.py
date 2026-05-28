@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,8 @@ from trading_agents.storage import build_storage_layout, mode_storage_root
 
 _running = True
 _RUNNER_LOG_PATH: Path | None = None
+_RUNNER_LOCK_FD: int | None = None
+_MAX_RUNNER_LOG_BYTES = 64 * 1024 * 1024
 
 _TIMEFRAME_SECONDS = {
     "1m": 60,
@@ -62,6 +65,44 @@ def _remove_pid(path: Path) -> None:
     try:
         if path.exists():
             path.unlink()
+    except OSError:
+        pass
+
+
+def _rotate_large_log(path: Path, max_bytes: int = _MAX_RUNNER_LOG_BYTES) -> None:
+    try:
+        if not path.exists() or path.stat().st_size <= max_bytes:
+            return
+        rotated = path.with_name(f"{path.name}.1")
+        if rotated.exists():
+            rotated.unlink()
+        path.rename(rotated)
+    except OSError:
+        pass
+
+
+def _acquire_runner_lock(path: Path) -> int | None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    os.ftruncate(fd, 0)
+    os.write(fd, str(os.getpid()).encode("utf-8"))
+    return fd
+
+
+def _release_runner_lock(fd: int | None, path: Path) -> None:
+    if fd is None:
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+    try:
+        path.unlink()
     except OSError:
         pass
 
@@ -216,13 +257,29 @@ def _classify_cycle_mode(reason: str) -> str:
 
 
 def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
-    global _RUNNER_LOG_PATH
+    global _RUNNER_LOCK_FD, _RUNNER_LOG_PATH
     signal.signal(signal.SIGINT, _stop)
     signal.signal(signal.SIGTERM, _stop)
 
     settings = load_settings()
     storage = build_storage_layout(str(mode_storage_root(settings.data_root, mode)))
+    _rotate_large_log(storage.runner_log)
     _RUNNER_LOG_PATH = storage.runner_log
+    _RUNNER_LOCK_FD = _acquire_runner_lock(storage.runner_lock)
+    if _RUNNER_LOCK_FD is None:
+        _emit(
+            {
+                "event": "runner",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "status": "duplicate_blocked",
+                "mode": mode,
+                "symbol": symbol,
+                "detail": f"another runner already holds {storage.runner_lock}",
+            }
+        )
+        while _running:
+            time.sleep(30)
+        return 0
     _write_pid(storage.runner_pid)
     exchange = _build_exchange(mode, settings)
     symbol_pool = _parse_symbol_pool(symbol, settings)
@@ -448,6 +505,8 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
         return 0
     finally:
         _remove_pid(storage.runner_pid)
+        _release_runner_lock(_RUNNER_LOCK_FD, storage.runner_lock)
+        _RUNNER_LOCK_FD = None
 
 
 def main() -> int:

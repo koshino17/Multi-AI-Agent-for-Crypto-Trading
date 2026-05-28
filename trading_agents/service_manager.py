@@ -13,6 +13,8 @@ from trading_agents.storage import build_storage_layout, mode_storage_root
 
 
 RUNNER_LABEL = "com.koshino.trading-agents.runner"
+RUNNER_PROCESS_MARKER = "run_tradepulse_runner.py"
+MAX_RUNNER_LOG_BYTES = 64 * 1024 * 1024
 
 
 def runner_launch_agent_path() -> Path:
@@ -115,6 +117,7 @@ def ensure_runner_launch_agent(settings: Settings, project_root: Path) -> tuple[
     log_dir = Path.home() / "Library" / "Logs" / "TradePulse"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "launchd-runner.log"
+    _rotate_large_log(log_path)
     plist_path = runner_launch_agent_path()
     plist_path.parent.mkdir(parents=True, exist_ok=True)
     symbols = ",".join(settings.observation_pool) or settings.symbol
@@ -178,23 +181,25 @@ def is_runner_launch_agent_loaded() -> bool:
 
 def start_runner_service(settings: Settings, project_root: Path) -> dict[str, str]:
     storage = runner_service_storage(settings.trading_mode)
+    _rotate_large_log(storage.runner_log)
     runtime_root = sync_runner_runtime(project_root)
     entrypoint_path = runtime_root / "run_tradepulse_runner.py"
     python_path = preferred_python(project_root, runtime_root)
-    plist_path, plist_changed = ensure_runner_launch_agent(settings, project_root)
+    plist_path, _plist_changed = ensure_runner_launch_agent(settings, project_root)
     _clear_stale_pid(storage.runner_supervisor_pid)
     _clear_stale_pid(storage.runner_pid)
     _clear_stale_lock(storage.notion_sync_lock, max_age_seconds=180)
 
-    if is_runner_launch_agent_loaded() and plist_changed:
-        subprocess.run(["launchctl", "bootout", runner_launch_target()], capture_output=True, text=True, check=False)
-
     if is_runner_launch_agent_loaded():
-        subprocess.run(["launchctl", "kickstart", "-k", runner_launch_target()], capture_output=True, text=True, check=False)
-    else:
-        subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist_path)], capture_output=True, text=True, check=False)
-        subprocess.run(["launchctl", "enable", runner_launch_target()], capture_output=True, text=True, check=False)
-        subprocess.run(["launchctl", "kickstart", "-k", runner_launch_target()], capture_output=True, text=True, check=False)
+        subprocess.run(["launchctl", "bootout", runner_launch_target()], capture_output=True, text=True, check=False)
+        deadline = time.time() + 10
+        while time.time() < deadline and is_runner_launch_agent_loaded():
+            time.sleep(0.2)
+    _terminate_runner_processes()
+
+    subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist_path)], capture_output=True, text=True, check=False)
+    subprocess.run(["launchctl", "enable", runner_launch_target()], capture_output=True, text=True, check=False)
+    subprocess.run(["launchctl", "kickstart", "-k", runner_launch_target()], capture_output=True, text=True, check=False)
 
     deadline = time.time() + 8
     while time.time() < deadline:
@@ -248,6 +253,7 @@ def stop_runner_service(settings: Settings) -> dict[str, str]:
             os.kill(runner_pid, 15)
         except OSError:
             pass
+    _terminate_runner_processes()
     _clear_stale_pid(storage.runner_supervisor_pid)
     _clear_stale_pid(storage.runner_pid)
     return {"status": "stopped", "label": RUNNER_LABEL}
@@ -287,5 +293,55 @@ def _clear_stale_lock(path: Path, max_age_seconds: int) -> None:
         return
     try:
         path.unlink()
+    except OSError:
+        pass
+
+
+def _runner_process_pids() -> list[int]:
+    result = subprocess.run(
+        ["pgrep", "-f", RUNNER_PROCESS_MARKER],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    pids: list[int] = []
+    for line in result.stdout.splitlines():
+        try:
+            pid = int(line.strip())
+        except ValueError:
+            continue
+        if pid != os.getpid():
+            pids.append(pid)
+    return pids
+
+
+def _terminate_runner_processes() -> None:
+    pids = _runner_process_pids()
+    for pid in pids:
+        try:
+            os.kill(pid, 15)
+        except OSError:
+            pass
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if not any(_pid_is_alive(pid) for pid in pids):
+            return
+        time.sleep(0.2)
+    for pid in pids:
+        if _pid_is_alive(pid):
+            try:
+                os.kill(pid, 9)
+            except OSError:
+                pass
+
+
+def _rotate_large_log(path: Path, max_bytes: int = MAX_RUNNER_LOG_BYTES) -> None:
+    try:
+        if not path.exists() or path.stat().st_size <= max_bytes:
+            return
+        rotated = path.with_name(f"{path.name}.1")
+        if rotated.exists():
+            rotated.unlink()
+        path.rename(rotated)
     except OSError:
         pass

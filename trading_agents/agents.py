@@ -2294,7 +2294,14 @@ class StrategyReflectionAgent:
                 normalized[key] = value
             else:
                 normalized.pop(key, None)
+        previous_controls = reflection_context.get("previous_controls") or {}
+        previous_experiment = reflection_context.get("previous_experiment") or {}
         pilot_candidate_id = str(raw.get("pilot_candidate_id", "") or "").strip()
+        if not pilot_candidate_id:
+            pilot_candidate_id = str(previous_controls.get("pilot_candidate_id", "") or "").strip()
+        if not pilot_candidate_id:
+            pilot_delta = ((previous_experiment.get("control_deltas") or {}).get("pilot_candidate_id") or {})
+            pilot_candidate_id = str(pilot_delta.get("current", "") or "").strip()
         if pilot_candidate_id:
             normalized["pilot_candidate_id"] = pilot_candidate_id
         else:
@@ -2308,7 +2315,7 @@ class StrategyReflectionAgent:
             normalized["fallback_entry_mode"] = "base_only"
         if bool(reflection_context.get("capital_preservation_mode")) and normalized.get("entry_mode") == "normal":
             normalized["entry_mode"] = "capital_preservation"
-        if str((reflection_context.get("previous_controls") or {}).get("carry_in_mode", "") or "").strip().lower() == "de_risk":
+        if str(previous_controls.get("carry_in_mode", "") or "").strip().lower() == "de_risk":
             if not bool(reflection_context.get("restore_ready")) and int(reflection_context.get("negative_streak", 0) or 0) > 0:
                 normalized["carry_in_mode"] = "de_risk"
                 normalized["hold_bars_scale"] = min(float(normalized.get("hold_bars_scale", 1.0) or 1.0), 0.67)

@@ -19,12 +19,13 @@ from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyC
 from trading_agents.reporting import (
     _build_financial_snapshot,
     _build_trade_review,
+    _load_runner_event_counts,
     write_ground_truth_artifacts,
     write_oracle_postmortem_artifacts,
 )
 from trading_agents.research import StrategyResearchAgent
-from trading_agents.runner import _monitor_snapshot
-from trading_agents.storage import mode_storage_root
+from trading_agents.runner import _acquire_runner_lock, _monitor_snapshot, _release_runner_lock
+from trading_agents.storage import build_storage_layout, mode_storage_root
 from trading_agents_web import _runtime_settings
 
 
@@ -42,6 +43,36 @@ class RuntimeRegressionTests(unittest.TestCase):
             mode_storage_root("/tmp/tradepulse-state/modes/mock", "mock"),
             Path("/tmp/tradepulse-state/modes/mock"),
         )
+
+    def test_runner_lock_blocks_duplicate_instances(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = build_storage_layout(tmpdir)
+            first_fd = _acquire_runner_lock(storage.runner_lock)
+            self.assertIsNotNone(first_fd)
+            try:
+                self.assertIsNone(_acquire_runner_lock(storage.runner_lock))
+            finally:
+                _release_runner_lock(first_fd, storage.runner_lock)
+            second_fd = _acquire_runner_lock(storage.runner_lock)
+            try:
+                self.assertIsNotNone(second_fd)
+            finally:
+                _release_runner_lock(second_fd, storage.runner_lock)
+
+    def test_runner_event_counts_skip_large_non_event_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner_log = Path(tmpdir) / "runner.log"
+            huge_report_line = json.dumps({"mode": "bybit-demo-perp", "blob": "x" * 1_000_000})
+            rows = [
+                huge_report_line,
+                json.dumps({"event": "monitor", "timestamp": "2026-05-28T15:00:00+00:00"}),
+                json.dumps({"event": "cycle", "status": "started", "timestamp": "2026-05-28T15:01:00+00:00"}),
+                json.dumps({"event": "cycle", "status": "finished", "timestamp": "2026-05-28T15:01:30+00:00"}),
+            ]
+            runner_log.write_text("\n".join(rows) + "\n")
+            counts = _load_runner_event_counts(runner_log, "2026-05-29")
+        self.assertEqual(counts["monitor_heartbeats"], 1)
+        self.assertEqual(counts["avg_decision_latency_seconds"], 30.0)
 
     def test_pilot_mode_review_uses_warnings_after_initialization(self) -> None:
         agent = RiskSupervisorAgent(llm_client=None)
@@ -247,6 +278,32 @@ class RuntimeRegressionTests(unittest.TestCase):
         )
         self.assertEqual(str(normalized.get("entry_mode", "")), "capital_preservation_pilot")
         self.assertEqual(str(normalized.get("fallback_entry_mode", "")), "normal")
+
+    def test_normalize_controls_recovers_missing_pilot_candidate_from_previous_experiment(self) -> None:
+        agent = StrategyReflectionAgent(llm_client=None)
+        normalized = agent._normalize_controls(  # type: ignore[attr-defined]
+            {
+                "entry_mode": "capital_preservation_pilot",
+                "pilot_max_position_pct": 0.10,
+                "benchmark_watch_candidate": "grid_range_reversion_maker_v1",
+            },
+            {},
+            reflection_context={
+                "previous_controls": {
+                    "entry_mode": "capital_preservation_pilot",
+                },
+                "previous_experiment": {
+                    "control_deltas": {
+                        "pilot_candidate_id": {
+                            "previous": None,
+                            "current": "grid_range_reversion_maker_v1",
+                        }
+                    }
+                },
+            },
+        )
+        self.assertEqual(str(normalized.get("entry_mode", "")), "capital_preservation_pilot")
+        self.assertEqual(str(normalized.get("pilot_candidate_id", "")), "grid_range_reversion_maker_v1")
 
     def test_strategy_research_uses_memory_to_bias_candidate_selection(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

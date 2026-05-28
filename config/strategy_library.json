@@ -32,7 +32,7 @@
         "entry_liquidity": "maker",
         "post_only": true,
         "passive_offset_bps": 0.0,
-        "entry_ttl_seconds": 20
+        "entry_ttl_seconds": 90
       }
     },
     {

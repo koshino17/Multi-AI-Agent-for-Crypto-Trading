@@ -16,6 +16,44 @@
 
 ---
 
+## v0.11.57 - Prevent duplicate runners and improve maker pilot fillability
+
+### Why
+
+- A stale orphan runner can keep writing decisions after launchd starts a new managed runner, inflating cycle counts and creating duplicate decision / order risk.
+- Ollama was reachable, but repeated model reloads and long generations pushed some agents into timeout.
+- The maker-only pilot generated orders, but 20-second post-only limits expired before producing live fills.
+
+### What Changed
+
+- `trading_agents/runner.py` / `trading_agents/storage.py`
+  - Added a mode storage runner lock at `service/runner.lock`.
+  - A second runner now enters `duplicate_blocked` instead of running trading cycles.
+
+- `trading_agents/service_manager.py`
+  - Runner start now bootouts the launch agent, terminates stale `run_tradepulse_runner.py` processes, then bootstraps a single clean launchd runner.
+  - Runner stop also clears leftover runner processes.
+  - Large runner stdout logs are rotated before service restart.
+
+- `trading_agents/main.py` / `trading_agents/reporting.py`
+  - Runner heartbeat and daily event-count reads now stream only recent log tails and skip full report payload lines instead of loading/parsing the entire runner log.
+
+- `trading_agents/runner.py`
+  - Large internal runner logs are rotated at process start.
+
+- `config/strategy_library.json`
+  - Increased `grid_range_reversion_maker_v1` post-only maker entry TTL from 20s to 90s so the pilot has a realistic chance to fill.
+
+- `.env.example`
+  - Added `OLLAMA_KEEP_ALIVE=30m` for the launchd Ollama service environment.
+
+### Result
+
+- TradePulse is less likely to double-run after restarts.
+- Reporting no longer stalls on hundreds of MB of runner log payloads.
+- Maker pilot orders should spend enough time on the book to produce executable evidence.
+- Ollama can stay warm longer between 15m cycles, reducing timeout pressure.
+
 ## v0.11.56 - Stabilize local LLM runtime and observability after reboot
 
 ### Why

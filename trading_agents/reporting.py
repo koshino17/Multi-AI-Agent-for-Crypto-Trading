@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -3109,7 +3110,9 @@ def _load_runner_event_counts(runner_log_path: Path | None, date_label: str) -> 
     cycle_started_at: datetime | None = None
     cycle_latencies: list[float] = []
     try:
-        for line in runner_log_path.read_text(errors="replace").splitlines():
+        for line in _iter_recent_log_lines(runner_log_path):
+            if '"event"' not in line[:256]:
+                continue
             try:
                 payload = json.loads(line)
             except Exception:
@@ -3140,6 +3143,16 @@ def _load_runner_event_counts(runner_log_path: Path | None, date_label: str) -> 
         return {"monitor_heartbeats": 0, "avg_decision_latency_seconds": 0.0}
     avg_latency = sum(cycle_latencies) / len(cycle_latencies) if cycle_latencies else 0.0
     return {"monitor_heartbeats": monitor_heartbeats, "avg_decision_latency_seconds": avg_latency}
+
+
+def _iter_recent_log_lines(path: Path, max_bytes: int = 64 * 1024 * 1024):
+    size = path.stat().st_size
+    with path.open("rb") as handle:
+        if size > max_bytes:
+            handle.seek(-max_bytes, os.SEEK_END)
+            handle.readline()
+        for raw_line in handle:
+            yield raw_line.decode("utf-8", errors="replace").rstrip("\n")
 
 
 def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: dict[str, int] | None = None) -> dict[str, Any]:
