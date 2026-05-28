@@ -107,6 +107,36 @@ def _release_runner_lock(fd: int | None, path: Path) -> None:
         pass
 
 
+def _cycle_report_summary(report: dict) -> dict:
+    idea = report.get("idea") if isinstance(report.get("idea"), dict) else {}
+    approval = report.get("approval") if isinstance(report.get("approval"), dict) else {}
+    result = report.get("result") if isinstance(report.get("result"), dict) else {}
+    candidates = report.get("candidates") if isinstance(report.get("candidates"), list) else []
+    execution_profile = {}
+    if candidates and isinstance(candidates[0], dict):
+        strategy_research = candidates[0].get("strategy_research")
+        if isinstance(strategy_research, dict):
+            execution_profile = strategy_research.get("selected_execution_profile") or {}
+    return {
+        "event": "cycle_report",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "mode": report.get("mode"),
+        "symbol": report.get("selected_symbol"),
+        "cycle_mode": report.get("cycle_mode"),
+        "cycle_reason": report.get("cycle_reason"),
+        "action": idea.get("action"),
+        "score": idea.get("score"),
+        "approved": approval.get("approved"),
+        "decision_source": report.get("decision_source"),
+        "result_status": result.get("status"),
+        "trade_log": report.get("trade_log"),
+        "daily_report": report.get("daily_report"),
+        "human_report": report.get("human_report"),
+        "entry_ttl_seconds": execution_profile.get("entry_ttl_seconds"),
+        "notion_sync_status": (report.get("notion_sync") or {}).get("status") if isinstance(report.get("notion_sync"), dict) else None,
+    }
+
+
 def _timeframe_seconds(label: str) -> int:
     return _TIMEFRAME_SECONDS.get(label, 900)
 
@@ -484,7 +514,7 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
                             "cycle_mode": cycle_mode,
                         }
                     )
-                    _emit(report)
+                    _emit(_cycle_report_summary(report))
                 except Exception as exc:
                     _emit(
                         {

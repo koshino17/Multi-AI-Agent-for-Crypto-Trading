@@ -40,6 +40,7 @@
 
 - `trading_agents/runner.py`
   - Large internal runner logs are rotated at process start.
+  - Runner completion output now writes a compact `cycle_report` event instead of dumping the full decision report into runner / launchd logs.
 
 - `config/strategy_library.json`
   - Increased `grid_range_reversion_maker_v1` post-only maker entry TTL from 20s to 90s so the pilot has a realistic chance to fill.
@@ -51,6 +52,7 @@
 
 - TradePulse is less likely to double-run after restarts.
 - Reporting no longer stalls on hundreds of MB of runner log payloads.
+- Runner logs should stop re-growing from full-report payloads after every cycle.
 - Maker pilot orders should spend enough time on the book to produce executable evidence.
 - Ollama can stay warm longer between 15m cycles, reducing timeout pressure.
 

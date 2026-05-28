@@ -24,7 +24,7 @@ from trading_agents.reporting import (
     write_oracle_postmortem_artifacts,
 )
 from trading_agents.research import StrategyResearchAgent
-from trading_agents.runner import _acquire_runner_lock, _monitor_snapshot, _release_runner_lock
+from trading_agents.runner import _acquire_runner_lock, _cycle_report_summary, _monitor_snapshot, _release_runner_lock
 from trading_agents.storage import build_storage_layout, mode_storage_root
 from trading_agents_web import _runtime_settings
 
@@ -73,6 +73,25 @@ class RuntimeRegressionTests(unittest.TestCase):
             counts = _load_runner_event_counts(runner_log, "2026-05-29")
         self.assertEqual(counts["monitor_heartbeats"], 1)
         self.assertEqual(counts["avg_decision_latency_seconds"], 30.0)
+
+    def test_cycle_report_summary_omits_large_payloads(self) -> None:
+        summary = _cycle_report_summary(
+            {
+                "mode": "bybit-demo-perp",
+                "selected_symbol": "SOL/USDT",
+                "cycle_mode": "full",
+                "cycle_reason": "test",
+                "idea": {"action": "hold", "score": 0.4},
+                "approval": {"approved": False},
+                "decision_source": "base_strategy",
+                "trade_log": "/tmp/decision.json",
+                "external_benchmarks": {"large": "x" * 1_000_000},
+                "candidates": [{"strategy_research": {"selected_execution_profile": {"entry_ttl_seconds": 90}}}],
+            }
+        )
+        self.assertEqual(summary["event"], "cycle_report")
+        self.assertEqual(summary["entry_ttl_seconds"], 90)
+        self.assertNotIn("external_benchmarks", summary)
 
     def test_pilot_mode_review_uses_warnings_after_initialization(self) -> None:
         agent = RiskSupervisorAgent(llm_client=None)
