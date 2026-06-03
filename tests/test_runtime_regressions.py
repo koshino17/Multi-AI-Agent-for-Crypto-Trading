@@ -25,6 +25,7 @@ from trading_agents.reporting import (
 )
 from trading_agents.research import StrategyResearchAgent
 from trading_agents.runner import _acquire_runner_lock, _cycle_report_summary, _monitor_snapshot, _release_runner_lock
+from trading_agents.service_manager import _runner_launch_agent_plist
 from trading_agents.storage import build_storage_layout, mode_storage_root
 from trading_agents_web import _runtime_settings
 
@@ -43,6 +44,24 @@ class RuntimeRegressionTests(unittest.TestCase):
             mode_storage_root("/tmp/tradepulse-state/modes/mock", "mock"),
             Path("/tmp/tradepulse-state/modes/mock"),
         )
+
+    def test_runner_launch_agent_uses_env_driven_launcher(self) -> None:
+        plist = _runner_launch_agent_plist(
+            Path("/tmp/tradepulse-runtime"),
+            Path("/tmp/tradepulse-launchd.log"),
+        )
+        self.assertIn("/bin/zsh", plist)
+        self.assertIn("/tmp/tradepulse-runtime/scripts/launch_trading_runner.sh", plist)
+        self.assertNotIn("--mode", plist)
+        self.assertNotIn("--symbol", plist)
+        self.assertNotIn("bybit-demo-perp", plist)
+        self.assertNotIn("mock", plist)
+
+    def test_runner_launcher_uses_mode_scoped_storage(self) -> None:
+        launcher = Path("scripts/launch_trading_runner.sh").read_text()
+        self.assertIn("mode_storage_root", launcher)
+        self.assertIn("settings.trading_mode", launcher)
+        self.assertNotIn('exec >> "$RUNNER_LOG"', launcher)
 
     def test_runner_lock_blocks_duplicate_instances(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

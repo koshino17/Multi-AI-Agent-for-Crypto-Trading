@@ -13,9 +13,9 @@ eval "$(
 "$PYTHON_BIN" - <<'PY'
 import shlex
 from trading_agents.config import load_settings
-from trading_agents.storage import build_storage_layout
+from trading_agents.storage import build_storage_layout, mode_storage_root
 settings = load_settings()
-storage = build_storage_layout(settings.data_root)
+storage = build_storage_layout(str(mode_storage_root(settings.data_root, settings.trading_mode)))
 symbols = ",".join(settings.observation_pool) or settings.symbol
 values = {
     "DATA_ROOT": settings.data_root,
@@ -23,7 +23,6 @@ values = {
     "SYMBOLS": symbols,
     "MONITOR_INTERVAL": settings.monitor_interval_seconds,
     "RUNNER_PID": str(storage.runner_pid),
-    "RUNNER_LOG": str(storage.runner_log),
     "NOTION_LOCK": str(storage.notion_sync_lock),
 }
 for key, value in values.items():
@@ -48,5 +47,4 @@ if [ -f "$NOTION_LOCK" ]; then
   fi
 fi
 
-exec >> "$RUNNER_LOG" 2>&1
 exec "$PYTHON_BIN" -m trading_agents.runner --mode "$MODE" --symbol "$SYMBOLS" --interval "$MONITOR_INTERVAL"

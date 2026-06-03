@@ -16,6 +16,32 @@
 
 ---
 
+## v0.11.58 - Make launchd runner follow runtime environment
+
+### Why
+
+- After reboot / service restarts, the LaunchAgent could keep a stale hard-coded `--mode` / `--symbol` from an older service start.
+- This allowed the live service to drift into `mock` even when `.env` was set to `TRADING_MODE=bybit-demo-perp`, making trading logs and actual execution mode disagree.
+
+### What Changed
+
+- `trading_agents/service_manager.py`
+  - The generated LaunchAgent now starts `scripts/launch_trading_runner.sh` from the synced runtime instead of hard-coding `--mode`, `--symbol`, and `--interval` in the plist.
+  - The runtime sync now copies the launcher script into `~/Library/Application Support/TradePulse/runtime/scripts/`.
+  - The launcher reads the runtime `.env` on every service start, so reboot behavior follows the synced TradePulse configuration.
+
+- `scripts/launch_trading_runner.sh`
+  - The launcher now resolves runner pid / lock / log paths through mode-scoped storage, keeping `mock` state out of the canonical `bybit-demo-perp` state root.
+  - Removed stdout redirection into `runner.log`; launchd captures stdout/stderr separately while the runner writes structured events to `runner.log`, preventing duplicate event lines.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression tests that fail if runner mode / symbol arguments are written back into the LaunchAgent plist or launcher stdout is redirected into the structured runner log.
+
+### Result
+
+- Rebooting the Mac should no longer resurrect an old `mock` LaunchAgent when TradePulse is configured for `bybit-demo-perp`.
+- Future mode changes are centralized through `.env` + runtime sync instead of hidden inside the plist.
+
 ## v0.11.57 - Prevent duplicate runners and improve maker pilot fillability
 
 ### Why

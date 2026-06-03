@@ -29,6 +29,10 @@ def runner_runtime_root() -> Path:
     return Path.home() / "Library" / "Application Support" / "TradePulse" / "runtime"
 
 
+def runner_runtime_launcher_path(runtime_root: Path) -> Path:
+    return runtime_root / "scripts" / "launch_trading_runner.sh"
+
+
 def runner_state_root() -> Path:
     return Path.home() / "Library" / "Application Support" / "TradePulse" / "state"
 
@@ -95,6 +99,12 @@ def sync_runner_runtime(project_root: Path) -> Path:
     if entrypoint_source.exists():
         _copy_file(entrypoint_source, runtime_root / "run_tradepulse_runner.py")
 
+    launcher_source = project_root / "scripts" / "launch_trading_runner.sh"
+    if launcher_source.exists():
+        launcher_target = runner_runtime_launcher_path(runtime_root)
+        _copy_file(launcher_source, launcher_target)
+        launcher_target.chmod(0o755)
+
     venv_source = project_root / ".venv"
     venv_target = runtime_root / ".venv"
     if venv_source.exists():
@@ -110,18 +120,9 @@ def sync_runner_runtime(project_root: Path) -> Path:
     return runtime_root
 
 
-def ensure_runner_launch_agent(settings: Settings, project_root: Path) -> tuple[Path, bool]:
-    runtime_root = sync_runner_runtime(project_root)
-    entrypoint_path = runtime_root / "run_tradepulse_runner.py"
-    python_path = preferred_python(project_root, runtime_root)
-    log_dir = Path.home() / "Library" / "Logs" / "TradePulse"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / "launchd-runner.log"
-    _rotate_large_log(log_path)
-    plist_path = runner_launch_agent_path()
-    plist_path.parent.mkdir(parents=True, exist_ok=True)
-    symbols = ",".join(settings.observation_pool) or settings.symbol
-    plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+def _runner_launch_agent_plist(runtime_root: Path, log_path: Path) -> str:
+    launcher_path = runner_runtime_launcher_path(runtime_root)
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -129,14 +130,8 @@ def ensure_runner_launch_agent(settings: Settings, project_root: Path) -> tuple[
   <string>{RUNNER_LABEL}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>{python_path}</string>
-    <string>{entrypoint_path}</string>
-    <string>--mode</string>
-    <string>{settings.trading_mode}</string>
-    <string>--symbol</string>
-    <string>{symbols}</string>
-    <string>--interval</string>
-    <string>{settings.monitor_interval_seconds}</string>
+    <string>/bin/zsh</string>
+    <string>{launcher_path}</string>
   </array>
   <key>WorkingDirectory</key>
   <string>{runtime_root}</string>
@@ -158,6 +153,17 @@ def ensure_runner_launch_agent(settings: Settings, project_root: Path) -> tuple[
 </dict>
 </plist>
 """
+
+
+def ensure_runner_launch_agent(settings: Settings, project_root: Path) -> tuple[Path, bool]:
+    runtime_root = sync_runner_runtime(project_root)
+    log_dir = Path.home() / "Library" / "Logs" / "TradePulse"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "launchd-runner.log"
+    _rotate_large_log(log_path)
+    plist_path = runner_launch_agent_path()
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+    plist_content = _runner_launch_agent_plist(runtime_root, log_path)
     changed = True
     if plist_path.exists():
         try:
