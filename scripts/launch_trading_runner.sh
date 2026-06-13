@@ -11,9 +11,22 @@ fi
 
 eval "$(
 "$PYTHON_BIN" - <<'PY'
+import os
 import shlex
+import sys
 from trading_agents.config import load_settings
 from trading_agents.storage import build_storage_layout, mode_storage_root
+
+required = ("TRADING_MODE", "SYMBOL", "OBSERVATION_POOL")
+missing = [name for name in required if not os.getenv(name)]
+if missing:
+    sys.stderr.write(
+        "TradePulse launcher refused to start because runtime .env is missing: "
+        + ", ".join(missing)
+        + "\n"
+    )
+    sys.exit(78)
+
 settings = load_settings()
 storage = build_storage_layout(str(mode_storage_root(settings.data_root, settings.trading_mode)))
 symbols = ",".join(settings.observation_pool) or settings.symbol

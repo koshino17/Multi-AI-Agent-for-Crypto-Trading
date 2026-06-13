@@ -61,6 +61,8 @@ class RuntimeRegressionTests(unittest.TestCase):
         launcher = Path("scripts/launch_trading_runner.sh").read_text()
         self.assertIn("mode_storage_root", launcher)
         self.assertIn("settings.trading_mode", launcher)
+        self.assertIn('"TRADING_MODE"', launcher)
+        self.assertIn("refused to start", launcher)
         self.assertNotIn('exec >> "$RUNNER_LOG"', launcher)
 
     def test_runner_lock_blocks_duplicate_instances(self) -> None:

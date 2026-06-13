@@ -16,6 +16,24 @@
 
 ---
 
+## v0.11.59 - Fail closed when runtime launcher env is incomplete
+
+### Why
+
+- The project `.env` was still set to `TRADING_MODE=bybit-demo-perp`, but the synced runtime `.env` had been reduced to only `DATA_ROOT`.
+- On reboot, the runtime launcher loaded the incomplete runtime `.env` and silently fell back to the config default `mock`, so launchd kept TradePulse alive while the intended demo-perp runner was effectively stopped.
+
+### What Changed
+
+- `scripts/launch_trading_runner.sh`
+  - Added a startup guard for required runtime `.env` keys: `TRADING_MODE`, `SYMBOL`, and `OBSERVATION_POOL`.
+  - If any required key is missing, the launcher now exits with a clear error instead of silently starting in `mock`.
+
+### Result
+
+- TradePulse should no longer disguise a broken runtime `.env` as a healthy mock runner.
+- Future startup failures should be easier to diagnose from `~/Library/Logs/TradePulse/launchd-runner.log`.
+
 ## v0.11.58 - Make launchd runner follow runtime environment
 
 ### Why
