@@ -16,6 +16,37 @@
 
 ---
 
+## v1.0.0 - Autonomous TradePulse profit researcher governance
+
+### Why
+
+- The user explicitly delegated more TradePulse stewardship to Codex and wants autonomous daily research, not only reactive assistance.
+- The previous daily review loop was useful as a summary surface, but it needed stronger rules for PO3-centered strategy research, reinforcement-learning-style policy updates, changelog discipline, and GitHub publishing.
+- TradePulse also needs a clearer version boundary for the autonomous profit-research era.
+
+### What Changed
+
+- `AGENTS.md`
+  - Added persistent TradePulse agent instructions for Codex to act as a profit researcher.
+  - Defined PO3 / POC / VAH / VAL / FVG as the primary market-structure research track.
+  - Added reinforcement-learning-style state / action / reward / lesson / policy update expectations.
+  - Added release discipline requiring scoped code changes to update `CHANGELOG.md` and be pushed to GitHub when validation and auth allow.
+
+- Codex personal skill: `tradepulse-profit-researcher`
+  - Added the same TradePulse profit-research mission to the local Codex skill layer.
+  - Added a PO3 strategy direction reference for future autonomous research runs.
+  - Added release and GitHub discipline so future TradePulse code changes do not silently remain local.
+
+- Automation: `tradepulse-daily-steward`
+  - Updated the active daily automation into `TradePulse Daily Autonomous Profit Researcher`.
+  - The automation now checks health, reviews PO3 market structure, applies a reinforcement-learning-style review frame, and may make scoped repo changes when evidence supports them.
+
+### Result
+
+- TradePulse now has a documented `v1.x.x` governance baseline for proactive Codex-led research.
+- Future TradePulse code changes should be paired with changelog entries and GitHub pushes, while avoiding unrelated worktree changes.
+- PO3 market-structure research and incremental policy improvement are now standing instructions instead of ad-hoc reminders.
+
 ## v0.11.59 - Fail closed when runtime launcher env is incomplete
 
 ### Why
