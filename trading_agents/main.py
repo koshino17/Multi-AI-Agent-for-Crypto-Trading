@@ -744,6 +744,7 @@ def _guard_range_fallback_override(
     mode: str,
     settings,
 ) -> tuple[TradeIdea, str]:
+    idea = _coerce_trade_idea(idea)
     if not bool(settings.fallback_range_guard_enabled):
         return idea, ""
     action = str(getattr(idea, "action", "hold") or "hold").lower()
@@ -803,6 +804,7 @@ def _guard_market_structure_false_breakout(
     mode: str,
     settings,
 ) -> tuple[TradeIdea, str]:
+    idea = _coerce_trade_idea(idea)
     if not bool(getattr(settings, "market_structure_guard_enabled", True)):
         return idea, ""
     action = str(getattr(idea, "action", "hold") or "hold").lower()
@@ -888,6 +890,7 @@ def _apply_po3_deterministic_score(
     llm_wake: dict,
     settings,
 ) -> tuple[TradeIdea, str]:
+    idea = _coerce_trade_idea(idea)
     if not bool(getattr(settings, "po3_deterministic_score_enabled", True)):
         return idea, ""
     action = str(getattr(idea, "action", "hold") or "hold").lower()
@@ -928,6 +931,31 @@ def _apply_po3_deterministic_score(
     return adjusted, f"po3 {label}: phase={phase}, trade_delta={trade_delta_ratio:+.2f}, score_delta={signed_delta:+.2f}"
 
 
+def _coerce_trade_idea(payload: TradeIdea | dict | None) -> TradeIdea:
+    if isinstance(payload, TradeIdea):
+        return payload
+    if isinstance(payload, dict):
+        score_value = payload.get("score", 0.0)
+        try:
+            score = float(score_value or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        return TradeIdea(
+            action=str(payload.get("action", "hold") or "hold"),
+            score=score,
+            rationale=str(payload.get("rationale", "") or ""),
+            invalidation=str(payload.get("invalidation", "") or ""),
+            holding_horizon=str(payload.get("holding_horizon", "none") or "none"),
+        )
+    return TradeIdea(
+        action="hold",
+        score=0.0,
+        rationale="invalid trade idea payload; defaulting to hold",
+        invalidation="wait for a valid trade idea payload",
+        holding_horizon="none",
+    )
+
+
 def _guard_fallback_open_exposure(
     *,
     idea: TradeIdea,
@@ -938,6 +966,7 @@ def _guard_fallback_open_exposure(
     mode: str,
     settings,
 ) -> tuple[TradeIdea, str]:
+    idea = _coerce_trade_idea(idea)
     if not bool(settings.fallback_entry_guard_enabled):
         return idea, ""
     action = str(getattr(idea, "action", "hold") or "hold").lower()
@@ -1004,6 +1033,7 @@ def _prefilter_untradeable_candidate(
     aggressive_mode: bool,
     policy_exit: bool,
 ) -> tuple[TradeIdea, str]:
+    idea = _coerce_trade_idea(idea)
     if policy_exit:
         return idea, ""
     action = str(getattr(idea, "action", "hold") or "hold").lower()
@@ -2099,7 +2129,7 @@ def execute_cycle(
         return result
 
     def build_trade_idea(payload: dict) -> TradeIdea:
-        return TradeIdea(**payload)
+        return _coerce_trade_idea(payload)
 
     def build_sentiment_snapshot(payload: dict) -> SentimentSnapshot:
         return SentimentSnapshot(**payload)

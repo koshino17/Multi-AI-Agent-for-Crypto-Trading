@@ -16,6 +16,28 @@
 
 ---
 
+## v1.0.1 - Harden runtime trade-idea coercion for autonomous reviews
+
+### Why
+
+- The July 6, 2026 demo-perp runner hit repeated cycle crashes with `'dict' object has no attribute 'invalidation'` during live decision handling.
+- That failure mode breaks noon-window evidence quality because TradePulse can keep monitoring while silently dropping actionable decision paths.
+- For the autonomous profit-research flow, runtime payload drift must fail safe to `hold` instead of aborting the cycle.
+
+### What Changed
+
+- `trading_agents/main.py`
+  - Added `_coerce_trade_idea(...)` so dict-shaped or malformed trade-idea payloads are normalized into `TradeIdea` objects before PO3 scoring and guard/prefilter logic touches `.action` or `.invalidation`.
+  - Updated the selected-candidate rebuild path to reuse the same coercion helper instead of assuming a perfect payload shape.
+
+- `tests/test_runtime_regressions.py`
+  - Added a regression test that sends a dict-backed trade idea through `_apply_po3_deterministic_score(...)` and verifies the runtime keeps the invalidation field intact while applying the PO3 score adjustment.
+
+### Result
+
+- The specific July 6 payload-shape crash class should now degrade to a valid `TradeIdea` and continue the cycle instead of terminating it.
+- TradePulse daily reviews should remain trustworthy even when intermediate decision payloads arrive as plain dicts.
+
 ## v1.0.0 - Autonomous TradePulse profit researcher governance
 
 ### Why
