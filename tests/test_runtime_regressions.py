@@ -11,6 +11,7 @@ from trading_agents.agents import RiskSupervisorAgent, StrategistAgent, Strategy
 from trading_agents.exchange import _build_fvg_features, _build_microstructure_features, _infer_po3_phase_hint
 from trading_agents.llm import _trace_date_label
 from trading_agents.main import (
+    _apply_po3_deterministic_score,
     _guard_market_structure_false_breakout,
     _prefilter_untradeable_candidate,
     _resolve_daily_review,
@@ -176,6 +177,35 @@ class RuntimeRegressionTests(unittest.TestCase):
         )
 
         self.assertTrue(any("capital-preservation pilot active" in item for item in approval.warnings))
+
+    def test_po3_deterministic_score_accepts_dict_trade_idea_payload(self) -> None:
+        snapshot = SimpleNamespace(
+            po3_phase_hint="expansion_down",
+            trade_delta_ratio=-0.45,
+        )
+        settings = SimpleNamespace(
+            po3_deterministic_score_enabled=True,
+            po3_deterministic_score_min_flow=0.20,
+            po3_deterministic_score_delta=0.06,
+        )
+
+        adjusted, reason = _apply_po3_deterministic_score(
+            idea={
+                "action": "sell",
+                "score": 0.70,
+                "rationale": "bearish continuation setup",
+                "invalidation": "exit if sell pressure fades",
+                "holding_horizon": "intraday",
+            },
+            snapshot=snapshot,
+            llm_wake={"metrics": {"trade_delta_ratio": -0.45}},
+            settings=settings,
+        )
+
+        self.assertIsInstance(adjusted, TradeIdea)
+        self.assertGreater(adjusted.score, 0.70)
+        self.assertEqual(adjusted.invalidation, "exit if sell pressure fades")
+        self.assertIn("po3 boost", reason)
 
     def test_runtime_settings_respect_web_form_overrides(self) -> None:
         effective = _runtime_settings("bybit-demo-perp", "SOL/USDT,BTC/USDT", "15")
