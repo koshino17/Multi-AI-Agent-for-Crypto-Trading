@@ -17,6 +17,7 @@ from trading_agents.main import (
 )
 from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyCandidate, StrategyResearchSnapshot, TradeIdea
 from trading_agents.reporting import (
+    _apply_window_freshness,
     _build_financial_snapshot,
     _build_trade_review,
     _load_runner_event_counts,
@@ -113,6 +114,28 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(summary["event"], "cycle_report")
         self.assertEqual(summary["entry_ttl_seconds"], 90)
         self.assertNotIn("external_benchmarks", summary)
+
+    def test_window_freshness_marks_incomplete_noon_window_as_stale(self) -> None:
+        records = [
+            {"__record_timestamp_local": "2026-07-07T12:01:41.972480+08:00"},
+            {"__record_timestamp_local": "2026-07-07T12:15:33.209630+08:00"},
+        ]
+        financial = {
+            "day_start_timestamp_local": "2026-07-07T12:01:41.972480+08:00",
+            "daily_pnl_basis": "vs first portfolio snapshot for this report window",
+        }
+        market_path_review = {}
+        updated = _apply_window_freshness(
+            financial,
+            records,
+            window_start=datetime.fromisoformat("2026-07-07T12:00:00+08:00"),
+            window_end=datetime.fromisoformat("2026-07-08T12:00:00+08:00"),
+            market_path_review=market_path_review,
+        )
+        self.assertEqual(updated["data_freshness_status"], "stale_runtime_window")
+        self.assertGreater(float(updated["window_trailing_gap_hours"]), 23.0)
+        self.assertLess(float(updated["sampled_window_coverage_pct"]), 2.0)
+        self.assertLess(float(market_path_review["sampled_window_coverage_pct"]), 2.0)
 
     def test_pilot_mode_review_uses_warnings_after_initialization(self) -> None:
         agent = RiskSupervisorAgent(llm_client=None)

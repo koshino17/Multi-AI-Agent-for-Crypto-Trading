@@ -16,6 +16,29 @@
 
 ---
 
+## v1.0.0 - Flag incomplete noon windows as stale evidence
+
+### Why
+
+- The latest noon-to-noon daily report for `2026-07-08` looked healthy at a glance, but the runner had stopped around `2026-07-07T12:25:02+08:00`.
+- Because a few records existed inside the labeled window, reporting treated the window as normal instead of stale, even though the sampled market path covered only a few minutes of a 24-hour report window.
+- That weakens the daily review loop: TradePulse can end up learning from an evidence bundle that looks complete but is actually missing most of the window.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Added incomplete-window freshness detection for noon-window reports.
+  - Reports now mark a window as `stale_runtime_window` when the last local record lands materially before the report-window end.
+  - Added sampled window hours, sampled coverage percent, and trailing gap hours to the financial freshness block and market-path review.
+
+- `tests/test_runtime_regressions.py`
+  - Added a regression test that fails if a near-empty noon window is still reported as normal.
+
+### Result
+
+- Daily reports now distinguish between a genuinely complete trading window and a runner that died early after producing only partial evidence.
+- The next daily strategy review should see stale/incomplete evidence explicitly instead of over-trusting a short sampled path.
+
 ## v0.11.59 - Fail closed when runtime launcher env is incomplete
 
 ### Why

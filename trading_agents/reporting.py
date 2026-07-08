@@ -602,6 +602,10 @@ def _build_market_path_review(records: list[dict[str, Any]], *, focus_symbol: st
     return {
         "symbol": chosen_symbol,
         "sample_count": len(samples),
+        "sampled_window_hours": round(
+            max((last_sample["timestamp_dt"] - first_sample["timestamp_dt"]).total_seconds() / 3600.0, 0.0),
+            2,
+        ),
         "first_price": round(first_price, 6),
         "first_timestamp_local": str(first_sample["timestamp_local"]),
         "last_price": round(last_price, 6),
@@ -626,6 +630,51 @@ def _build_market_path_review(records: list[dict[str, Any]], *, focus_symbol: st
         "max_rebound_action_counts": rebound_actions,
         "summary": summary,
     }
+
+
+def _apply_window_freshness(
+    financial_snapshot: dict[str, Any],
+    records: list[dict[str, Any]],
+    *,
+    window_start: datetime,
+    window_end: datetime,
+    market_path_review: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not isinstance(financial_snapshot, dict):
+        return {}
+    if not records:
+        return financial_snapshot
+
+    first_record_dt = _parse_timestamp_local(records[0].get("__record_timestamp_local") or records[0].get("timestamp"))
+    last_record_dt = _parse_timestamp_local(records[-1].get("__record_timestamp_local") or records[-1].get("timestamp"))
+    if first_record_dt is None or last_record_dt is None:
+        return financial_snapshot
+
+    window_seconds = max((window_end - window_start).total_seconds(), 1.0)
+    sampled_seconds = max((last_record_dt - first_record_dt).total_seconds(), 0.0)
+    sampled_hours = round(sampled_seconds / 3600.0, 2)
+    coverage_pct = round(min(sampled_seconds / window_seconds, 1.0) * 100.0, 2)
+    trailing_gap_hours = round(max((window_end - last_record_dt).total_seconds() / 3600.0, 0.0), 2)
+
+    financial_snapshot["last_runtime_record_timestamp_local"] = last_record_dt.isoformat()
+    financial_snapshot["stale_age_hours"] = trailing_gap_hours
+    financial_snapshot["sampled_window_hours"] = sampled_hours
+    financial_snapshot["sampled_window_coverage_pct"] = coverage_pct
+    financial_snapshot["window_trailing_gap_hours"] = trailing_gap_hours
+
+    if isinstance(market_path_review, dict):
+        market_path_review["sampled_window_hours"] = sampled_hours
+        market_path_review["sampled_window_coverage_pct"] = coverage_pct
+        market_path_review["window_trailing_gap_hours"] = trailing_gap_hours
+
+    freshness_status = str(financial_snapshot.get("data_freshness_status", "")).strip()
+    if trailing_gap_hours >= 1.0 and not freshness_status:
+        financial_snapshot["data_freshness_status"] = "stale_runtime_window"
+        financial_snapshot["data_freshness_reason"] = (
+            f"last local record landed {trailing_gap_hours:.2f}h before report-window end; "
+            f"sampled only {coverage_pct:.2f}% of the noon-to-noon window"
+        )
+    return financial_snapshot
 
 
 def _build_symbol_postmortem(
@@ -3388,6 +3437,13 @@ def load_daily_summary_data(
         records,
         focus_symbol=focus_symbol,
     )
+    summary["financial_snapshot"] = _apply_window_freshness(
+        summary["financial_snapshot"],
+        records,
+        window_start=window_start,
+        window_end=window_end,
+        market_path_review=summary["market_path_review"],
+    )
     summary["symbol_postmortem"] = _build_symbol_postmortem(
         records,
         focus_symbol=focus_symbol,
@@ -3546,6 +3602,13 @@ def build_daily_summary(
                     f"age={float(financial.get('stale_age_hours', 0.0)):.2f}h"
                 ),
                 f"- Freshness Note: {str(financial.get('data_freshness_reason', '')).strip() or 'n/a'}",
+                (
+                    f"- Window Coverage: sampled {float(financial.get('sampled_window_hours', 0.0)):.2f}h "
+                    f"({float(financial.get('sampled_window_coverage_pct', 0.0)):.2f}%) | "
+                    f"trailing gap to window end={float(financial.get('window_trailing_gap_hours', 0.0)):.2f}h"
+                )
+                if financial.get("sampled_window_coverage_pct") is not None
+                else "",
                 "",
             ]
         )
@@ -4152,6 +4215,12 @@ def build_daily_summary(
                 f"low {market_path_review.get('low_timestamp_local', 'n/a')} @ {float(market_path_review.get('low_price', 0.0)):.4f} | "
                 f"end {market_path_review.get('last_timestamp_local', 'n/a')} @ {float(market_path_review.get('last_price', 0.0)):.4f}"
             )
+            if market_path_review.get("sampled_window_coverage_pct") is not None:
+                lines.append(
+                    f"- Sample Coverage: {float(market_path_review.get('sampled_window_hours', 0.0)):.2f}h "
+                    f"({float(market_path_review.get('sampled_window_coverage_pct', 0.0)):.2f}%) | "
+                    f"trailing gap to window end={float(market_path_review.get('window_trailing_gap_hours', 0.0)):.2f}h"
+                )
             lines.append(
                 f"- Largest Down Leg: {market_path_review.get('max_drawdown_start_local', 'n/a')} "
                 f"{float(market_path_review.get('max_drawdown_start_price', 0.0)):.4f} -> "
