@@ -705,6 +705,7 @@ def _build_daily_review_blocks(
     loss_attribution = daily_summary.get("loss_attribution") or {}
     policy_exit_diagnostics = daily_summary.get("policy_exit_diagnostics") or {}
     external_ai_review = daily_summary.get("external_ai_review") or {}
+    mentor_review = daily_summary.get("mentor_review") or {}
     blocks: list[dict[str, Any]] = [
         _heading_1(title),
         _paragraph(f"Published at: {datetime.now(LOCAL_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')}"),
@@ -800,6 +801,31 @@ def _build_daily_review_blocks(
             blocks.append(_bullet(f"Concern: {item}"))
         for item in external_ai_review.get("action_items", [])[:4]:
             blocks.append(_bullet(f"External Action Item: {item}"))
+    if mentor_review and mentor_review.get("status") not in {"disabled", ""}:
+        blocks.append(_heading_2("Mentor Review"))
+        role_summaries = mentor_review.get("role_summaries") or {}
+        for role in ("strategist", "risk_supervisor", "executor", "strategy_reflector"):
+            summaries = role_summaries.get(role) or []
+            first_ok = next((item for item in summaries if item.get("status") == "ok" and item.get("summary")), None)
+            if first_ok:
+                blocks.append(_bullet(f"{role}: {first_ok.get('summary')}"))
+                for finding in list(first_ok.get("findings") or [])[:3]:
+                    blocks.append(_bullet(f"{role} finding: {finding}"))
+        consensus = mentor_review.get("consensus") or {}
+        safe_patch = (consensus.get("safe_patch") or {}).get("controls_patch") or {}
+        conflict_patch = (consensus.get("conflict_patch") or {}).get("controls_patch") or {}
+        blocks.append(_heading_2("Mentor Consensus"))
+        blocks.append(_bullet(f"Safe Controls: {json.dumps(safe_patch, ensure_ascii=False, sort_keys=True)}"))
+        blocks.append(_bullet(f"Conflict Controls: {json.dumps(conflict_patch, ensure_ascii=False, sort_keys=True)}"))
+        gate = mentor_review.get("gate") or {}
+        blocks.append(_heading_2("Shadow Gate"))
+        blocks.append(_bullet(f"Status: {gate.get('status', 'n/a')} | Candidate: {gate.get('candidate_id', 'n/a')}"))
+        for reason in list(gate.get("reasons") or [])[:5]:
+            blocks.append(_bullet(f"Reason: {reason}"))
+        promotion = mentor_review.get("promotion") or {}
+        blocks.append(_heading_2("Promotion"))
+        blocks.append(_bullet(f"Status: {promotion.get('status', 'n/a')}"))
+        blocks.append(_bullet(f"Promoted Keys: {', '.join(promotion.get('promoted_keys') or []) or 'none'}"))
     if equity_chart_upload_id:
         blocks.extend(
             [

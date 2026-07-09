@@ -16,6 +16,30 @@
 
 ---
 
+## v1.1.0 - External mentor shadow gate and promotion loop
+
+### Why
+
+- TradePulse needs a stronger asynchronous mentor layer that can review daily evidence without influencing intraday decisions.
+- Provider, benchmark, or gate failures must fail closed into shadow-only so weak evidence never autopromotes live controls.
+- Worst-trade evidence, provider consensus, and cost-aware multi-window gates need to be machine-readable artifacts for reinforcement-learning-style improvement.
+
+### What Changed
+
+- Added `trading_agents/mentor_providers.py` with a unified JSON interface for OpenAI and Gemini mentor providers.
+- Added `trading_agents/mentor_review.py` for four-role mentor reviews, worst episode/order evidence, dual-provider consensus, shadow artifacts, gate evaluation, and whitelist-only autopromotion.
+- Wired mentor review into the daily reporting window in `trading_agents/main.py` after completed daily summary/review artifacts are available, while preserving the existing external AI review flow.
+- Added Mentor Review, Mentor Consensus, Shadow Gate, and Promotion sections to daily markdown reporting and Notion daily review sync.
+- Added mentor settings to `.env.example` and `trading_agents/config.py`.
+- Added `scripts/run_mentor_review_once.py` for manual shadow/no-promote mentor cycles.
+- Added tests for worst evidence extraction, provider consensus, gate checks, whitelist promotion, artifact generation, report rendering, and promotion history/memory updates.
+
+### Result
+
+- TradePulse can now produce daily external mentor artifacts in `service/` and only promote a narrow set of live controls when both providers agree and all gate checks pass.
+- Any provider failure, missing candidate, benchmark failure, or failed gate keeps the day shadow-only.
+- Mentor promotion history and `strategy_memory.json` now preserve promotion state, gate metrics, and shadow references for future review loops.
+
 ## v1.0.0 - Autonomous TradePulse profit researcher governance
 
 ### Why

@@ -39,6 +39,7 @@ from trading_agents.external_ai_review import (
     load_external_ai_review,
     save_external_ai_review,
 )
+from trading_agents.mentor_review import run_mentor_cycle
 from trading_agents.exchange import (
     BinanceTestnetExchangeClient,
     BybitDemoExchangeClient,
@@ -1822,6 +1823,7 @@ def _finalize_reporting(
 
     notion_sync = {"status": "disabled", "reason": "missing Notion token or status page id"}
     report["external_ai_review_sync"] = {"status": "disabled", "reason": "outside noon window or missing daily review"}
+    report["mentor_review_sync"] = {"status": "disabled", "reason": "outside daily review window or mentor disabled"}
     if settings.notion_api_token and settings.notion_status_page_id:
         try:
             if report.get("cycle_mode") != "full" and "result" not in report:
@@ -1898,6 +1900,21 @@ def _finalize_reporting(
             daily_review_sync = {"status": "error", "reason": str(exc)}
 
         external_ai_review_sync = {"status": "disabled", "reason": "external AI review disabled"}
+        mentor_review_sync = {"status": "disabled", "reason": "external mentor disabled"}
+        if getattr(settings, "external_mentor_enabled", False):
+            try:
+                mentor_review_sync = run_mentor_cycle(
+                    date_label=completed_date_label,
+                    daily_summary=completed_daily_summary or {},
+                    daily_review=daily_review_payload if 'daily_review_payload' in locals() else (stored_review or {}),
+                    settings=settings,
+                    storage=storage,
+                    mode=mode,
+                    promote=True,
+                )
+            except Exception as exc:
+                mentor_review_sync = {"status": "error", "reason": str(exc)}
+        report["mentor_review_sync"] = mentor_review_sync
         try:
             stored_external_review = load_external_ai_review(external_review_path)
             should_refresh_external_review = (

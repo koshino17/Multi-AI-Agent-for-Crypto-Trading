@@ -3341,6 +3341,7 @@ def load_daily_summary_data(
     from trading_agents.config import load_settings
     from trading_agents.external_benchmarks import load_external_benchmark_summary
     from trading_agents.external_ai_review import external_ai_review_path, load_external_ai_review
+    from trading_agents.mentor_review import mentor_review_path
     from trading_agents.storage import build_storage_layout, mode_scoped_path, mode_storage_root
 
     settings = load_settings()
@@ -3430,6 +3431,8 @@ def load_daily_summary_data(
         if settings.external_ai_review_enabled
         else {}
     )
+    mentor_path = mentor_review_path(storage, date_label)
+    summary["mentor_review"] = _read_json_file(mentor_path) if mentor_path.exists() else {}
     summary["agent_trace_archive"] = {
         "directory": str(storage.agent_traces / date_label),
     }
@@ -3527,6 +3530,7 @@ def build_daily_summary(
     strategy_research_latest = summary.get("strategy_research_latest") or {}
     daily_strategy_review = summary.get("daily_strategy_review") or {}
     external_ai_review = summary.get("external_ai_review") or {}
+    mentor_review = summary.get("mentor_review") or {}
     control_impact = summary.get("control_impact") or {}
     agent_trace_archive = summary.get("agent_trace_archive") or {}
     ground_truth_artifact = summary.get("ground_truth_artifact") or {}
@@ -4139,6 +4143,35 @@ def build_daily_summary(
             lines.append(f"- Concern: {item}")
         for item in external_ai_review.get("action_items", [])[:4]:
             lines.append(f"- External Action Item: {item}")
+
+    if mentor_review and mentor_review.get("status") not in {"disabled", ""}:
+        lines.extend(["", "## Mentor Review", ""])
+        role_summaries = mentor_review.get("role_summaries") or {}
+        for role in ("strategist", "risk_supervisor", "executor", "strategy_reflector"):
+            summaries = role_summaries.get(role) or []
+            first_ok = next((item for item in summaries if item.get("status") == "ok" and item.get("summary")), None)
+            if first_ok:
+                lines.append(f"- {role}: {first_ok.get('summary')}")
+                for finding in list(first_ok.get("findings") or [])[:3]:
+                    lines.append(f"  finding: {finding}")
+
+        consensus = mentor_review.get("consensus") or {}
+        safe_patch = (consensus.get("safe_patch") or {}).get("controls_patch") or {}
+        conflict_patch = (consensus.get("conflict_patch") or {}).get("controls_patch") or {}
+        lines.extend(["", "## Mentor Consensus", ""])
+        lines.append(f"- Safe Controls: {json.dumps(safe_patch, ensure_ascii=False, sort_keys=True)}")
+        lines.append(f"- Conflict Controls: {json.dumps(conflict_patch, ensure_ascii=False, sort_keys=True)}")
+
+        gate = mentor_review.get("gate") or {}
+        lines.extend(["", "## Shadow Gate", ""])
+        lines.append(f"- Status: {gate.get('status', 'n/a')} | Candidate: {gate.get('candidate_id', 'n/a')}")
+        for reason in list(gate.get("reasons") or [])[:5]:
+            lines.append(f"- Reason: {reason}")
+
+        promotion = mentor_review.get("promotion") or {}
+        lines.extend(["", "## Promotion", ""])
+        lines.append(f"- Status: {promotion.get('status', 'n/a')}")
+        lines.append(f"- Promoted Keys: {', '.join(promotion.get('promoted_keys') or []) or 'none'}")
 
     if symbol_postmortem:
         if market_path_review:
