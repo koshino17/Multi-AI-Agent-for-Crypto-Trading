@@ -17,6 +17,7 @@ from trading_agents.main import (
 )
 from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyCandidate, StrategyResearchSnapshot, TradeIdea
 from trading_agents.reporting import (
+    _build_runtime_health_summary,
     _build_financial_snapshot,
     _build_trade_review,
     _load_runner_event_counts,
@@ -94,6 +95,40 @@ class RuntimeRegressionTests(unittest.TestCase):
             counts = _load_runner_event_counts(runner_log, "2026-05-29")
         self.assertEqual(counts["monitor_heartbeats"], 1)
         self.assertEqual(counts["avg_decision_latency_seconds"], 30.0)
+
+    def test_runtime_health_marks_runner_stale_when_pid_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = build_storage_layout(tmpdir)
+            runner_log = storage.runner_log
+            rows = [
+                json.dumps({"event": "monitor", "timestamp": "2026-06-21T04:27:30+00:00", "detail": "initial boot trigger"}),
+                json.dumps({"event": "cycle_report", "timestamp": "2026-06-21T04:27:45+00:00"}),
+            ]
+            runner_log.write_text("\n".join(rows) + "\n")
+            storage.runner_lock.write_text("17934")
+            settings = SimpleNamespace(
+                run_interval_seconds=900.0,
+                monitor_interval_seconds=30.0,
+                notion_api_token="",
+                notion_status_page_id="",
+            )
+            all_records = [
+                {
+                    "__record_timestamp_local": "2026-06-20T12:27:19.632997+08:00",
+                    "selected_symbol": "AVAX/USDT",
+                }
+            ]
+            runtime_health = _build_runtime_health_summary(
+                storage=storage,
+                runner_log_path=runner_log,
+                all_records=all_records,
+                settings=settings,
+            )
+        self.assertEqual(runtime_health["service_status"], "stopped_stale")
+        self.assertFalse(runtime_health["runner_pid_present"])
+        self.assertTrue(runtime_health["runner_lock_present"])
+        self.assertEqual(runtime_health["notion_status"], "disabled_not_configured")
+        self.assertEqual(runtime_health["last_decision_record_local"], "2026-06-20T12:27:19.632997+08:00")
 
     def test_cycle_report_summary_omits_large_payloads(self) -> None:
         summary = _cycle_report_summary(

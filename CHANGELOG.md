@@ -16,6 +16,29 @@
 
 ---
 
+## v1.0.0 - Surface stale runner health in daily reports
+
+### Why
+
+- The installed TradePulse runtime evidence for this review window was stale: the latest `mock` decision / benchmark / report artifacts stopped on June 20-21, 2026, and `runner.pid` was missing.
+- The daily report could already mark a stale portfolio snapshot, but it still did not say whether the runner had actually stopped cycling.
+- That made a dead runner look too similar to a neutral no-trade day, which is the wrong failure mode for autonomous profit research.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Added a `runtime_health` summary that inspects runner pid presence, runner lock presence, latest monitor heartbeat, latest cycle report, latest decision record, and Notion review-state freshness.
+  - Daily summaries now render a dedicated `Runtime Health` section ahead of the financial snapshot so stale service state is visible immediately.
+  - Runtime status now distinguishes between `cycling`, `stalled`, `stopped_stale`, and `no_runtime_evidence`.
+
+- `tests/test_runtime_regressions.py`
+  - Added a regression test that fails if stale runner evidence is not classified as `stopped_stale` when the pid file is missing.
+
+### Result
+
+- TradePulse daily reviews now expose the operational truth when the runner is dead or stale instead of quietly resembling a flat capital-preservation window.
+- Future noon-window research can separate service-health failures from strategy-quality failures much faster.
+
 ## v0.11.59 - Fail closed when runtime launcher env is incomplete
 
 ### Why

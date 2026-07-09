@@ -3155,6 +3155,141 @@ def _iter_recent_log_lines(path: Path, max_bytes: int = 64 * 1024 * 1024):
             yield raw_line.decode("utf-8", errors="replace").rstrip("\n")
 
 
+def _read_pid(path: Path | None) -> int | None:
+    if path is None or not path.exists():
+        return None
+    try:
+        return int(path.read_text().strip())
+    except Exception:
+        return None
+
+
+def _pid_is_alive(pid: int | None) -> bool:
+    if pid is None or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _path_mtime_local(path: Path | None) -> str:
+    if path is None or not path.exists():
+        return ""
+    return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).astimezone(LOCAL_TZ).isoformat()
+
+
+def _timestamp_age_hours(value: Any) -> float | None:
+    parsed = _parse_timestamp_local(value)
+    if parsed is None:
+        return None
+    return max((_local_now() - parsed).total_seconds() / 3600.0, 0.0)
+
+
+def _latest_runner_event_timestamp(
+    runner_log_path: Path | None,
+    *,
+    event_name: str | None = None,
+    status: str | None = None,
+) -> str:
+    if runner_log_path is None or not runner_log_path.exists():
+        return ""
+    latest = ""
+    try:
+        for line in _iter_recent_log_lines(runner_log_path):
+            if '"event"' not in line[:256]:
+                continue
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+            if event_name and str(payload.get("event", "")).strip() != event_name:
+                continue
+            if status and str(payload.get("status", "")).strip().lower() != status.lower():
+                continue
+            latest = str(payload.get("timestamp", latest))
+    except Exception:
+        return ""
+    return latest
+
+
+def _latest_record_timestamp(records: list[dict[str, Any]]) -> str:
+    latest_dt: datetime | None = None
+    latest_text = ""
+    for item in records:
+        raw = item.get("__record_timestamp_local") or item.get("timestamp") or _accepted_trade_timestamp(item)
+        parsed = _parse_timestamp_local(raw)
+        if parsed is None:
+            continue
+        if latest_dt is None or parsed > latest_dt:
+            latest_dt = parsed
+            latest_text = parsed.isoformat()
+    return latest_text
+
+
+def _build_runtime_health_summary(
+    *,
+    storage,
+    runner_log_path: Path | None,
+    all_records: list[dict[str, Any]],
+    settings,
+) -> dict[str, Any]:
+    runner_pid = _read_pid(storage.runner_pid)
+    runner_alive = _pid_is_alive(runner_pid)
+    runner_lock_present = bool(storage.runner_lock.exists())
+    last_log_event = _latest_runner_event_timestamp(runner_log_path)
+    last_monitor = _latest_runner_event_timestamp(runner_log_path, event_name="monitor")
+    last_cycle_report = _latest_runner_event_timestamp(runner_log_path, event_name="cycle_report")
+    last_decision = _latest_record_timestamp(all_records)
+    last_daily_review_sync = _path_mtime_local(storage.notion_daily_review_state)
+    stale_after_hours = max(
+        float(max(settings.run_interval_seconds, settings.monitor_interval_seconds, 30.0)) * 2.0 / 3600.0,
+        0.5,
+    )
+    monitor_age_hours = _timestamp_age_hours(last_monitor)
+    if runner_alive and monitor_age_hours is not None and monitor_age_hours <= stale_after_hours:
+        service_status = "cycling"
+    elif runner_alive:
+        service_status = "stalled"
+    elif last_monitor or last_log_event or last_decision:
+        service_status = "stopped_stale"
+    else:
+        service_status = "no_runtime_evidence"
+    if settings.notion_api_token and settings.notion_status_page_id:
+        notion_status = "configured"
+        if last_daily_review_sync:
+            review_age_hours = _timestamp_age_hours(last_daily_review_sync)
+            if review_age_hours is not None and review_age_hours > 36.0:
+                notion_status = "stale_review_state"
+        else:
+            notion_status = "missing_review_state"
+    else:
+        notion_status = "disabled_not_configured"
+    parsed_last_log = _parse_timestamp_local(last_log_event)
+    parsed_last_monitor = _parse_timestamp_local(last_monitor)
+    parsed_last_cycle_report = _parse_timestamp_local(last_cycle_report)
+    return {
+        "service_status": service_status,
+        "runner_pid": runner_pid or 0,
+        "runner_pid_alive": runner_alive,
+        "runner_pid_present": runner_pid is not None,
+        "runner_lock_present": runner_lock_present,
+        "runner_lock_mtime_local": _path_mtime_local(storage.runner_lock),
+        "last_runner_log_event_local": parsed_last_log.isoformat() if parsed_last_log else "",
+        "last_runner_log_event_age_hours": _timestamp_age_hours(last_log_event),
+        "last_monitor_heartbeat_local": parsed_last_monitor.isoformat() if parsed_last_monitor else "",
+        "last_monitor_heartbeat_age_hours": monitor_age_hours,
+        "last_cycle_report_local": parsed_last_cycle_report.isoformat() if parsed_last_cycle_report else "",
+        "last_cycle_report_age_hours": _timestamp_age_hours(last_cycle_report),
+        "last_decision_record_local": last_decision,
+        "last_decision_record_age_hours": _timestamp_age_hours(last_decision),
+        "notion_status": notion_status,
+        "last_notion_review_state_local": last_daily_review_sync,
+        "stale_after_hours": round(stale_after_hours, 2),
+    }
+
+
 def summarize_daily_records(records: list[dict[str, Any]], runner_event_counts: dict[str, int] | None = None) -> dict[str, Any]:
     runner_event_counts = runner_event_counts or {"monitor_heartbeats": 0}
     blocked_reason_counts: Counter[str] = Counter()
@@ -3357,6 +3492,12 @@ def load_daily_summary_data(
     summary["window_start"] = window_start.isoformat()
     summary["window_end"] = window_end.isoformat()
     summary["mode"] = effective_mode
+    summary["runtime_health"] = _build_runtime_health_summary(
+        storage=storage,
+        runner_log_path=runner_log_path,
+        all_records=all_records,
+        settings=settings,
+    )
     summary["financial_snapshot"] = _build_financial_snapshot(
         records,
         all_records,
@@ -3531,6 +3672,7 @@ def build_daily_summary(
     agent_trace_archive = summary.get("agent_trace_archive") or {}
     ground_truth_artifact = summary.get("ground_truth_artifact") or {}
     oracle_postmortem_artifact = summary.get("oracle_postmortem_artifact") or {}
+    runtime_health = summary.get("runtime_health") or {}
 
     lines = [f"# Daily Summary: {date_label}", ""]
     if summary_mode:
@@ -3549,6 +3691,45 @@ def build_daily_summary(
                 "",
             ]
         )
+    last_monitor = str(runtime_health.get("last_monitor_heartbeat_local", "")).strip()
+    last_cycle_report = str(runtime_health.get("last_cycle_report_local", "")).strip()
+    last_decision_record = str(runtime_health.get("last_decision_record_local", "")).strip()
+    lines.extend(
+        [
+            "## Runtime Health",
+            "",
+            (
+                f"- Service Status: {str(runtime_health.get('service_status', 'unknown'))} | "
+                f"runner_pid={'present' if runtime_health.get('runner_pid_present') else 'missing'} | "
+                f"pid_alive={'yes' if runtime_health.get('runner_pid_alive') else 'no'} | "
+                f"runner_lock={'present' if runtime_health.get('runner_lock_present') else 'missing'}"
+            ),
+            (
+                f"- Last Monitor Heartbeat: {last_monitor} | "
+                f"age={float(runtime_health.get('last_monitor_heartbeat_age_hours') or 0.0):.2f}h | "
+                f"stale_after={float(runtime_health.get('stale_after_hours') or 0.0):.2f}h"
+                if last_monitor
+                else f"- Last Monitor Heartbeat: n/a | stale_after={float(runtime_health.get('stale_after_hours') or 0.0):.2f}h"
+            ),
+            (
+                f"- Last Cycle Report: {last_cycle_report} | "
+                f"age={float(runtime_health.get('last_cycle_report_age_hours') or 0.0):.2f}h"
+                if last_cycle_report
+                else "- Last Cycle Report: n/a"
+            ),
+            (
+                f"- Last Decision Record: {last_decision_record} | "
+                f"age={float(runtime_health.get('last_decision_record_age_hours') or 0.0):.2f}h"
+                if last_decision_record
+                else "- Last Decision Record: n/a"
+            ),
+            (
+                f"- Notion Live Status: {str(runtime_health.get('notion_status', 'unknown'))} | "
+                f"last daily review state={str(runtime_health.get('last_notion_review_state_local', 'n/a')) or 'n/a'}"
+            ),
+            "",
+        ]
+    )
     lines.extend(
         [
             "## Financial Snapshot",
