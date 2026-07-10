@@ -16,6 +16,28 @@
 
 ---
 
+## v1.1.1 - Keep daily benchmark watch aligned with live controls
+
+### Why
+
+- TradePulse daily reviews were able to drift away from the active `benchmark_watch_candidate` stored in `strategy_memory.json`.
+- In the `2026-07-10` bybit-demo-perp review window, the live control was `grid_range_reversion_maker_v1`, but the report fell back to `grid_range_reversion_v1` and produced a misleading negative shadow-watch comparison.
+- That kind of mismatch weakens the reinforcement-learning loop because the next-day research summary can chase the wrong candidate.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Daily summary loading now passes the active `benchmark_watch_candidate` from strategy memory into shadow benchmark watch selection when the watch symbol matches the current focus symbol.
+  - The report will keep the requested watch candidate instead of silently falling back to the first available candidate for the symbol.
+
+- `tests/test_runtime_regressions.py`
+  - Added a regression test that preserves a requested benchmark-watch candidate even when another candidate appears first in the external benchmark ranking.
+
+### Result
+
+- TradePulse daily reviews now stay aligned with the live benchmark-watch control that the learning loop actually set.
+- Shadow benchmark sections should no longer imply a false downgrade just because the external benchmark list happened to sort a different candidate first.
+
 ## v1.1.0 - External mentor shadow gate and promotion loop
 
 ### Why

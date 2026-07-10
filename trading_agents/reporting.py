@@ -3402,13 +3402,24 @@ def load_daily_summary_data(
         external_benchmarks=summary["external_benchmarks"],
         focus_symbol=focus_symbol,
     )
+    effective_focus_symbol = focus_symbol or str(summary.get("symbol_postmortem", {}).get("symbol", "")).strip()
     summary["strategy_memory_current"] = _read_json_file(storage.strategy_memory_state)
+    strategy_memory_controls = (
+        summary["strategy_memory_current"].get("controls", {})
+        if isinstance(summary.get("strategy_memory_current"), dict)
+        else {}
+    )
+    requested_watch_symbol = str(strategy_memory_controls.get("benchmark_watch_symbol", "") or "").strip()
+    requested_watch_candidate = ""
+    if not requested_watch_symbol or requested_watch_symbol == effective_focus_symbol:
+        requested_watch_candidate = str(strategy_memory_controls.get("benchmark_watch_candidate", "") or "").strip()
     summary["strategy_research_latest"] = _load_strategy_research_latest(
         storage.service / "strategy_research_latest.json"
     )
     summary["shadow_benchmark_watch"] = _build_shadow_benchmark_watch(
         summary["external_benchmarks"],
-        focus_symbol=focus_symbol or str(summary.get("symbol_postmortem", {}).get("symbol", "")).strip(),
+        focus_symbol=effective_focus_symbol,
+        watch_candidate_id=requested_watch_candidate,
         strategy_research_latest=summary["strategy_research_latest"],
         benchmark_reports_dir=storage.benchmark_reports,
         cutoff=window_end,

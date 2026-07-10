@@ -17,6 +17,7 @@ from trading_agents.main import (
 )
 from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyCandidate, StrategyResearchSnapshot, TradeIdea
 from trading_agents.reporting import (
+    _build_shadow_benchmark_watch,
     _build_financial_snapshot,
     _build_trade_review,
     _load_runner_event_counts,
@@ -194,6 +195,46 @@ class RuntimeRegressionTests(unittest.TestCase):
 
         snapshot = _monitor_snapshot(FakeExchange(), ["SOL/USDT"], "15m")
         self.assertEqual(snapshot["accounts"]["SOL/USDT"], (12.5, -2.5))
+
+    def test_shadow_benchmark_watch_honors_requested_candidate_from_strategy_memory(self) -> None:
+        external_benchmarks = {
+            "baseline_strategy_id": "grid_range_reversion_maker_v1",
+            "results": {
+                "SOL/USDT": [
+                    {
+                        "candidate_id": "grid_range_reversion_v1",
+                        "expectancy_pct": -0.19,
+                        "profit_factor": 0.4,
+                        "cumulative_return_pct": -3.2,
+                        "trade_count": 17,
+                    },
+                    {
+                        "candidate_id": "grid_range_reversion_maker_v1",
+                        "expectancy_pct": 0.0,
+                        "profit_factor": 0.99,
+                        "cumulative_return_pct": 0.0,
+                        "trade_count": 17,
+                    },
+                ]
+            },
+        }
+
+        watch = _build_shadow_benchmark_watch(
+            external_benchmarks,
+            focus_symbol="SOL/USDT",
+            watch_candidate_id="grid_range_reversion_maker_v1",
+            strategy_research_latest={
+                "recommendation": {
+                    "candidate_id": "grid_range_reversion_maker_v1",
+                    "verdict": "shadow_candidate",
+                }
+            },
+        )
+
+        self.assertEqual(watch["selection_source"], "requested")
+        self.assertEqual(watch["watch_candidate_id"], "grid_range_reversion_maker_v1")
+        self.assertEqual(watch["watch"]["candidate_id"], "grid_range_reversion_maker_v1")
+        self.assertAlmostEqual(float(watch["expectancy_delta_pct"]), 0.0, places=4)
 
     def test_strategy_reflection_low_sample_guard_limits_tunable_control_churn(self) -> None:
         agent = StrategyReflectionAgent(llm_client=None)
