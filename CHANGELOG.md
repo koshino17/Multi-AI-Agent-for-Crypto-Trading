@@ -16,6 +16,27 @@
 
 ---
 
+## v1.24.0 - Maker pilot fee-hurdle alignment
+
+### Why
+
+- The latest TradePulse bybit-demo-perp review showed a healthy live runner but repeated observe-only windows on `SOL/USDT`.
+- The strongest concrete bottleneck was a cost-model mismatch: maker-only pilot candidates were benchmarked with lower passive execution costs, but the risk gate still judged them against a taker-style fee hurdle.
+- That mismatch can suppress otherwise-valid maker pilot entries and trap TradePulse in paper-only research.
+
+### What Changed
+
+- Added `selected_cost_basis` to `StrategyResearchSnapshot`.
+- The strategy research layer now forwards a selected strategy's `assumed_round_trip_fee_pct` and `assumed_round_trip_slippage_pct` into that snapshot.
+- The risk supervisor now uses that selected maker cost basis when the active TradePulse strategy is explicitly `limit` + `maker`.
+- Added regression coverage for both paths:
+  - Maker-only strategies with explicit passive cost assumptions can clear the intended pilot hurdle.
+  - Normal taker-style strategies still use the existing taker fee floor.
+
+### Result
+
+- TradePulse now evaluates maker-only pilot candidates on the same cost basis used to justify them in research, reducing false no-trade outcomes caused by a taker-fee mismatch while preserving the old taker guardrails for non-maker paths.
+
 ## v1.1.0 - External mentor shadow gate and promotion loop
 
 ### Why

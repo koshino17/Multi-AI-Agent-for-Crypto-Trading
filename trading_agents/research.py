@@ -186,6 +186,7 @@ class StrategyResearchAgent:
             current_signal_type=str(current_metrics.get("signal_type", "hold") or "hold"),
             current_adx=float(current_metrics.get("adx", 0.0) or 0.0),
             current_volume_ratio=float(current_metrics.get("volume_ratio", 0.0) or 0.0),
+            selected_cost_basis=self._cost_basis(selected_item),
         )
 
     def _execution_profile(self, strategy_item: dict[str, Any]) -> dict[str, object]:
@@ -203,6 +204,20 @@ class StrategyResearchAgent:
             "post_only": post_only,
             "passive_offset_bps": passive_offset_bps,
             "entry_ttl_seconds": max(entry_ttl_seconds, 1),
+        }
+
+    def _cost_basis(self, strategy_item: dict[str, Any]) -> dict[str, object]:
+        params = strategy_item.get("params", {})
+        if not isinstance(params, dict):
+            params = {}
+        assumed_round_trip_fee_pct = max(float(params.get("assumed_round_trip_fee_pct", 0.0) or 0.0), 0.0)
+        assumed_round_trip_slippage_pct = max(float(params.get("assumed_round_trip_slippage_pct", 0.0) or 0.0), 0.0)
+        total_round_trip_cost_pct = assumed_round_trip_fee_pct + assumed_round_trip_slippage_pct
+        return {
+            "assumed_round_trip_fee_pct": assumed_round_trip_fee_pct,
+            "assumed_round_trip_slippage_pct": assumed_round_trip_slippage_pct,
+            "total_round_trip_cost_pct": total_round_trip_cost_pct,
+            "uses_custom_cost_model": total_round_trip_cost_pct > 0.0,
         }
 
     def _fallback_rationale(

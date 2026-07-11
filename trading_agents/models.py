@@ -104,6 +104,7 @@ class StrategyResearchSnapshot:
     current_signal_type: str = "hold"
     current_adx: float = 0.0
     current_volume_ratio: float = 0.0
+    selected_cost_basis: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

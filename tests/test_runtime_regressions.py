@@ -136,6 +136,12 @@ class RuntimeRegressionTests(unittest.TestCase):
                 )
             ],
             selected_execution_profile={"entry_order_type": "limit", "entry_liquidity": "maker"},
+            selected_cost_basis={
+                "assumed_round_trip_fee_pct": 0.04,
+                "assumed_round_trip_slippage_pct": 0.01,
+                "total_round_trip_cost_pct": 0.05,
+                "uses_custom_cost_model": True,
+            },
         )
 
         approval = agent.review(
@@ -423,6 +429,69 @@ class RuntimeRegressionTests(unittest.TestCase):
                 )
             ],
             selected_execution_profile={"entry_order_type": "limit", "entry_liquidity": "maker"},
+            selected_cost_basis={
+                "assumed_round_trip_fee_pct": 0.04,
+                "assumed_round_trip_slippage_pct": 0.01,
+                "total_round_trip_cost_pct": 0.05,
+                "uses_custom_cost_model": True,
+            },
+        )
+
+        approval = agent.review(
+            idea=idea,
+            sentiment=sentiment,
+            backtest=fallback_backtest,
+            strategy_research=strategy_research,
+            available_usdt=100.0,
+            available_base_asset=0.0,
+            position_side="flat",
+            last_price=95.0,
+            min_order_value_usdt=5.0,
+            min_signal_score=0.55,
+            max_position_pct=0.40,
+            trading_mode="bybit-demo-perp",
+            aggressive_mode=False,
+            expectancy_floor_pct=-0.03,
+            taker_fee_pct=0.001,
+            buy_balance_buffer_pct=0.95,
+            fee_hurdle_multiplier=1.15,
+            cycle_mode="full",
+            strategy_memory={"controls": {}},
+            use_llm=False,
+            total_equity_usdt=100.0,
+            current_position_notional_usdt=0.0,
+            current_leverage=0.0,
+            liq_price=0.0,
+            position_mm_usdt=0.0,
+            perp_max_leverage=2.0,
+            perp_min_available_balance_ratio_pct=10.0,
+            perp_min_liquidation_buffer_pct=8.0,
+        )
+        self.assertTrue(approval.approved)
+        self.assertTrue(any("maker cost basis" in item for item in approval.warnings))
+
+    def test_fee_hurdle_uses_taker_floor_when_no_custom_maker_cost_exists(self) -> None:
+        agent = RiskSupervisorAgent(llm_client=None)
+        idea = TradeIdea("buy", 0.8, "test buy", "invalidate", "intraday")
+        sentiment = SentimentSnapshot(2, 0.1, "ok", [])
+        fallback_backtest = BacktestSnapshot(0, 0, 0.0, 0.0, 0.0, "no replay")
+        selected_backtest = BacktestSnapshot(10, 3, 0.66, 0.2, 0.6, "selected replay", 0.4, -0.2, 0.12, 2.0)
+        strategy_research = StrategyResearchSnapshot(
+            base_strategy_id="donchian_adx_perp_v1",
+            selected_strategy_id="donchian_adx_perp_v1",
+            selected_strategy_name="Donchian",
+            summary="selected taker strategy",
+            candidates=[
+                StrategyCandidate(
+                    strategy_id="donchian_adx_perp_v1",
+                    name="Donchian",
+                    source="research",
+                    credibility="experimental",
+                    description="taker breakout",
+                    backtest=selected_backtest,
+                )
+            ],
+            selected_execution_profile={"entry_order_type": "market", "entry_liquidity": "taker"},
         )
 
         approval = agent.review(

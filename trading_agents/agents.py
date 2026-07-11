@@ -1193,8 +1193,19 @@ class RiskSupervisorAgent:
         effective_fee_hurdle_multiplier = fee_hurdle_multiplier
         if perp_mode and demo_mode:
             effective_taker_fee_pct = min(taker_fee_pct, 0.00055)
-        round_trip_fee_pct = effective_taker_fee_pct * 200.0
-        fee_hurdle_pct = round_trip_fee_pct * max(effective_fee_hurdle_multiplier, 0.0)
+        round_trip_cost_pct = effective_taker_fee_pct * 200.0
+        selected_cost_basis = getattr(strategy_research, "selected_cost_basis", {}) or {}
+        if not isinstance(selected_cost_basis, dict):
+            selected_cost_basis = {}
+        assumed_round_trip_cost_pct = float(selected_cost_basis.get("total_round_trip_cost_pct", 0.0) or 0.0)
+        if (
+            selected_entry_order_type == "limit"
+            and selected_entry_liquidity == "maker"
+            and assumed_round_trip_cost_pct > 0.0
+        ):
+            round_trip_cost_pct = assumed_round_trip_cost_pct
+            warnings.append(f"fee hurdle aligned to maker cost basis: {round_trip_cost_pct:.2f}% round trip")
+        fee_hurdle_pct = round_trip_cost_pct * max(effective_fee_hurdle_multiplier, 0.0)
         if (
             idea.action in {"buy", "sell"}
             and selected_backtest.trade_count >= 2
