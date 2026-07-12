@@ -16,6 +16,39 @@
 
 ---
 
+## v1.1.1 - Recover runner runtime env after launchd restarts
+
+### Why
+
+- Live status stopped around `2026-07-11 12:25 TPE` because the launchd runner was no longer loaded and the runtime `.env` had again been reduced to incomplete keys.
+- The previous fail-closed guard correctly prevented TradePulse from silently falling back to `mock`, but launchd could only keep retrying and could not repair the incomplete runtime environment by itself.
+
+### What Changed
+
+- `scripts/launch_trading_runner.sh`
+  - Added a runtime `.env` self-heal path: if required keys are missing, the launcher reloads the source project `.env` recorded in runtime metadata and rewrites the runtime `.env` before starting.
+  - Added Bybit demo credentials to the required-key check when `TRADING_MODE=bybit-demo-perp`.
+  - Fixed the guard path so a failed launcher exits cleanly instead of continuing with unset shell variables.
+
+- `trading_agents/service_manager.py`
+  - Runtime sync now writes `.project_root` so the launchd runtime can locate the source project `.env` after reboot.
+
+- `trading_agents/reporting.py`
+  - Reduced runner-log tail parsing for heartbeat/latency counts so daily summary rebuilds do not repeatedly scan a large `runner.log`.
+
+- `trading_agents/agents.py` / `trading_agents/main.py`
+  - Preserved the pending Codex strategy guard changes: cash-heavy starter longs now require a live long signal or countertrend confirmation, while approved maker pilot candidates can pass the fallback open-exposure guard.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for the cash-heavy starter-long guard.
+
+### Result
+
+- A damaged runtime `.env` should now repair itself from the project `.env` on the next launchd start.
+- If the source project `.env` is also incomplete, TradePulse still fails closed with a clear launchd log error instead of pretending live status is healthy.
+- Live status reporting should no longer stall the runner while rebuilding daily summaries from a large log file.
+- The previously-uncommitted Codex strategy safety changes are now documented and ready to be committed instead of sitting half-finished in the working tree.
+
 ## v1.1.0 - External mentor shadow gate and promotion loop
 
 ### Why

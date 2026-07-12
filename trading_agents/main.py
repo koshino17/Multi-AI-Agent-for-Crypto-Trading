@@ -645,23 +645,13 @@ def _apply_strategy_memory_entry_policy(
     if not _opens_new_exposure(action, position_side=position_side, mode=mode):
         return idea, ""
     if entry_mode == "capital_preservation_pilot":
-        pilot_candidate_id = str(controls.get("pilot_candidate_id", "") or "").strip()
-        selected_strategy_id = str(getattr(strategy_research, "selected_strategy_id", "") or "").strip()
-        execution_profile = getattr(strategy_research, "selected_execution_profile", {}) or {}
-        entry_order_type = str(execution_profile.get("entry_order_type", "market") or "market").strip().lower()
-        entry_liquidity = str(execution_profile.get("entry_liquidity", "taker") or "taker").strip().lower()
-        if (
-            pilot_candidate_id
-            and selected_strategy_id == pilot_candidate_id
-            and entry_order_type == "limit"
-            and entry_liquidity == "maker"
-        ):
+        if _pilot_entry_allowed(strategy_research=strategy_research, strategy_memory=strategy_memory):
             piloted = TradeIdea(
                 action=idea.action,
                 score=idea.score,
                 rationale=(
                     f"{idea.rationale}; allowed under capital-preservation pilot mode because "
-                    f"`{pilot_candidate_id}` has sustained post-cost benchmark support"
+                    f"`{str(controls.get('pilot_candidate_id', '') or '').strip()}` has sustained post-cost benchmark support"
                 ),
                 invalidation=(
                     "cancel the pilot if maker-style fills degrade, benchmark expectancy turns negative, "
@@ -694,6 +684,24 @@ def _apply_strategy_memory_entry_policy(
         holding_horizon="none",
     )
     return guarded, "strategy-memory guard: capital-preservation mode disabled new live entries after a sustained drawdown"
+
+
+def _pilot_entry_allowed(*, strategy_research, strategy_memory: dict | None) -> bool:
+    controls = _strategy_memory_controls(strategy_memory)
+    entry_mode = str(controls.get("entry_mode", "normal") or "normal").strip().lower()
+    if entry_mode != "capital_preservation_pilot":
+        return False
+    pilot_candidate_id = str(controls.get("pilot_candidate_id", "") or "").strip()
+    selected_strategy_id = str(getattr(strategy_research, "selected_strategy_id", "") or "").strip()
+    execution_profile = getattr(strategy_research, "selected_execution_profile", {}) or {}
+    entry_order_type = str(execution_profile.get("entry_order_type", "market") or "market").strip().lower()
+    entry_liquidity = str(execution_profile.get("entry_liquidity", "taker") or "taker").strip().lower()
+    return bool(
+        pilot_candidate_id
+        and selected_strategy_id == pilot_candidate_id
+        and entry_order_type == "limit"
+        and entry_liquidity == "maker"
+    )
 
 
 def _opens_new_exposure(action: str, *, position_side: str, mode: str) -> bool:
@@ -934,6 +942,7 @@ def _guard_fallback_open_exposure(
     idea: TradeIdea,
     snapshot,
     strategy_research,
+    strategy_memory: dict | None,
     llm_wake: dict,
     position_side: str,
     mode: str,
@@ -945,6 +954,8 @@ def _guard_fallback_open_exposure(
     if action not in {"buy", "sell"}:
         return idea, ""
     if not _opens_new_exposure(action, position_side=position_side, mode=mode):
+        return idea, ""
+    if _pilot_entry_allowed(strategy_research=strategy_research, strategy_memory=strategy_memory):
         return idea, ""
 
     current_signal = str(getattr(strategy_research, "current_signal", "hold") or "hold").lower()
@@ -2390,6 +2401,7 @@ def execute_cycle(
                 idea=idea,
                 snapshot=snapshot,
                 strategy_research=strategy_research,
+                strategy_memory=strategy_memory,
                 llm_wake=llm_wake,
                 position_side=position_side,
                 mode=mode,

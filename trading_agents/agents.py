@@ -993,6 +993,7 @@ class StrategistAgent:
             and (asymmetric_payoff or selected_backtest.win_rate >= 0.45)
             and backtest.expectancy_pct >= (-0.03 if aggressive_mode else 0.0)
             and sentiment.source_count >= 2
+            and (current_signal == "long" or countertrend_long_ready)
         ):
             confidence = min(
                 0.58

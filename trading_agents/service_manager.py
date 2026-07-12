@@ -94,6 +94,7 @@ def sync_runner_runtime(project_root: Path) -> Path:
     if not data_root_written:
         env_lines.append(f"DATA_ROOT={state_root}")
     env_target.write_text("\n".join(env_lines) + ("\n" if env_lines else ""))
+    (runtime_root / ".project_root").write_text(str(project_root.resolve()) + "\n")
 
     entrypoint_source = project_root / "run_tradepulse_runner.py"
     if entrypoint_source.exists():

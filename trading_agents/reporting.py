@@ -3145,7 +3145,7 @@ def _load_runner_event_counts(runner_log_path: Path | None, date_label: str) -> 
     return {"monitor_heartbeats": monitor_heartbeats, "avg_decision_latency_seconds": avg_latency}
 
 
-def _iter_recent_log_lines(path: Path, max_bytes: int = 64 * 1024 * 1024):
+def _iter_recent_log_lines(path: Path, max_bytes: int = 4 * 1024 * 1024):
     size = path.stat().st_size
     with path.open("rb") as handle:
         if size > max_bytes:

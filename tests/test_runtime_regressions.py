@@ -184,6 +184,54 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(effective.observation_pool, ("SOL/USDT", "BTC/USDT"))
         self.assertEqual(effective.monitor_interval_seconds, 15.0)
 
+    def test_cash_heavy_starter_long_requires_live_long_signal_or_countertrend_confirmation(self) -> None:
+        agent = StrategistAgent(llm_client=None)
+        fallback = agent._fallback_idea(
+            momentum=0.0,
+            sentiment=SentimentSnapshot(2, -0.76, "fear", []),
+            backtest=BacktestSnapshot(20, 5, 1.0, 0.57, 2.83, "baseline replay", 0.57, 0.0, 0.57, 999.0),
+            strategy_research=StrategyResearchSnapshot(
+                base_strategy_id="grid_range_reversion_maker_v1",
+                selected_strategy_id="donchian_adx_perp_v1",
+                selected_strategy_name="Donchian ADX Perp",
+                summary="selected strategy hold",
+                candidates=[
+                    StrategyCandidate(
+                        strategy_id="donchian_adx_perp_v1",
+                        name="Donchian ADX Perp",
+                        source="public_classic",
+                        credibility="external_public",
+                        description="trend-following strategy",
+                        backtest=BacktestSnapshot(
+                            7,
+                            7,
+                            0.71,
+                            0.21,
+                            1.46,
+                            "selected replay",
+                            0.40,
+                            -0.27,
+                            0.21,
+                            3.72,
+                        ),
+                    )
+                ],
+                current_signal="hold",
+                current_signal_type="hold",
+                current_volume_ratio=0.26,
+            ),
+            order_flow_bias=-0.32,
+            order_flow_summary="spread=1.44bps; depth fairly balanced; trade_delta=-0.92; aggressive sellers in control",
+            available_usdt=444.60,
+            available_base_asset=0.0,
+            position_side="flat",
+            last_price=69.54,
+            min_order_value_usdt=5.0,
+            aggressive_mode=True,
+            trading_mode="bybit-demo-perp",
+        )
+        self.assertEqual(fallback.action, "hold")
+
     def test_monitor_snapshot_tracks_perp_net_position(self) -> None:
         class FakeExchange:
             def fetch_snapshot(self, symbol: str, timeframe: str, include_microstructure: bool = False):
