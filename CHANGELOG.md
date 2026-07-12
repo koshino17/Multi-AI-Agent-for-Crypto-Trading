@@ -16,6 +16,32 @@
 
 ---
 
+## v1.1.1 - Flag partial noon-window reports when the runner stops early
+
+### Why
+
+- TradePulse can lose profitability research quality when the runner dies partway through a noon-to-noon window but the generated daily report still reads like a complete sample.
+- That makes stale/incomplete evidence look trustworthy, which is a capital-preservation problem before it is a strategy problem.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Added a window-coverage freshness pass that marks daily summaries as `partial_window_records` when local records only cover a slice of the expected noon window.
+  - Daily summaries now preserve the first/last runtime record timestamps plus leading/trailing window gaps so dead-runner evidence is explicit in the report.
+
+- `trading_agents/service_manager.py`
+  - Runtime sync now merges repo `.env` keys on top of the installed runtime `.env` instead of replacing it wholesale.
+  - This preserves existing launch/runtime secrets and mode metadata when the checkout has no local `.env` or only a partial one.
+
+- `tests/test_runtime_regressions.py`
+  - Added a regression test for the exact failure mode where only the first few minutes of a noon window are present.
+  - Added a regression test that fails if runtime sync drops existing installed env keys.
+
+### Result
+
+- TradePulse daily reports should now warn when a runner stops early instead of silently presenting a partial window as a full-day sample.
+- Future autonomous reviews can fail closed on incomplete evidence faster and focus on runner recovery before strategy tuning.
+
 ## v1.1.0 - External mentor shadow gate and promotion loop
 
 ### Why

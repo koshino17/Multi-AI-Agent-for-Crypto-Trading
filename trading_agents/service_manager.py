@@ -59,6 +59,23 @@ def preferred_python(project_root: Path, runtime_root: Path | None = None) -> Pa
     return Path("/usr/bin/python3")
 
 
+def _parse_env_lines(lines: list[str]) -> tuple[list[str], dict[str, str]]:
+    ordered_keys: list[str] = []
+    values: dict[str, str] = {}
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        if key not in values:
+            ordered_keys.append(key)
+        values[key] = value
+    return ordered_keys, values
+
+
 def sync_runner_runtime(project_root: Path) -> Path:
     runtime_root = runner_runtime_root()
     runtime_root.mkdir(parents=True, exist_ok=True)
@@ -82,18 +99,25 @@ def sync_runner_runtime(project_root: Path) -> Path:
     env_source = project_root / ".env"
     env_target = runtime_root / ".env"
     env_lines: list[str] = []
+    target_lines: list[str] = []
     if env_source.exists():
         env_lines = env_source.read_text().splitlines()
-    data_root_written = False
+    if env_target.exists():
+        target_lines = env_target.read_text().splitlines()
+    target_order, target_values = _parse_env_lines(target_lines)
+    source_order, source_values = _parse_env_lines(env_lines)
+    merged_order = list(target_order)
+    for key in source_order:
+        if key not in merged_order:
+            merged_order.append(key)
+    merged_values = dict(target_values)
+    merged_values.update(source_values)
     state_root = runner_state_root()
-    for index, line in enumerate(env_lines):
-        if line.startswith("DATA_ROOT="):
-            env_lines[index] = f"DATA_ROOT={state_root}"
-            data_root_written = True
-            break
-    if not data_root_written:
-        env_lines.append(f"DATA_ROOT={state_root}")
-    env_target.write_text("\n".join(env_lines) + ("\n" if env_lines else ""))
+    if "DATA_ROOT" not in merged_order:
+        merged_order.append("DATA_ROOT")
+    merged_values["DATA_ROOT"] = str(state_root)
+    rendered_lines = [f"{key}={merged_values[key]}" for key in merged_order if key in merged_values]
+    env_target.write_text("\n".join(rendered_lines) + ("\n" if rendered_lines else ""))
 
     entrypoint_source = project_root / "run_tradepulse_runner.py"
     if entrypoint_source.exists():

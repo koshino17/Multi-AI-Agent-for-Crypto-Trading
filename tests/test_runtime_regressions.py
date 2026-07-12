@@ -6,6 +6,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from trading_agents.agents import RiskSupervisorAgent, StrategistAgent, StrategyReflectionAgent
 from trading_agents.exchange import _build_fvg_features, _build_microstructure_features, _infer_po3_phase_hint
@@ -17,6 +18,7 @@ from trading_agents.main import (
 )
 from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyCandidate, StrategyResearchSnapshot, TradeIdea
 from trading_agents.reporting import (
+    _apply_window_freshness,
     _build_financial_snapshot,
     _build_trade_review,
     _load_runner_event_counts,
@@ -25,7 +27,7 @@ from trading_agents.reporting import (
 )
 from trading_agents.research import StrategyResearchAgent
 from trading_agents.runner import _acquire_runner_lock, _cycle_report_summary, _monitor_snapshot, _release_runner_lock
-from trading_agents.service_manager import _runner_launch_agent_plist
+from trading_agents.service_manager import _runner_launch_agent_plist, sync_runner_runtime
 from trading_agents.storage import build_storage_layout, mode_storage_root
 from trading_agents_web import _runtime_settings
 
@@ -65,6 +67,35 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertIn("refused to start", launcher)
         self.assertNotIn('exec >> "$RUNNER_LOG"', launcher)
 
+    def test_sync_runner_runtime_preserves_existing_runtime_env_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as project_dir, tempfile.TemporaryDirectory() as runtime_dir:
+            project_root = Path(project_dir)
+            runtime_root = Path(runtime_dir)
+            (project_root / "trading_agents").mkdir()
+            (project_root / "trading_agents" / "__init__.py").write_text("")
+            (project_root / "config").mkdir()
+            (project_root / "config" / "strategy_library.json").write_text("{}\n")
+            (project_root / "scripts").mkdir()
+            (project_root / "scripts" / "launch_trading_runner.sh").write_text("#!/bin/zsh\n")
+            (project_root / "run_tradepulse_runner.py").write_text("print('ok')\n")
+            (project_root / ".env").write_text("TRADING_MODE=bybit-demo-perp\n")
+
+            (runtime_root / ".env").write_text(
+                "BYBIT_DEMO_API_KEY=keep_me\n"
+                "OBSERVATION_POOL=SOL/USDT\n"
+                "SYMBOL=SOL/USDT\n"
+            )
+
+            with patch("trading_agents.service_manager.runner_runtime_root", return_value=runtime_root):
+                sync_runner_runtime(project_root)
+
+            merged = (runtime_root / ".env").read_text()
+            self.assertIn("BYBIT_DEMO_API_KEY=keep_me", merged)
+            self.assertIn("OBSERVATION_POOL=SOL/USDT", merged)
+            self.assertIn("SYMBOL=SOL/USDT", merged)
+            self.assertIn("TRADING_MODE=bybit-demo-perp", merged)
+            self.assertIn("DATA_ROOT=", merged)
+
     def test_runner_lock_blocks_duplicate_instances(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = build_storage_layout(tmpdir)
@@ -94,6 +125,27 @@ class RuntimeRegressionTests(unittest.TestCase):
             counts = _load_runner_event_counts(runner_log, "2026-05-29")
         self.assertEqual(counts["monitor_heartbeats"], 1)
         self.assertEqual(counts["avg_decision_latency_seconds"], 30.0)
+
+    def test_apply_window_freshness_marks_partial_window_records(self) -> None:
+        window_start = datetime.fromisoformat("2026-07-11T12:00:00+08:00")
+        window_end = datetime.fromisoformat("2026-07-12T12:00:00+08:00")
+        records = [
+            {"__record_timestamp_local": "2026-07-11T12:01:02+08:00"},
+            {"__record_timestamp_local": "2026-07-11T12:15:27+08:00"},
+        ]
+
+        refreshed = _apply_window_freshness(
+            {"total_portfolio_value_usdt": 444.41},
+            records,
+            window_start=window_start,
+            window_end=window_end,
+        )
+
+        self.assertEqual(refreshed["data_freshness_status"], "partial_window_records")
+        self.assertIn("local records cover", refreshed["data_freshness_reason"])
+        self.assertEqual(refreshed["first_runtime_record_timestamp_local"], "2026-07-11T12:01:02+08:00")
+        self.assertEqual(refreshed["last_runtime_record_timestamp_local"], "2026-07-11T12:15:27+08:00")
+        self.assertGreater(float(refreshed["window_trailing_gap_hours"]), 23.0)
 
     def test_cycle_report_summary_omits_large_payloads(self) -> None:
         summary = _cycle_report_summary(

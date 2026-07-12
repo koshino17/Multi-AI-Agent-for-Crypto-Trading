@@ -2119,6 +2119,56 @@ def _window_label_to_bounds(date_label: str, anchor_hour: int = REPORT_WINDOW_AN
     return window_start, window_end
 
 
+def _apply_window_freshness(
+    financial_snapshot: dict[str, Any],
+    records: list[dict[str, Any]],
+    *,
+    window_start: datetime,
+    window_end: datetime,
+) -> dict[str, Any]:
+    enriched = dict(financial_snapshot or {})
+    if not records:
+        return enriched
+
+    timestamps = [
+        _parse_timestamp_local(item.get("__record_timestamp_local") or item.get("timestamp") or _accepted_trade_timestamp(item))
+        for item in records
+    ]
+    timestamps = [item for item in timestamps if item is not None]
+    if not timestamps:
+        return enriched
+
+    first_record = min(timestamps)
+    last_record = max(timestamps)
+    window_hours = max((window_end - window_start).total_seconds() / 3600.0, 0.0)
+    covered_hours = max((last_record - first_record).total_seconds() / 3600.0, 0.0)
+    leading_gap_hours = max((first_record - window_start).total_seconds() / 3600.0, 0.0)
+    trailing_gap_hours = max((window_end - last_record).total_seconds() / 3600.0, 0.0)
+    coverage_ratio_pct = (covered_hours / window_hours * 100.0) if window_hours > 0 else 100.0
+
+    enriched["first_runtime_record_timestamp_local"] = first_record.isoformat()
+    enriched["last_runtime_record_timestamp_local"] = last_record.isoformat()
+    enriched["window_coverage_hours"] = round(covered_hours, 2)
+    enriched["window_coverage_ratio_pct"] = round(coverage_ratio_pct, 2)
+    enriched["window_leading_gap_hours"] = round(leading_gap_hours, 2)
+    enriched["window_trailing_gap_hours"] = round(trailing_gap_hours, 2)
+
+    if "data_freshness_status" in enriched:
+        return enriched
+
+    if leading_gap_hours <= 0.25 and trailing_gap_hours <= 0.25:
+        return enriched
+
+    enriched["data_freshness_status"] = "partial_window_records"
+    enriched["data_freshness_reason"] = (
+        "local records cover "
+        f"{covered_hours:.2f}h of the {window_hours:.2f}h report window "
+        f"(leading gap {leading_gap_hours:.2f}h, trailing gap {trailing_gap_hours:.2f}h)"
+    )
+    enriched["stale_age_hours"] = round(trailing_gap_hours, 2)
+    return enriched
+
+
 def _load_strategy_research_latest(path: Path | None) -> dict[str, Any]:
     if path is None or not path.exists():
         return {}
@@ -3364,6 +3414,12 @@ def load_daily_summary_data(
         initial_balance_usdt=settings.initial_balance_usdt,
         taker_fee_pct=settings.taker_fee_pct,
         position_policy_metadata=position_policy_metadata,
+    )
+    summary["financial_snapshot"] = _apply_window_freshness(
+        summary["financial_snapshot"],
+        records,
+        window_start=window_start,
+        window_end=window_end,
     )
     summary["equity_curve"] = load_equity_curve_summary(
         mode_scoped_path(storage.equity_curve_history_state, effective_mode),
