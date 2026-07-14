@@ -59,7 +59,30 @@ def preferred_python(project_root: Path, runtime_root: Path | None = None) -> Pa
     return Path("/usr/bin/python3")
 
 
-def sync_runner_runtime(project_root: Path) -> Path:
+def _upsert_env_line(lines: list[str], key: str, value: object) -> None:
+    rendered = f"{key}={value}"
+    prefix = f"{key}="
+    for index, line in enumerate(lines):
+        if line.startswith(prefix):
+            lines[index] = rendered
+            return
+    lines.append(rendered)
+
+
+def _apply_runtime_env_defaults(env_lines: list[str], settings: Settings | None, state_root: Path) -> list[str]:
+    lines = list(env_lines)
+    _upsert_env_line(lines, "DATA_ROOT", state_root)
+    if settings is None:
+        return lines
+    symbols = ",".join(settings.observation_pool) or settings.symbol
+    _upsert_env_line(lines, "TRADING_MODE", settings.trading_mode)
+    _upsert_env_line(lines, "SYMBOL", settings.symbol)
+    _upsert_env_line(lines, "OBSERVATION_POOL", symbols)
+    _upsert_env_line(lines, "MONITOR_INTERVAL_SECONDS", settings.monitor_interval_seconds)
+    return lines
+
+
+def sync_runner_runtime(project_root: Path, settings: Settings | None = None) -> Path:
     runtime_root = runner_runtime_root()
     runtime_root.mkdir(parents=True, exist_ok=True)
 
@@ -84,15 +107,8 @@ def sync_runner_runtime(project_root: Path) -> Path:
     env_lines: list[str] = []
     if env_source.exists():
         env_lines = env_source.read_text().splitlines()
-    data_root_written = False
     state_root = runner_state_root()
-    for index, line in enumerate(env_lines):
-        if line.startswith("DATA_ROOT="):
-            env_lines[index] = f"DATA_ROOT={state_root}"
-            data_root_written = True
-            break
-    if not data_root_written:
-        env_lines.append(f"DATA_ROOT={state_root}")
+    env_lines = _apply_runtime_env_defaults(env_lines, settings, state_root)
     env_target.write_text("\n".join(env_lines) + ("\n" if env_lines else ""))
 
     entrypoint_source = project_root / "run_tradepulse_runner.py"
@@ -156,7 +172,7 @@ def _runner_launch_agent_plist(runtime_root: Path, log_path: Path) -> str:
 
 
 def ensure_runner_launch_agent(settings: Settings, project_root: Path) -> tuple[Path, bool]:
-    runtime_root = sync_runner_runtime(project_root)
+    runtime_root = sync_runner_runtime(project_root, settings)
     log_dir = Path.home() / "Library" / "Logs" / "TradePulse"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "launchd-runner.log"
@@ -188,7 +204,7 @@ def is_runner_launch_agent_loaded() -> bool:
 def start_runner_service(settings: Settings, project_root: Path) -> dict[str, str]:
     storage = runner_service_storage(settings.trading_mode)
     _rotate_large_log(storage.runner_log)
-    runtime_root = sync_runner_runtime(project_root)
+    runtime_root = sync_runner_runtime(project_root, settings)
     entrypoint_path = runtime_root / "run_tradepulse_runner.py"
     python_path = preferred_python(project_root, runtime_root)
     plist_path, _plist_changed = ensure_runner_launch_agent(settings, project_root)

@@ -979,6 +979,26 @@ def _guard_fallback_open_exposure(
     if (action == "buy" and current_signal == "long") or (action == "sell" and current_signal == "short"):
         return idea, ""
 
+    execution_profile = getattr(strategy_research, "selected_execution_profile", {}) or {}
+    entry_order_type = str(execution_profile.get("entry_order_type", "market") or "market").strip().lower()
+    entry_liquidity = str(execution_profile.get("entry_liquidity", "taker") or "taker").strip().lower()
+    if current_signal == "hold" and entry_order_type == "limit" and entry_liquidity == "maker":
+        guarded = TradeIdea(
+            action="hold",
+            score=min(float(getattr(idea, "score", 0.40) or 0.40), 0.45),
+            rationale=(
+                f"{idea.rationale}; converted to hold because the selected strategy currently requires "
+                f"neutral maker-style execution, so opening fallback {action} exposure would bypass "
+                f"the baseline cost model"
+            ),
+            invalidation="wait for the selected maker strategy to signal an entry or for a managed exit path",
+            holding_horizon="none",
+        )
+        return guarded, (
+            "maker-baseline guard: "
+            f"base={current_signal}, execution={entry_order_type}/{entry_liquidity}"
+        )
+
     metrics = llm_wake.get("metrics") or {}
     score = float(getattr(idea, "score", 0.0) or 0.0)
     momentum_pct = abs(float(metrics.get("momentum_pct", 0.0) or 0.0))

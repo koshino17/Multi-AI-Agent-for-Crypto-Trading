@@ -12,6 +12,7 @@ from trading_agents.exchange import _build_fvg_features, _build_microstructure_f
 from trading_agents.llm import _trace_date_label
 from trading_agents.main import (
     _apply_po3_deterministic_score,
+    _guard_fallback_open_exposure,
     _guard_market_structure_false_breakout,
     _prefilter_untradeable_candidate,
     _resolve_daily_review,
@@ -26,7 +27,7 @@ from trading_agents.reporting import (
 )
 from trading_agents.research import StrategyResearchAgent
 from trading_agents.runner import _acquire_runner_lock, _cycle_report_summary, _monitor_snapshot, _release_runner_lock
-from trading_agents.service_manager import _runner_launch_agent_plist
+from trading_agents.service_manager import _apply_runtime_env_defaults, _runner_launch_agent_plist
 from trading_agents.storage import build_storage_layout, mode_storage_root
 from trading_agents_web import _runtime_settings
 
@@ -65,6 +66,21 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertIn('"TRADING_MODE"', launcher)
         self.assertIn("refused to start", launcher)
         self.assertNotIn('exec >> "$RUNNER_LOG"', launcher)
+
+    def test_runtime_env_defaults_preserve_launch_critical_vars(self) -> None:
+        settings = SimpleNamespace(
+            trading_mode="bybit-demo-perp",
+            symbol="SOL/USDT",
+            observation_pool=("SOL/USDT",),
+            monitor_interval_seconds=30.0,
+        )
+        env_lines = _apply_runtime_env_defaults(["OPENAI_API_KEY=test"], settings, Path("/tmp/tradepulse-state"))
+        rendered = "\n".join(env_lines)
+        self.assertIn("DATA_ROOT=/tmp/tradepulse-state", rendered)
+        self.assertIn("TRADING_MODE=bybit-demo-perp", rendered)
+        self.assertIn("SYMBOL=SOL/USDT", rendered)
+        self.assertIn("OBSERVATION_POOL=SOL/USDT", rendered)
+        self.assertIn("MONITOR_INTERVAL_SECONDS=30.0", rendered)
 
     def test_runner_lock_blocks_duplicate_instances(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -269,6 +285,47 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertAlmostEqual(float(reflection.controls.get("cooldown_scale", 1.0)), 0.85, places=2)
         self.assertAlmostEqual(float(reflection.controls.get("hold_bars_scale", 1.0)), 1.0, places=2)
         self.assertTrue(bool(reflection.experiment.get("sample_guard_active")))
+
+    def test_fallback_guard_blocks_new_exposure_when_maker_baseline_is_neutral(self) -> None:
+        idea = TradeIdea("sell", 0.69, "fallback short", "fade", "intraday")
+        strategy_research = StrategyResearchSnapshot(
+            base_strategy_id="grid_range_reversion_maker_v1",
+            selected_strategy_id="grid_range_reversion_maker_v1",
+            selected_strategy_name="Grid Maker",
+            summary="selected grid maker",
+            candidates=[
+                StrategyCandidate(
+                    strategy_id="grid_range_reversion_maker_v1",
+                    name="Grid Maker",
+                    source="research",
+                    credibility="experimental",
+                    description="maker grid",
+                    backtest=BacktestSnapshot(13, 13, 0.53, -0.12, -1.61, "grid replay", 0.25, -0.56, -0.12, 0.52),
+                )
+            ],
+            current_signal="hold",
+            current_signal_type="hold",
+            current_volume_ratio=1.21,
+            selected_execution_profile={"entry_order_type": "limit", "entry_liquidity": "maker"},
+        )
+        guarded, reason = _guard_fallback_open_exposure(
+            idea=idea,
+            snapshot=SimpleNamespace(),
+            strategy_research=strategy_research,
+            llm_wake={"metrics": {"momentum_pct": -0.75, "volume_ratio": 1.21, "trade_delta_ratio": -0.42}},
+            position_side="flat",
+            mode="bybit-demo-perp",
+            settings=SimpleNamespace(
+                fallback_entry_guard_enabled=True,
+                fallback_entry_min_score=0.55,
+                fallback_entry_min_momentum_pct=0.2,
+                fallback_entry_min_volume_ratio=1.1,
+                fallback_entry_min_trade_delta_ratio=0.2,
+            ),
+        )
+        self.assertEqual(guarded.action, "hold")
+        self.assertIn("maker-style execution", guarded.rationale)
+        self.assertIn("maker-baseline guard", reason)
 
     def test_strategy_reflection_clears_stale_pilot_controls_when_not_reaffirmed(self) -> None:
         agent = StrategyReflectionAgent(llm_client=None)

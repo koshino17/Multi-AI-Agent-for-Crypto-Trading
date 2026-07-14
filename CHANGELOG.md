@@ -260,6 +260,32 @@
 - `TradePulse` now records deterministic PO3 / POC / VAL / FVG-style structure hints in the snapshot layer.
 - We can inspect them in daily reports and traces before deciding whether they deserve a role inside fallback guards or execution logic.
 
+## v1.0.0 - Block fallback entries that bypass the neutral maker baseline
+
+### Why
+
+- The July 14 noon-to-noon TradePulse review showed a concrete profit bug: the live baseline was `grid_range_reversion_maker_v1`, but the losing short episode still came from fallback momentum logic while the selected maker baseline signal was `hold`.
+- That mixes a passive maker-style cost model with fresh directional fallback exposure, which makes attribution noisy and can approve trades the chosen baseline would never take.
+
+### What Changed
+
+- `trading_agents/main.py`
+  - Tightened `_guard_fallback_open_exposure()` so new fallback `buy`/`sell` exposure is converted to `hold` whenever the selected strategy is currently neutral and explicitly requires `limit` + `maker` execution.
+  - The guard leaves exits and aligned non-neutral selected-strategy entries alone; it only blocks fresh exposure that would bypass the active baseline's execution model.
+
+- `trading_agents/service_manager.py`
+  - Runtime sync now also writes launch-critical environment values (`TRADING_MODE`, `SYMBOL`, `OBSERVATION_POOL`, `MONITOR_INTERVAL_SECONDS`) into the installed runtime `.env`.
+  - This keeps TradePulse restartable after syncs instead of depending on those variables already existing in the repo `.env`.
+
+- `tests/test_runtime_regressions.py`
+  - Added a regression test for the exact failure mode from this review window: a fallback short against a neutral maker baseline now gets held out before risk approval.
+  - Added regression coverage for runtime env defaults so launch-critical settings survive live-runtime sync.
+
+### Result
+
+- TradePulse should stop opening fresh taker-style fallback positions during windows when the active maker baseline is neutral, preserving cleaner attribution and reducing cost-model drift.
+- TradePulse restarts are less likely to fail after runtime sync, so repo fixes can actually be applied to the live runner.
+
 ## v0.11.54 - Use market-structure features as fallback guards
 
 ### Why
