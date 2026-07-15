@@ -6,6 +6,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from trading_agents.agents import RiskSupervisorAgent, StrategistAgent, StrategyReflectionAgent
 from trading_agents.exchange import _build_fvg_features, _build_microstructure_features, _infer_po3_phase_hint
@@ -24,8 +25,14 @@ from trading_agents.reporting import (
     write_oracle_postmortem_artifacts,
 )
 from trading_agents.research import StrategyResearchAgent
-from trading_agents.runner import _acquire_runner_lock, _cycle_report_summary, _monitor_snapshot, _release_runner_lock
-from trading_agents.service_manager import _runner_launch_agent_plist
+from trading_agents.runner import (
+    _acquire_runner_lock,
+    _cycle_report_summary,
+    _monitor_snapshot,
+    _release_runner_lock,
+    _wait_for_exchange,
+)
+from trading_agents.service_manager import _merge_runtime_env_lines, _runner_launch_agent_plist
 from trading_agents.storage import build_storage_layout, mode_storage_root
 from trading_agents_web import _runtime_settings
 
@@ -94,6 +101,51 @@ class RuntimeRegressionTests(unittest.TestCase):
             counts = _load_runner_event_counts(runner_log, "2026-05-29")
         self.assertEqual(counts["monitor_heartbeats"], 1)
         self.assertEqual(counts["avg_decision_latency_seconds"], 30.0)
+
+    def test_runtime_sync_preserves_existing_secrets_when_repo_env_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            env_target = tmp / ".env"
+            env_target.write_text(
+                "TRADING_MODE=bybit-demo-perp\n"
+                "OBSERVATION_POOL=SOL/USDT\n"
+                "BYBIT_DEMO_API_KEY=existing-key\n"
+                "BYBIT_DEMO_SECRET=existing-secret\n"
+            )
+            lines = _merge_runtime_env_lines(tmp / "missing.env", env_target, tmp / "state")
+        text = "\n".join(lines)
+        self.assertIn("BYBIT_DEMO_API_KEY=existing-key", text)
+        self.assertIn("BYBIT_DEMO_SECRET=existing-secret", text)
+        self.assertIn(f"DATA_ROOT={tmp / 'state'}", text)
+
+    def test_wait_for_exchange_logs_degraded_then_recovers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = build_storage_layout(tmpdir)
+            calls = {"count": 0}
+
+            def flaky_builder(mode: str, settings: object):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    raise ValueError("Missing Bybit Demo API credentials.")
+                return "exchange"
+
+            emitted: list[dict] = []
+            with patch("trading_agents.runner._build_exchange", side_effect=flaky_builder), patch(
+                "trading_agents.runner._emit",
+                side_effect=emitted.append,
+            ), patch("trading_agents.runner.time.sleep", return_value=None):
+                exchange = _wait_for_exchange(
+                    "bybit-demo-perp",
+                    SimpleNamespace(),
+                    storage,
+                    retry_seconds=0.01,
+                )
+
+            self.assertEqual(exchange, "exchange")
+            self.assertTrue(any(item.get("status") == "degraded" for item in emitted))
+            self.assertTrue(any(item.get("status") == "exchange_recovered" for item in emitted))
+            status = json.loads((storage.service / "runner_status.json").read_text())
+            self.assertEqual(status["status"], "running")
 
     def test_cycle_report_summary_omits_large_payloads(self) -> None:
         summary = _cycle_report_summary(

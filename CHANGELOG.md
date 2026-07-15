@@ -16,6 +16,26 @@
 
 ---
 
+## v1.1.1 - Preserve runtime credentials and fail closed without crash loops
+
+### Why
+
+- TradePulse launcher restarts can sync the installed runtime from a repo worktree that has no local `.env`, which can wipe previously working runtime-only secrets.
+- After the runtime `.env` loses `BYBIT_DEMO_API_KEY` or `BYBIT_DEMO_SECRET`, the `bybit-demo-perp` runner crashes at startup and silently stops the noon-to-noon review window.
+- A dead runner is worse than an explicit no-trade degraded state because it makes daily reports and Notion freshness look healthier than they are.
+
+### What Changed
+
+- Updated `trading_agents/service_manager.py` so runtime sync merges the repo `.env` with the installed runtime `.env` instead of overwriting runtime-only keys.
+- Updated `trading_agents/runner.py` so exchange startup failures move TradePulse into an explicit degraded retry loop, emit `runner` health events, and persist `service/runner_status.json` instead of crash-looping out.
+- Added regression tests for runtime `.env` preservation and degraded runner recovery behavior in `tests/test_runtime_regressions.py`.
+
+### Result
+
+- Future TradePulse syncs no longer erase existing runtime-only Bybit demo credentials just because the repo worktree lacks a `.env`.
+- When credentials are missing, TradePulse now preserves capital, stays operationally visible, and keeps retrying instead of dying after launchd restarts.
+- Daily stewardship can distinguish a real strategy issue from a credential outage faster because runner status is now machine-readable.
+
 ## v1.1.0 - External mentor shadow gate and promotion loop
 
 ### Why

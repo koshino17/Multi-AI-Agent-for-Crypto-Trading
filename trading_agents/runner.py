@@ -81,6 +81,14 @@ def _rotate_large_log(path: Path, max_bytes: int = _MAX_RUNNER_LOG_BYTES) -> Non
         pass
 
 
+def _write_runner_status(path: Path, payload: dict) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _acquire_runner_lock(path: Path) -> int | None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o644)
@@ -286,6 +294,61 @@ def _classify_cycle_mode(reason: str) -> str:
     return "fast"
 
 
+def _wait_for_exchange(mode: str, settings, storage: object, retry_seconds: float):
+    status_path = Path(storage.service) / "runner_status.json"
+    retry_interval = max(float(retry_seconds), 5.0)
+    degraded_since: str | None = None
+    while _running:
+        try:
+            exchange = _build_exchange(mode, settings)
+            status = {
+                "status": "running",
+                "mode": mode,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            if degraded_since:
+                status["degraded_since"] = degraded_since
+                _emit(
+                    {
+                        "event": "runner",
+                        "timestamp": status["updated_at"],
+                        "status": "exchange_recovered",
+                        "mode": mode,
+                    }
+                )
+            _write_runner_status(status_path, status)
+            return exchange
+        except Exception as exc:
+            now = datetime.now(timezone.utc).isoformat()
+            degraded_since = degraded_since or now
+            detail = str(exc)
+            _emit(
+                {
+                    "event": "runner",
+                    "timestamp": now,
+                    "status": "degraded",
+                    "mode": mode,
+                    "detail": detail,
+                    "retry_seconds": retry_interval,
+                }
+            )
+            _write_runner_status(
+                status_path,
+                {
+                    "status": "degraded",
+                    "mode": mode,
+                    "updated_at": now,
+                    "degraded_since": degraded_since,
+                    "detail": detail,
+                    "retry_seconds": retry_interval,
+                },
+            )
+            deadline = time.time() + retry_interval
+            while _running and time.time() < deadline:
+                time.sleep(1)
+    return None
+
+
 def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
     global _RUNNER_LOCK_FD, _RUNNER_LOG_PATH
     signal.signal(signal.SIGINT, _stop)
@@ -311,7 +374,6 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
             time.sleep(30)
         return 0
     _write_pid(storage.runner_pid)
-    exchange = _build_exchange(mode, settings)
     symbol_pool = _parse_symbol_pool(symbol, settings)
     timeframe = settings.timeframe
     monitor_interval = max(interval_seconds, 5.0)
@@ -351,6 +413,9 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
             "position_micro_trigger_pct": position_micro_trigger_pct,
         }
     )
+    exchange = _wait_for_exchange(mode, settings, storage, monitor_interval)
+    if exchange is None:
+        return 0
 
     try:
         while _running:
@@ -534,6 +599,14 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
                 time.sleep(1)
         return 0
     finally:
+        _write_runner_status(
+            storage.service / "runner_status.json",
+            {
+                "status": "stopped",
+                "mode": mode,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
         _remove_pid(storage.runner_pid)
         _release_runner_lock(_RUNNER_LOCK_FD, storage.runner_lock)
         _RUNNER_LOCK_FD = None

@@ -81,18 +81,7 @@ def sync_runner_runtime(project_root: Path) -> Path:
 
     env_source = project_root / ".env"
     env_target = runtime_root / ".env"
-    env_lines: list[str] = []
-    if env_source.exists():
-        env_lines = env_source.read_text().splitlines()
-    data_root_written = False
-    state_root = runner_state_root()
-    for index, line in enumerate(env_lines):
-        if line.startswith("DATA_ROOT="):
-            env_lines[index] = f"DATA_ROOT={state_root}"
-            data_root_written = True
-            break
-    if not data_root_written:
-        env_lines.append(f"DATA_ROOT={state_root}")
+    env_lines = _merge_runtime_env_lines(env_source, env_target, runner_state_root())
     env_target.write_text("\n".join(env_lines) + ("\n" if env_lines else ""))
 
     entrypoint_source = project_root / "run_tradepulse_runner.py"
@@ -118,6 +107,37 @@ def sync_runner_runtime(project_root: Path) -> Path:
                 pass
 
     return runtime_root
+
+
+def _merge_runtime_env_lines(env_source: Path, env_target: Path, state_root: Path) -> list[str]:
+    source_lines = env_source.read_text().splitlines() if env_source.exists() else []
+    existing_lines = env_target.read_text().splitlines() if env_target.exists() else []
+
+    merged_lines = list(source_lines or existing_lines)
+    present_keys = {
+        line.split("=", 1)[0]
+        for line in merged_lines
+        if "=" in line and not line.lstrip().startswith("#")
+    }
+
+    for line in existing_lines:
+        stripped = line.lstrip()
+        if "=" not in line or stripped.startswith("#"):
+            continue
+        key = line.split("=", 1)[0]
+        if key not in present_keys:
+            merged_lines.append(line)
+            present_keys.add(key)
+
+    data_root_written = False
+    for index, line in enumerate(merged_lines):
+        if line.startswith("DATA_ROOT="):
+            merged_lines[index] = f"DATA_ROOT={state_root}"
+            data_root_written = True
+            break
+    if not data_root_written:
+        merged_lines.append(f"DATA_ROOT={state_root}")
+    return merged_lines
 
 
 def _runner_launch_agent_plist(runtime_root: Path, log_path: Path) -> str:
