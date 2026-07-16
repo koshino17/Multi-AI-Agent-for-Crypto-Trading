@@ -20,6 +20,7 @@ from trading_agents.reporting import (
     _build_financial_snapshot,
     _build_trade_review,
     _load_runner_event_counts,
+    build_daily_summary,
     write_ground_truth_artifacts,
     write_oracle_postmortem_artifacts,
 )
@@ -94,6 +95,66 @@ class RuntimeRegressionTests(unittest.TestCase):
             counts = _load_runner_event_counts(runner_log, "2026-05-29")
         self.assertEqual(counts["monitor_heartbeats"], 1)
         self.assertEqual(counts["avg_decision_latency_seconds"], 30.0)
+
+    def test_daily_summary_surfaces_runtime_degradation_and_stale_notion_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = build_storage_layout(tmpdir)
+            stale_record = {
+                "mode": "bybit-demo-perp",
+                "selected_symbol": "SOL/USDT",
+                "candidates": [
+                    {
+                        "symbol": "SOL/USDT",
+                        "last_price": 75.04,
+                        "account": {
+                            "market_type": "perp",
+                            "base_symbol": "SOL",
+                            "position_side": "flat",
+                            "net_position": 0.0,
+                            "available_balance_usdt": 440.4964,
+                            "total_equity_usdt": 440.5058,
+                            "cum_realized_pnl_usdt": 0.0,
+                        },
+                    }
+                ],
+            }
+            (storage.trade_logs / "decision-20260714T041540058262Z.json").write_text(json.dumps(stale_record))
+            (storage.service / "runner_status.json").write_text(
+                json.dumps(
+                    {
+                        "status": "degraded",
+                        "mode": "bybit-demo-perp",
+                        "updated_at": "2026-07-16T04:22:45.789019+00:00",
+                        "degraded_since": "2026-07-15T04:26:08.355448+00:00",
+                        "detail": "Missing Bybit Demo API credentials.",
+                        "retry_seconds": 30.0,
+                    }
+                )
+            )
+            storage.notion_daily_review_state.write_text(
+                json.dumps(
+                    {
+                        "date_label": "2026-07-14",
+                        "page_id": "test-page",
+                    }
+                )
+            )
+
+            report = build_daily_summary(
+                storage.trade_logs,
+                "2026-07-16",
+                storage.runner_log,
+                trading_mode="bybit-demo-perp",
+                storage_root=storage.root,
+            )
+
+        self.assertIn("## Runtime Health", report)
+        self.assertIn("Runner Status: degraded", report)
+        self.assertIn("Missing Bybit Demo API credentials.", report)
+        self.assertIn("Window Integrity: compromised by runner degradation during this review window", report)
+        self.assertIn("Notion Daily Review: stale | latest=2026-07-14 | lag=2d", report)
+        self.assertIn("Data Freshness: stale_runtime_snapshot", report)
+        self.assertIn("runner degraded since 2026-07-15T04:26:08.355448+00:00", report)
 
     def test_cycle_report_summary_omits_large_payloads(self) -> None:
         summary = _cycle_report_summary(

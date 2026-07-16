@@ -16,6 +16,28 @@
 
 ---
 
+## v1.1.1 - Surface degraded runtime windows in daily reports
+
+### Why
+
+- The July 15, 2026 TradePulse daily window looked like a harmless flat no-trade session even though the installed bybit-demo-perp runtime had already fallen into degraded mode because Bybit demo credentials were missing.
+- That hid the real bottleneck: an operationally invalid review window with stale Notion daily-review freshness, which is more urgent than changing strategy logic.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Added runtime-health loading for `service/runner_status.json` and `service/notion_daily_review.json`.
+  - Daily summaries now render a `Runtime Health` section with runner status, degraded-since timestamp, degraded detail, retry cadence, window-integrity flag, and Notion daily-review freshness.
+  - When the runner was degraded during the reviewed window, the daily summary freshness note now appends the degradation cause instead of only saying that local records were missing.
+
+- `tests/test_runtime_regressions.py`
+  - Added a regression test covering a stale-record window plus degraded runner status so future report changes cannot hide this failure mode again.
+
+### Result
+
+- TradePulse daily reviews now distinguish "strategy chose hold" from "runtime health invalidated the window."
+- Missing exchange credentials and stale Notion review state become first-class research signals in the report, reducing the risk of making strategy changes from bad evidence.
+
 ## v1.1.0 - External mentor shadow gate and promotion loop
 
 ### Why

@@ -4,7 +4,7 @@ import json
 import os
 import re
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from statistics import fmean
 from typing import Any
@@ -2670,6 +2670,96 @@ def _stale_financial_snapshot_from_last_record(
     }
 
 
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=LOCAL_TZ)
+    return parsed
+
+
+def _build_runtime_health_summary(storage, *, date_label: str, window_start: datetime, window_end: datetime) -> dict[str, Any]:
+    runner_status_path = storage.service / "runner_status.json"
+    runner_status = _read_json_file(runner_status_path) if runner_status_path.exists() else {}
+    notion_state = _read_json_file(storage.notion_daily_review_state) if storage.notion_daily_review_state.exists() else {}
+    summary: dict[str, Any] = {
+        "runner_status_path": str(runner_status_path),
+        "notion_daily_review_state_path": str(storage.notion_daily_review_state),
+    }
+
+    if isinstance(runner_status, dict) and runner_status:
+        runner_state = str(runner_status.get("status", "")).strip().lower()
+        updated_at = _parse_iso_datetime(runner_status.get("updated_at"))
+        degraded_since = _parse_iso_datetime(runner_status.get("degraded_since"))
+        degraded_overlap_window = False
+        if runner_state == "degraded":
+            if degraded_since is not None:
+                degraded_overlap_window = degraded_since < window_end
+            elif updated_at is not None:
+                degraded_overlap_window = updated_at >= window_start
+        summary["runner"] = {
+            "status": runner_state or "unknown",
+            "mode": str(runner_status.get("mode", "")).strip(),
+            "detail": str(runner_status.get("detail", "")).strip(),
+            "retry_seconds": _safe_float(runner_status.get("retry_seconds")),
+            "updated_at": updated_at.isoformat() if updated_at is not None else str(runner_status.get("updated_at", "")).strip(),
+            "degraded_since": (
+                degraded_since.isoformat() if degraded_since is not None else str(runner_status.get("degraded_since", "")).strip()
+            ),
+            "degraded_overlap_window": degraded_overlap_window,
+        }
+
+    if isinstance(notion_state, dict) and notion_state:
+        published_label = str(notion_state.get("date_label", "")).strip()
+        freshness = "current" if published_label == date_label else "stale"
+        lag_days = None
+        try:
+            if published_label:
+                lag_days = (date.fromisoformat(date_label) - date.fromisoformat(published_label)).days
+        except ValueError:
+            lag_days = None
+        summary["notion_daily_review"] = {
+            "date_label": published_label,
+            "page_id": str(notion_state.get("page_id", "")).strip(),
+            "freshness": freshness,
+            "lag_days": lag_days,
+        }
+
+    return summary
+
+
+def _apply_runtime_health_to_financial_snapshot(financial_snapshot: dict[str, Any], runtime_health: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(financial_snapshot, dict) or not isinstance(runtime_health, dict):
+        return financial_snapshot
+    runner = runtime_health.get("runner") if isinstance(runtime_health.get("runner"), dict) else {}
+    if not runner:
+        return financial_snapshot
+    if str(runner.get("status", "")).strip().lower() != "degraded":
+        return financial_snapshot
+    if not bool(runner.get("degraded_overlap_window")):
+        return financial_snapshot
+
+    detail = str(runner.get("detail", "")).strip() or "runner degraded during this report window"
+    degraded_since = str(runner.get("degraded_since", "")).strip() or "unknown"
+    reason_suffix = f"runner degraded since {degraded_since}: {detail}"
+    existing_status = str(financial_snapshot.get("data_freshness_status", "")).strip()
+    existing_reason = str(financial_snapshot.get("data_freshness_reason", "")).strip()
+    if existing_status:
+        if reason_suffix not in existing_reason:
+            financial_snapshot["data_freshness_reason"] = (
+                f"{existing_reason}; {reason_suffix}" if existing_reason else reason_suffix
+            )
+    else:
+        financial_snapshot["data_freshness_status"] = "runtime_degraded_window"
+        financial_snapshot["data_freshness_reason"] = reason_suffix
+    return financial_snapshot
+
+
 def _accepted_trade_rows(records: list[dict[str, Any]], taker_fee_pct: float) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for item in records:
@@ -3365,6 +3455,16 @@ def load_daily_summary_data(
         taker_fee_pct=settings.taker_fee_pct,
         position_policy_metadata=position_policy_metadata,
     )
+    summary["runtime_health"] = _build_runtime_health_summary(
+        storage,
+        date_label=date_label,
+        window_start=window_start,
+        window_end=window_end,
+    )
+    summary["financial_snapshot"] = _apply_runtime_health_to_financial_snapshot(
+        summary["financial_snapshot"],
+        summary["runtime_health"],
+    )
     summary["equity_curve"] = load_equity_curve_summary(
         mode_scoped_path(storage.equity_curve_history_state, effective_mode),
         mode_scoped_path(storage.equity_curve_svg, effective_mode),
@@ -3535,6 +3635,7 @@ def build_daily_summary(
     agent_trace_archive = summary.get("agent_trace_archive") or {}
     ground_truth_artifact = summary.get("ground_truth_artifact") or {}
     oracle_postmortem_artifact = summary.get("oracle_postmortem_artifact") or {}
+    runtime_health = summary.get("runtime_health") or {}
 
     lines = [f"# Daily Summary: {date_label}", ""]
     if summary_mode:
@@ -3553,6 +3654,34 @@ def build_daily_summary(
                 "",
             ]
         )
+    runner_health = runtime_health.get("runner") if isinstance(runtime_health.get("runner"), dict) else {}
+    notion_review_health = (
+        runtime_health.get("notion_daily_review") if isinstance(runtime_health.get("notion_daily_review"), dict) else {}
+    )
+    if runner_health or notion_review_health:
+        lines.extend(["## Runtime Health", ""])
+        if runner_health:
+            lines.append(
+                f"- Runner Status: {runner_health.get('status', 'unknown')} | "
+                f"mode={runner_health.get('mode', 'n/a') or 'n/a'} | "
+                f"updated_at={runner_health.get('updated_at', 'n/a') or 'n/a'}"
+            )
+            if runner_health.get("degraded_since"):
+                lines.append(f"- Runner Degraded Since: {runner_health.get('degraded_since')}")
+            if runner_health.get("detail"):
+                lines.append(f"- Runner Detail: {runner_health.get('detail')}")
+            if runner_health.get("retry_seconds"):
+                lines.append(f"- Runner Retry: every {float(runner_health.get('retry_seconds', 0.0)):.0f}s")
+            if runner_health.get("degraded_overlap_window"):
+                lines.append("- Window Integrity: compromised by runner degradation during this review window")
+        if notion_review_health:
+            lag_days = notion_review_health.get("lag_days")
+            lag_note = f" | lag={int(lag_days)}d" if isinstance(lag_days, int) else ""
+            lines.append(
+                f"- Notion Daily Review: {notion_review_health.get('freshness', 'unknown')} | "
+                f"latest={notion_review_health.get('date_label', 'n/a') or 'n/a'}{lag_note}"
+            )
+        lines.append("")
     lines.extend(
         [
             "## Financial Snapshot",
