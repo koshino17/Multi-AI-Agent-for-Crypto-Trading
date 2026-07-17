@@ -69,6 +69,25 @@ def _remove_pid(path: Path) -> None:
         pass
 
 
+def _write_runner_status(storage, status: str, mode: str, *, symbol: str | None = None, detail: str = "", **extra) -> None:
+    payload = {
+        "status": status,
+        "mode": mode,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if symbol:
+        payload["symbol"] = symbol
+    if detail:
+        payload["detail"] = detail
+    payload.update({key: value for key, value in extra.items() if value is not None})
+    path = storage.service / "runner_status.json"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    except OSError:
+        pass
+
+
 def _rotate_large_log(path: Path, max_bytes: int = _MAX_RUNNER_LOG_BYTES) -> None:
     try:
         if not path.exists() or path.stat().st_size <= max_bytes:
@@ -297,6 +316,13 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
     _RUNNER_LOG_PATH = storage.runner_log
     _RUNNER_LOCK_FD = _acquire_runner_lock(storage.runner_lock)
     if _RUNNER_LOCK_FD is None:
+        _write_runner_status(
+            storage,
+            "duplicate_blocked",
+            mode,
+            symbol=symbol,
+            detail=f"another runner already holds {storage.runner_lock}",
+        )
         _emit(
             {
                 "event": "runner",
@@ -311,7 +337,6 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
             time.sleep(30)
         return 0
     _write_pid(storage.runner_pid)
-    exchange = _build_exchange(mode, settings)
     symbol_pool = _parse_symbol_pool(symbol, settings)
     timeframe = settings.timeframe
     monitor_interval = max(interval_seconds, 5.0)
@@ -319,6 +344,31 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
     price_trigger_pct = max(settings.price_trigger_pct, 0.001)
     micro_cycle_trigger_pct = max(settings.micro_cycle_trigger_pct, 0.001)
     position_micro_trigger_pct = max(settings.position_micro_trigger_pct, 0.001)
+    try:
+        exchange = _build_exchange(mode, settings)
+    except Exception as exc:
+        _write_runner_status(
+            storage,
+            "degraded",
+            mode,
+            symbol=symbol,
+            detail=str(exc),
+            retry_seconds=monitor_interval,
+        )
+        _emit(
+            {
+                "event": "runner",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "status": "degraded",
+                "mode": mode,
+                "detail": str(exc),
+                "retry_seconds": monitor_interval,
+            }
+        )
+        deadline = time.time() + monitor_interval
+        while _running and time.time() < deadline:
+            time.sleep(1)
+        return 78
     monitor_state: dict = {
         "cycle_at": None,
         "cycle_bucket": None,
@@ -351,12 +401,30 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
             "position_micro_trigger_pct": position_micro_trigger_pct,
         }
     )
+    _write_runner_status(
+        storage,
+        "running",
+        mode,
+        symbol=symbol,
+        detail="runner started",
+        symbol_pool=symbol_pool,
+        timeframe=timeframe,
+        monitor_interval_seconds=monitor_interval,
+    )
 
     try:
         while _running:
             try:
                 snapshot = _monitor_snapshot(exchange, symbol_pool, timeframe)
             except Exception as exc:
+                _write_runner_status(
+                    storage,
+                    "degraded",
+                    mode,
+                    symbol=symbol,
+                    detail=f"monitor snapshot failed: {exc}",
+                    retry_seconds=monitor_interval,
+                )
                 _emit(
                     {
                         "event": "monitor",
@@ -387,6 +455,15 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
                     "detail": reason,
                     "prices": snapshot["prices"],
                 }
+            )
+            _write_runner_status(
+                storage,
+                "running",
+                mode,
+                symbol=symbol,
+                detail=reason,
+                monitor_status="triggered" if should_run else "watching",
+                prices=snapshot["prices"],
             )
 
             if settings.notion_api_token and settings.notion_status_page_id:
@@ -494,6 +571,15 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
                         "cycle_mode": cycle_mode,
                     }
                 )
+                _write_runner_status(
+                    storage,
+                    "running",
+                    mode,
+                    symbol=symbol,
+                    detail=f"cycle started: {reason}",
+                    cycle_status="started",
+                    cycle_mode=cycle_mode,
+                )
                 try:
                     report = execute_cycle(
                         mode=mode,
@@ -503,6 +589,17 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
                         cycle_reason=reason,
                     )
                     monitor_state.update(_capture_cycle_state(report, timeframe))
+                    _write_runner_status(
+                        storage,
+                        "running",
+                        mode,
+                        symbol=symbol,
+                        detail="cycle finished",
+                        cycle_status="finished",
+                        cycle_mode=cycle_mode,
+                        trade_log=report.get("trade_log"),
+                        daily_report=report.get("daily_report"),
+                    )
                     _emit(
                         {
                             "event": "cycle",
@@ -516,6 +613,16 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
                     )
                     _emit(_cycle_report_summary(report))
                 except Exception as exc:
+                    _write_runner_status(
+                        storage,
+                        "degraded",
+                        mode,
+                        symbol=symbol,
+                        detail=f"cycle failed: {exc}",
+                        cycle_status="error",
+                        cycle_mode=cycle_mode,
+                        retry_seconds=monitor_interval,
+                    )
                     _emit(
                         {
                             "event": "cycle",
@@ -534,6 +641,8 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
                 time.sleep(1)
         return 0
     finally:
+        if not _running:
+            _write_runner_status(storage, "stopped", mode, symbol=symbol, detail="runner stopped")
         _remove_pid(storage.runner_pid)
         _release_runner_lock(_RUNNER_LOCK_FD, storage.runner_lock)
         _RUNNER_LOCK_FD = None

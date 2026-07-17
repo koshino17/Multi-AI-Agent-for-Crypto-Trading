@@ -2416,7 +2416,7 @@ def write_human_report(path: Path, symbol: str, mode: str, content: str) -> Path
 
 def _load_daily_records(trade_logs_dir: Path, date_label: str) -> list[dict[str, Any]]:
     window_start, window_end = _window_label_to_bounds(date_label)
-    files = sorted(trade_logs_dir.glob("*.json"), key=_path_sort_key)
+    files = sorted(trade_logs_dir.glob("decision-*.json"), key=_path_sort_key)
     today_files = []
     for path in files:
         timestamp = _path_timestamp(path)
@@ -2440,8 +2440,25 @@ def _load_daily_records(trade_logs_dir: Path, date_label: str) -> list[dict[str,
     return records
 
 
-def _load_all_records(trade_logs_dir: Path) -> list[dict[str, Any]]:
-    files = sorted(trade_logs_dir.glob("*.json"), key=_path_sort_key)
+def _load_all_records(
+    trade_logs_dir: Path,
+    date_label: str | None = None,
+    *,
+    lookback_days: int = 14,
+    max_records: int = 2000,
+) -> list[dict[str, Any]]:
+    files = sorted(trade_logs_dir.glob("decision-*.json"), key=_path_sort_key)
+    if date_label:
+        window_start, _window_end = _window_label_to_bounds(date_label)
+        lower_bound = window_start - timedelta(days=max(lookback_days, 1))
+        files = [
+            path
+            for path in files
+            if (timestamp := _path_timestamp(path)) is not None
+            and timestamp.astimezone(LOCAL_TZ) >= lower_bound
+        ]
+    if max_records > 0 and len(files) > max_records:
+        files = files[-max_records:]
     records: list[dict[str, Any]] = []
     for path in files:
         try:
@@ -3350,7 +3367,7 @@ def load_daily_summary_data(
     storage = build_storage_layout(str(mode_storage_root(effective_root, effective_mode)))
     window_start, window_end = _window_label_to_bounds(date_label)
     records = _filter_records_by_mode(_load_daily_records(trade_logs_dir, date_label), effective_mode)
-    all_records = _filter_records_by_mode(_load_all_records(trade_logs_dir), effective_mode)
+    all_records = _filter_records_by_mode(_load_all_records(trade_logs_dir, date_label), effective_mode)
     runner_event_counts = _load_runner_event_counts(runner_log_path, date_label)
     position_policy_metadata = _load_position_policy_metadata(storage.position_policy_state, effective_mode)
     summary = summarize_daily_records(records, runner_event_counts)

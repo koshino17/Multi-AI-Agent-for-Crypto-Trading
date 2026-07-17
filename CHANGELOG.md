@@ -16,6 +16,37 @@
 
 ---
 
+## v1.1.2 - Keep live runner status fresh after recovery
+
+### Why
+
+- After the macOS restart, the launchd runner process was alive but degraded because the installed runtime still had an old launcher and incomplete `.env`.
+- Once the runtime was resynced and trading cycles resumed, `runner_status.json` still showed the stale degraded state, which made live status look frozen even though the runner had produced a fresh decision.
+- The live runner could also spend too long in reporting because daily summary loaders scanned every `*.json` artifact in the trade-log directory, including executor `trade-*.json` files that are not decision records.
+
+### What Changed
+
+- `trading_agents/runner.py`
+  - Added runner status writes for startup, monitor heartbeat, cycle start, cycle finish, duplicate-runner blocking, monitor errors, and cycle errors.
+  - Successful runner activity now rewrites `runner_status.json` with `status=running` so stale `degraded_since` data cannot survive a recovery.
+  - Recoverable startup failures still write `status=degraded` with a retry hint instead of silently exiting without a status artifact.
+
+- `trading_agents/reporting.py`
+  - Daily summary record loaders now read only `decision-*.json` files instead of every JSON artifact in `logs/trades`.
+  - Executor `trade-*.json` artifacts remain available for audit but no longer slow every live reporting pass.
+  - Live daily-summary history scans are bounded to the recent report context instead of reading the entire decision archive on every cycle.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage that a healthy runner status update clears an old degraded status file.
+  - Added regression coverage that daily summary loaders ignore executor trade artifacts.
+  - Added regression coverage that live reporting history scans ignore stale decision archives outside the recent window.
+
+### Result
+
+- Live status should move again after the runner recovers from a missing-env or restart incident.
+- Future checks can distinguish "runner process is alive but degraded" from "runner has actually produced fresh monitor/cycle heartbeats."
+- Live cycles should spend less time blocked in reporting and return to the 30-second monitor loop more reliably.
+
 ## v1.1.1 - Recover runner runtime env after launchd restarts
 
 ### Why

@@ -19,12 +19,20 @@ from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyC
 from trading_agents.reporting import (
     _build_financial_snapshot,
     _build_trade_review,
+    _load_all_records,
+    _load_daily_records,
     _load_runner_event_counts,
     write_ground_truth_artifacts,
     write_oracle_postmortem_artifacts,
 )
 from trading_agents.research import StrategyResearchAgent
-from trading_agents.runner import _acquire_runner_lock, _cycle_report_summary, _monitor_snapshot, _release_runner_lock
+from trading_agents.runner import (
+    _acquire_runner_lock,
+    _cycle_report_summary,
+    _monitor_snapshot,
+    _release_runner_lock,
+    _write_runner_status,
+)
 from trading_agents.service_manager import _runner_launch_agent_plist
 from trading_agents.storage import build_storage_layout, mode_storage_root
 from trading_agents_web import _runtime_settings
@@ -95,6 +103,38 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(counts["monitor_heartbeats"], 1)
         self.assertEqual(counts["avg_decision_latency_seconds"], 30.0)
 
+    def test_daily_summary_loaders_ignore_executor_trade_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            trade_logs = Path(tmpdir)
+            decision = {
+                "mode": "bybit-demo-perp",
+                "selected_symbol": "SOL/USDT",
+                "idea": {"action": "hold"},
+            }
+            trade_artifact = {"status": "accepted", "order_id": "test-order"}
+            (trade_logs / "decision-20260717T150506000000Z.json").write_text(json.dumps(decision))
+            (trade_logs / "trade-20260717T150506000000Z.json").write_text(json.dumps(trade_artifact))
+
+            daily_records = _load_daily_records(trade_logs, "2026-07-18")
+            all_records = _load_all_records(trade_logs)
+
+        self.assertEqual(len(daily_records), 1)
+        self.assertEqual(len(all_records), 1)
+        self.assertEqual(daily_records[0]["selected_symbol"], "SOL/USDT")
+
+    def test_all_record_loader_bounds_live_reporting_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            trade_logs = Path(tmpdir)
+            old_decision = {"mode": "bybit-demo-perp", "selected_symbol": "BTC/USDT"}
+            recent_decision = {"mode": "bybit-demo-perp", "selected_symbol": "SOL/USDT"}
+            (trade_logs / "decision-20260601T000000000000Z.json").write_text(json.dumps(old_decision))
+            (trade_logs / "decision-20260717T150506000000Z.json").write_text(json.dumps(recent_decision))
+
+            records = _load_all_records(trade_logs, "2026-07-18")
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["selected_symbol"], "SOL/USDT")
+
     def test_cycle_report_summary_omits_large_payloads(self) -> None:
         summary = _cycle_report_summary(
             {
@@ -113,6 +153,40 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(summary["event"], "cycle_report")
         self.assertEqual(summary["entry_ttl_seconds"], 90)
         self.assertNotIn("external_benchmarks", summary)
+
+    def test_runner_status_running_clears_stale_degraded_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = build_storage_layout(tmpdir)
+            status_path = storage.service / "runner_status.json"
+            status_path.write_text(
+                json.dumps(
+                    {
+                        "status": "degraded",
+                        "mode": "bybit-demo-perp",
+                        "updated_at": "2026-07-17T14:59:07+00:00",
+                        "degraded_since": "2026-07-17T13:52:01+00:00",
+                        "detail": "Missing Bybit Demo API credentials.",
+                    }
+                )
+                + "\n"
+            )
+
+            _write_runner_status(
+                storage,
+                "running",
+                "bybit-demo-perp",
+                symbol="SOL/USDT",
+                detail="monitoring for new candle",
+                monitor_status="watching",
+            )
+
+            status = json.loads(status_path.read_text())
+
+        self.assertEqual(status["status"], "running")
+        self.assertEqual(status["mode"], "bybit-demo-perp")
+        self.assertEqual(status["symbol"], "SOL/USDT")
+        self.assertEqual(status["monitor_status"], "watching")
+        self.assertNotIn("degraded_since", status)
 
     def test_pilot_mode_review_uses_warnings_after_initialization(self) -> None:
         agent = RiskSupervisorAgent(llm_client=None)
