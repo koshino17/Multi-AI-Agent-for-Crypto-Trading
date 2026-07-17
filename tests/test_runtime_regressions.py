@@ -6,6 +6,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from trading_agents.agents import RiskSupervisorAgent, StrategistAgent, StrategyReflectionAgent
 from trading_agents.exchange import _build_fvg_features, _build_microstructure_features, _infer_po3_phase_hint
@@ -18,8 +19,10 @@ from trading_agents.main import (
 from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyCandidate, StrategyResearchSnapshot, TradeIdea
 from trading_agents.reporting import (
     _build_financial_snapshot,
+    _build_market_path_review,
     _build_trade_review,
     _load_runner_event_counts,
+    _public_market_path_review,
     write_ground_truth_artifacts,
     write_oracle_postmortem_artifacts,
 )
@@ -687,6 +690,46 @@ class RuntimeRegressionTests(unittest.TestCase):
             oracle_payload = json.loads(Path(oracle_paths["json_path"]).read_text())
             self.assertIn("carry_in_drag", oracle_payload["root_cause_tags"])
             self.assertIn("missed_rebound_participation", oracle_payload["root_cause_tags"])
+
+    def test_market_path_review_tracks_local_record_source(self) -> None:
+        records = [
+            {
+                "selected_symbol": "SOL/USDT",
+                "last_price": 100.0,
+                "timestamp": "2026-07-16T04:00:00+00:00",
+                "idea": {"action": "hold"},
+            },
+            {
+                "selected_symbol": "SOL/USDT",
+                "last_price": 103.0,
+                "timestamp": "2026-07-16T05:00:00+00:00",
+                "idea": {"action": "buy"},
+            },
+        ]
+
+        review = _build_market_path_review(records, focus_symbol="SOL/USDT")
+        self.assertEqual(review["sample_source"], "local_decision_records")
+        self.assertEqual(review["sample_count"], 2)
+
+    def test_public_market_path_review_falls_back_to_bybit_klines(self) -> None:
+        candles = [
+            {"timestamp_ms": 1784174400000, "open": 152.0, "high": 153.0, "low": 151.0, "close": 152.5, "volume": 10.0},
+            {"timestamp_ms": 1784175300000, "open": 152.5, "high": 154.0, "low": 152.0, "close": 153.5, "volume": 12.0},
+            {"timestamp_ms": 1784176200000, "open": 153.5, "high": 154.5, "low": 153.0, "close": 154.0, "volume": 11.0},
+        ]
+        with mock.patch("trading_agents.alpha_arena.fetch_bybit_public_klines", return_value=candles) as fetch_mock:
+            review = _public_market_path_review(
+                "SOL/USDT",
+                timeframe="15m",
+                window_start=datetime.fromisoformat("2026-07-16T12:00:00+08:00"),
+                window_end=datetime.fromisoformat("2026-07-16T13:00:00+08:00"),
+            )
+
+        fetch_mock.assert_called_once()
+        self.assertEqual(fetch_mock.call_args.kwargs["end_time_ms"], 1784178000000)
+        self.assertEqual(review["symbol"], "SOL/USDT")
+        self.assertEqual(review["sample_source"], "public_bybit_kline")
+        self.assertEqual(review["sample_count"], 3)
 
     def test_daily_review_fallback_error_is_persisted_without_repeat_for_same_fingerprint(self) -> None:
         class StubReviewer:

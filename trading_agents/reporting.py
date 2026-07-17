@@ -5,6 +5,7 @@ import os
 import re
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from math import ceil
 from pathlib import Path
 from statistics import fmean
 from typing import Any
@@ -34,6 +35,16 @@ STAGE_LABELS = {
     "selector": "Selector",
     "executor": "Executor",
     "post_trade_evaluator": "Evaluator",
+}
+_TIMEFRAME_TO_MINUTES = {
+    "1m": 1,
+    "3m": 3,
+    "5m": 5,
+    "15m": 15,
+    "30m": 30,
+    "1h": 60,
+    "4h": 240,
+    "1d": 1440,
 }
 
 
@@ -529,7 +540,20 @@ def _build_market_path_review(records: list[dict[str, Any]], *, focus_symbol: st
                 "source": _decision_source(item),
             }
         )
-    if len(samples) < 2:
+    return _build_market_path_review_from_samples(
+        samples,
+        chosen_symbol=chosen_symbol,
+        sample_source="local_decision_records",
+    )
+
+
+def _build_market_path_review_from_samples(
+    samples: list[dict[str, Any]],
+    *,
+    chosen_symbol: str,
+    sample_source: str,
+) -> dict[str, Any]:
+    if len(samples) < 2 or not chosen_symbol:
         return {}
 
     samples.sort(key=lambda item: item["timestamp_dt"])
@@ -573,7 +597,9 @@ def _build_market_path_review(records: list[dict[str, Any]], *, focus_symbol: st
         counts: Counter[str] = Counter()
         for sample in samples:
             if start_dt <= sample["timestamp_dt"] <= end_dt:
-                counts[sample["action"]] += 1
+                action = str(sample.get("action", "")).strip().lower()
+                if action:
+                    counts[action] += 1
         return dict(counts)
 
     drawdown_actions = _window_action_counts(max_drawdown_start["timestamp_dt"], max_drawdown_end["timestamp_dt"])
@@ -601,6 +627,7 @@ def _build_market_path_review(records: list[dict[str, Any]], *, focus_symbol: st
 
     return {
         "symbol": chosen_symbol,
+        "sample_source": sample_source,
         "sample_count": len(samples),
         "first_price": round(first_price, 6),
         "first_timestamp_local": str(first_sample["timestamp_local"]),
@@ -626,6 +653,60 @@ def _build_market_path_review(records: list[dict[str, Any]], *, focus_symbol: st
         "max_rebound_action_counts": rebound_actions,
         "summary": summary,
     }
+
+
+def _public_market_path_review(
+    focus_symbol: str,
+    *,
+    timeframe: str,
+    window_start: datetime,
+    window_end: datetime,
+) -> dict[str, Any]:
+    symbol = str(focus_symbol or "").strip()
+    if not symbol:
+        return {}
+
+    timeframe_minutes = _TIMEFRAME_TO_MINUTES.get(str(timeframe).strip(), 15)
+    window_minutes = max((window_end - window_start).total_seconds() / 60.0, float(timeframe_minutes))
+    limit = min(max(int(ceil(window_minutes / timeframe_minutes)) + 8, 2), 1000)
+    window_end_ms = int(window_end.astimezone(timezone.utc).timestamp() * 1000)
+
+    try:
+        from trading_agents.alpha_arena import fetch_bybit_public_klines
+
+        candles = fetch_bybit_public_klines(symbol, timeframe, limit=limit, end_time_ms=window_end_ms)
+    except Exception:
+        return {}
+
+    samples: list[dict[str, Any]] = []
+    for candle in candles:
+        timestamp_ms = int(candle.get("timestamp_ms", 0) or 0)
+        if timestamp_ms <= 0:
+            continue
+        timestamp_dt = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).astimezone(LOCAL_TZ)
+        if timestamp_dt < window_start or timestamp_dt > window_end:
+            continue
+        close_price = _safe_float(candle.get("close"))
+        if close_price <= 0:
+            continue
+        samples.append(
+            {
+                "timestamp_local": timestamp_dt.isoformat(),
+                "timestamp_dt": timestamp_dt,
+                "price": close_price,
+                "action": "",
+                "source": "public_bybit_kline",
+            }
+        )
+
+    review = _build_market_path_review_from_samples(
+        samples,
+        chosen_symbol=symbol,
+        sample_source="public_bybit_kline",
+    )
+    if review:
+        review["timeframe"] = timeframe
+    return review
 
 
 def _build_symbol_postmortem(
@@ -3389,6 +3470,13 @@ def load_daily_summary_data(
         records,
         focus_symbol=focus_symbol,
     )
+    if not summary["market_path_review"]:
+        summary["market_path_review"] = _public_market_path_review(
+            focus_symbol,
+            timeframe=settings.timeframe,
+            window_start=window_start,
+            window_end=window_end,
+        )
     summary["symbol_postmortem"] = _build_symbol_postmortem(
         records,
         focus_symbol=focus_symbol,
@@ -4176,6 +4264,8 @@ def build_daily_summary(
     if symbol_postmortem:
         if market_path_review:
             lines.extend(["", "## Market Path Review", ""])
+            if market_path_review.get("sample_source"):
+                lines.append(f"- Path Source: {market_path_review.get('sample_source', 'n/a')}")
             lines.append(f"- Focus Symbol: {market_path_review.get('symbol', 'n/a')}")
             lines.append(f"- Summary: {market_path_review.get('summary', '')}")
             lines.append(

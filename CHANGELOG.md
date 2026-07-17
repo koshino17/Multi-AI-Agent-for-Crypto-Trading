@@ -16,6 +16,28 @@
 
 ---
 
+## v1.1.1 - Preserve market-path diagnostics during runner outages
+
+### Why
+
+- TradePulse daily reviews lost most PO3 and market-structure context whenever the live runner stopped cycling, because `market_path_review` only sampled local decision records.
+- The July 16, 2026 noon-to-noon review was affected by this exact failure mode after the bybit-demo-perp runner degraded on missing credentials, leaving the report with stale local snapshots and almost no usable price path.
+- During outages, TradePulse still needs a real market path for the completed window so the review can separate ops failures from strategy failures.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Split market-path summarization from sample collection so TradePulse can reuse the same review logic across multiple data sources.
+  - Added a public Bybit kline fallback for the reviewed window when local decision samples are insufficient.
+  - Tagged market-path artifacts with `sample_source` and surfaced that source in the daily markdown report.
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for both local-record market-path reviews and the public-kline fallback path.
+
+### Result
+
+- TradePulse daily summaries, ground truth, and oracle postmortems can retain a meaningful focus-symbol path even when the runner is stale or blocked.
+- Outage-day reviews now keep enough market context to support PO3/POC/VAH/VAL/FVG research instead of collapsing into near-empty path diagnostics.
+
 ## v1.1.0 - External mentor shadow gate and promotion loop
 
 ### Why

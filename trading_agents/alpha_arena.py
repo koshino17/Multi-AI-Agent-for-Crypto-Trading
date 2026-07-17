@@ -209,18 +209,25 @@ def write_normalized_signals(signals: list[AlphaArenaSignal], output_path: str) 
     return str(path)
 
 
-def fetch_bybit_public_klines(symbol: str, timeframe: str, *, limit: int = 300) -> list[dict[str, float | int]]:
+def fetch_bybit_public_klines(
+    symbol: str,
+    timeframe: str,
+    *,
+    limit: int = 300,
+    end_time_ms: int | None = None,
+) -> list[dict[str, float | int]]:
     interval = _TIMEFRAME_TO_BYBIT.get(timeframe)
     if interval is None:
         raise ValueError(f"Unsupported timeframe: {timeframe}")
-    params = urlencode(
-        {
-            "category": "linear",
-            "symbol": symbol.replace("/", ""),
-            "interval": interval,
-            "limit": min(max(int(limit), 1), 1000),
-        }
-    )
+    payload = {
+        "category": "linear",
+        "symbol": symbol.replace("/", ""),
+        "interval": interval,
+        "limit": min(max(int(limit), 1), 1000),
+    }
+    if end_time_ms is not None and int(end_time_ms) > 0:
+        payload["end"] = int(end_time_ms)
+    params = urlencode(payload)
     request = Request(f"https://api.bybit.com/v5/market/kline?{params}", headers={"Content-Type": "application/json"})
     with urlopen(request, timeout=15) as response:
         payload = json.loads(response.read().decode("utf-8"))
