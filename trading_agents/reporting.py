@@ -10,6 +10,8 @@ from statistics import fmean
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from trading_agents.alpha_arena import fetch_bybit_public_klines
+
 
 LOCAL_TZ = ZoneInfo("Asia/Taipei")
 REPORT_WINDOW_ANCHOR_HOUR_LOCAL = 12
@@ -501,34 +503,28 @@ def _build_control_impact_summary(
     }
 
 
-def _build_market_path_review(records: list[dict[str, Any]], *, focus_symbol: str = "") -> dict[str, Any]:
+def _build_market_path_review(
+    records: list[dict[str, Any]],
+    *,
+    focus_symbol: str = "",
+    window_start_dt: datetime | None = None,
+    window_end_dt: datetime | None = None,
+) -> dict[str, Any]:
     symbol_counts = Counter(str(item.get("selected_symbol", "")).strip() for item in records if item.get("selected_symbol"))
     symbol_counts = Counter({symbol: count for symbol, count in symbol_counts.items() if symbol})
     chosen_symbol = focus_symbol.strip() or (symbol_counts.most_common(1)[0][0] if symbol_counts else "")
     if not chosen_symbol:
         return {}
 
-    samples: list[dict[str, Any]] = []
-    for item in records:
-        symbol = str(item.get("selected_symbol", "")).strip()
-        if symbol != chosen_symbol:
-            continue
-        price = _safe_float(item.get("last_price"))
-        timestamp_local = _record_timestamp_local(item)
-        timestamp_dt = _parse_timestamp_local(
-            item.get("__record_timestamp_local") or item.get("timestamp") or _accepted_trade_timestamp(item)
-        )
-        if price <= 0 or timestamp_dt is None:
-            continue
-        samples.append(
-            {
-                "timestamp_local": timestamp_local,
-                "timestamp_dt": timestamp_dt,
-                "price": price,
-                "action": str(item.get("idea", {}).get("action", "hold")).strip().lower(),
-                "source": _decision_source(item),
-            }
-        )
+    samples = _build_market_path_samples_from_public_candles(
+        chosen_symbol,
+        window_start_dt=window_start_dt,
+        window_end_dt=window_end_dt,
+    )
+    sample_source = "public_15m_candles"
+    if len(samples) < 2:
+        samples = _build_market_path_samples_from_records(records, chosen_symbol=chosen_symbol)
+        sample_source = "decision_records"
     if len(samples) < 2:
         return {}
 
@@ -601,6 +597,7 @@ def _build_market_path_review(records: list[dict[str, Any]], *, focus_symbol: st
 
     return {
         "symbol": chosen_symbol,
+        "sample_source": sample_source,
         "sample_count": len(samples),
         "first_price": round(first_price, 6),
         "first_timestamp_local": str(first_sample["timestamp_local"]),
@@ -626,6 +623,82 @@ def _build_market_path_review(records: list[dict[str, Any]], *, focus_symbol: st
         "max_rebound_action_counts": rebound_actions,
         "summary": summary,
     }
+
+
+def _build_market_path_samples_from_records(
+    records: list[dict[str, Any]],
+    *,
+    chosen_symbol: str,
+) -> list[dict[str, Any]]:
+    samples: list[dict[str, Any]] = []
+    for item in records:
+        symbol = str(item.get("selected_symbol", "")).strip()
+        if symbol != chosen_symbol:
+            continue
+        price = _safe_float(item.get("last_price"))
+        timestamp_local = _record_timestamp_local(item)
+        timestamp_dt = _parse_timestamp_local(
+            item.get("__record_timestamp_local") or item.get("timestamp") or _accepted_trade_timestamp(item)
+        )
+        if price <= 0 or timestamp_dt is None:
+            continue
+        samples.append(
+            {
+                "timestamp_local": timestamp_local,
+                "timestamp_dt": timestamp_dt,
+                "price": price,
+                "action": str(item.get("idea", {}).get("action", "hold")).strip().lower(),
+                "source": _decision_source(item),
+            }
+        )
+    return samples
+
+
+def _build_market_path_samples_from_public_candles(
+    symbol: str,
+    *,
+    window_start_dt: datetime | None,
+    window_end_dt: datetime | None,
+    timeframe: str = "15m",
+) -> list[dict[str, Any]]:
+    if window_start_dt is None or window_end_dt is None:
+        return []
+    minutes_by_timeframe = {
+        "1m": 1,
+        "3m": 3,
+        "5m": 5,
+        "15m": 15,
+        "30m": 30,
+        "1h": 60,
+        "4h": 240,
+        "1d": 1440,
+    }
+    candle_minutes = minutes_by_timeframe.get(timeframe, 15)
+    window_minutes = max((window_end_dt - window_start_dt).total_seconds() / 60.0, 0.0)
+    requested_limit = min(max(int(window_minutes / candle_minutes) + 8, 16), 1000)
+    try:
+        candles = fetch_bybit_public_klines(symbol, timeframe, limit=requested_limit)
+    except Exception:
+        return []
+    samples: list[dict[str, Any]] = []
+    for candle in candles:
+        timestamp_utc = datetime.fromtimestamp(int(candle["timestamp_ms"]) / 1000, tz=timezone.utc)
+        timestamp_dt = timestamp_utc.astimezone(LOCAL_TZ)
+        if timestamp_dt < window_start_dt or timestamp_dt > window_end_dt:
+            continue
+        price = _safe_float(candle.get("close"))
+        if price <= 0:
+            continue
+        samples.append(
+            {
+                "timestamp_local": timestamp_dt.isoformat(),
+                "timestamp_dt": timestamp_dt,
+                "price": price,
+                "action": "observe",
+                "source": "public_15m_candles",
+            }
+        )
+    return samples
 
 
 def _build_symbol_postmortem(
@@ -2179,9 +2252,37 @@ def _path_timestamp(path: Path) -> datetime | None:
 
 
 def write_json_log(path: Path, prefix: str, payload: dict) -> Path:
+    payload = dict(payload)
+    idea = payload.get("idea") if isinstance(payload.get("idea"), dict) else {}
+    approval = payload.get("approval") if isinstance(payload.get("approval"), dict) else {}
+    payload.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+    payload.setdefault("symbol", payload.get("selected_symbol"))
+    payload.setdefault("action", idea.get("action"))
+    payload.setdefault("score", idea.get("score"))
+    payload.setdefault("approved", approval.get("approved"))
+    payload.setdefault("rationale", idea.get("rationale"))
     target = path / f"{prefix}-{_stamp()}.json"
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
     return target
+
+
+def _normalize_record_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload)
+    idea = normalized.get("idea") if isinstance(normalized.get("idea"), dict) else {}
+    approval = normalized.get("approval") if isinstance(normalized.get("approval"), dict) else {}
+    if not normalized.get("timestamp"):
+        normalized["timestamp"] = _accepted_trade_timestamp(normalized) or normalized.get("__record_timestamp_utc") or ""
+    if not normalized.get("symbol"):
+        normalized["symbol"] = normalized.get("selected_symbol")
+    if not normalized.get("action"):
+        normalized["action"] = idea.get("action")
+    if normalized.get("score") is None:
+        normalized["score"] = idea.get("score")
+    if normalized.get("approved") is None:
+        normalized["approved"] = approval.get("approved")
+    if not normalized.get("rationale"):
+        normalized["rationale"] = idea.get("rationale")
+    return normalized
 
 
 def build_human_report(report: dict, mode: str, symbol: str) -> str:
@@ -2436,7 +2537,7 @@ def _load_daily_records(trade_logs_dir: Path, date_label: str) -> list[dict[str,
             if timestamp is not None:
                 payload["__record_timestamp_utc"] = timestamp.isoformat()
                 payload["__record_timestamp_local"] = timestamp.astimezone(LOCAL_TZ).isoformat()
-            records.append(payload)
+            records.append(_normalize_record_payload(payload))
     return records
 
 
@@ -2453,7 +2554,7 @@ def _load_all_records(trade_logs_dir: Path) -> list[dict[str, Any]]:
             if timestamp is not None:
                 payload["__record_timestamp_utc"] = timestamp.isoformat()
                 payload["__record_timestamp_local"] = timestamp.astimezone(LOCAL_TZ).isoformat()
-            records.append(payload)
+            records.append(_normalize_record_payload(payload))
     return records
 
 
@@ -3388,6 +3489,8 @@ def load_daily_summary_data(
     summary["market_path_review"] = _build_market_path_review(
         records,
         focus_symbol=focus_symbol,
+        window_start_dt=window_start,
+        window_end_dt=window_end,
     )
     summary["symbol_postmortem"] = _build_symbol_postmortem(
         records,
@@ -4177,6 +4280,7 @@ def build_daily_summary(
         if market_path_review:
             lines.extend(["", "## Market Path Review", ""])
             lines.append(f"- Focus Symbol: {market_path_review.get('symbol', 'n/a')}")
+            lines.append(f"- Source: {market_path_review.get('sample_source', 'unknown')} ({int(market_path_review.get('sample_count', 0) or 0)} samples)")
             lines.append(f"- Summary: {market_path_review.get('summary', '')}")
             lines.append(
                 f"- Sampled Path: start {market_path_review.get('first_timestamp_local', 'n/a')} @ "

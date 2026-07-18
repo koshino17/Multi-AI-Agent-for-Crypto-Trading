@@ -81,9 +81,20 @@ def sync_runner_runtime(project_root: Path) -> Path:
 
     env_source = project_root / ".env"
     env_target = runtime_root / ".env"
-    env_lines: list[str] = []
+    existing_env_lines: list[str] = []
+    if env_target.exists():
+        existing_env_lines = env_target.read_text().splitlines()
+    env_lines: list[str] = list(existing_env_lines)
     if env_source.exists():
         env_lines = env_source.read_text().splitlines()
+    required_runtime_keys = ("TRADING_MODE", "SYMBOL", "OBSERVATION_POOL")
+    for key in required_runtime_keys:
+        has_key = any(line.startswith(f"{key}=") for line in env_lines)
+        if has_key:
+            continue
+        fallback = next((line for line in existing_env_lines if line.startswith(f"{key}=")), "")
+        if fallback:
+            env_lines.append(fallback)
     data_root_written = False
     state_root = runner_state_root()
     for index, line in enumerate(env_lines):

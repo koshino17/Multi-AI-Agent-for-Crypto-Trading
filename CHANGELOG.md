@@ -16,6 +16,29 @@
 
 ---
 
+## v1.1.1 - Repair daily evidence serialization and market-path sourcing
+
+### Why
+
+- TradePulse daily review quality degraded because raw decision logs were missing top-level `timestamp`, `symbol`, `action`, and approval fields that downstream tools expect.
+- The `Market Path Review` section was derived from sparse decision timestamps instead of the full reviewed window, which could misstate a 24-hour path as a short no-trade slice.
+- Weak evidence plumbing is a profitability issue because it corrupts the reinforcement-learning loop even when execution stays conservative.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - `write_json_log()` now persists explicit top-level decision fields (`timestamp`, `symbol`, `action`, `score`, `approved`, `rationale`) alongside the nested report payload.
+  - `Market Path Review` now prefers canonical Bybit public 15m candles for the reviewed window and only falls back to decision-record samples if public candle fetch fails.
+  - Added an explicit market-path source label in the daily markdown report so sampling quality is visible instead of implicit.
+- `trading_agents/service_manager.py`
+  - Runtime sync now preserves existing runtime `.env` values for `TRADING_MODE`, `SYMBOL`, and `OBSERVATION_POOL` when the repo worktree has no project `.env`, preventing live services from silently falling back to defaults on restart.
+
+### Result
+
+- New TradePulse decision logs are machine-readable by downstream review code without relying on nested-only fields.
+- Daily market-path summaries should reflect the actual reviewed window much more closely, especially on low-trade or no-trade days.
+- The daily research loop is less likely to learn from incomplete or misleading evidence.
+
 ## v1.1.0 - External mentor shadow gate and promotion loop
 
 ### Why
