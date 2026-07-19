@@ -16,6 +16,37 @@
 
 ---
 
+## v1.1.1 - Preserve runtime env on sync and flag low-coverage daily evidence
+
+### Why
+
+- The `tradepulse-daily-steward` noon review found that TradePulse had stopped after Friday, July 18, 2026 12:25 PM Asia/Taipei, so the Saturday, July 19, 2026 noon-window report only contained a two-sample market path and stale operational evidence.
+- In this worktree, the repo-local `.env` is absent. A normal `sync_runner_runtime()` call would therefore overwrite the installed runtime `.env` with only `DATA_ROOT`, erasing live mode/symbol keys and making launchd restarts even more brittle.
+- The launcher also emitted a helpful validation error for incomplete runtime env, but still continued into unset-shell-variable failure noise because the failed Python bootstrap was wrapped directly in `eval`.
+
+### What Changed
+
+- `trading_agents/service_manager.py`
+  - Runtime sync now preserves the existing installed runtime `.env` and merges repo `.env` values into it when available, instead of wiping runtime-only keys whenever the worktree lacks a local `.env`.
+  - `DATA_ROOT` is still forced to the managed TradePulse state root after the merge.
+
+- `scripts/launch_trading_runner.sh`
+  - The launcher now captures bootstrap exports first and exits immediately if Python env validation fails, so incomplete runtime env no longer falls through into an unbound `DATA_ROOT` shell error.
+
+- `trading_agents/reporting.py`
+  - Added market-path coverage metadata for each noon-to-noon report window.
+  - Daily summaries, ground-truth artifacts, and oracle postmortems now flag low-coverage market evidence when the runner only produced a partial intraday path.
+  - Oracle postmortems now record `stale_market_path_evidence` as a root-cause tag when PO3/path conclusions are based on thin coverage.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for runtime env preservation, clean launcher failure, and low-coverage oracle tagging.
+
+### Result
+
+- TradePulse no longer risks deleting live runtime env keys during a routine code sync from a worktree that does not carry secrets.
+- Future stopped-runner noon reports will explicitly mark thin market-path evidence as low confidence instead of presenting it like a normal full-window path.
+- Restart attempts will still fail closed when Bybit demo credentials are genuinely missing, but the failure is now cleaner and easier to diagnose.
+
 ## v1.1.0 - External mentor shadow gate and promotion loop
 
 ### Why

@@ -9,7 +9,7 @@ if [ ! -x "$PYTHON_BIN" ]; then
   PYTHON_BIN="python3"
 fi
 
-eval "$(
+env_payload="$(
 "$PYTHON_BIN" - <<'PY'
 import os
 import shlex
@@ -41,7 +41,9 @@ values = {
 for key, value in values.items():
     print(f"{key}={shlex.quote(str(value))}")
 PY
-)"
+)" || exit $?
+
+eval "$env_payload"
 
 mkdir -p "$DATA_ROOT/service"
 

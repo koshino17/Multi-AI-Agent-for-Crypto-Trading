@@ -45,6 +45,37 @@ def runtime_python_path(runtime_root: Path) -> Path:
     return runtime_root / ".venv" / "bin" / "python3"
 
 
+def _parse_env_assignments(lines: list[str]) -> dict[str, str]:
+    assignments: dict[str, str] = {}
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key:
+            assignments[key] = value
+    return assignments
+
+
+def _merge_env_lines(base_lines: list[str], override_lines: list[str]) -> list[str]:
+    merged = _parse_env_assignments(base_lines)
+    merged.update(_parse_env_assignments(override_lines))
+    ordered_keys: list[str] = []
+    for lines in (base_lines, override_lines):
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key = line.split("=", 1)[0].strip()
+            if key and key not in ordered_keys:
+                ordered_keys.append(key)
+    for key in merged:
+        if key not in ordered_keys:
+            ordered_keys.append(key)
+    return [f"{key}={merged[key]}" for key in ordered_keys]
+
+
 def preferred_python(project_root: Path, runtime_root: Path | None = None) -> Path:
     if runtime_root is not None:
         runtime_python = runtime_python_path(runtime_root)
@@ -81,9 +112,9 @@ def sync_runner_runtime(project_root: Path) -> Path:
 
     env_source = project_root / ".env"
     env_target = runtime_root / ".env"
-    env_lines: list[str] = []
+    env_lines: list[str] = env_target.read_text().splitlines() if env_target.exists() else []
     if env_source.exists():
-        env_lines = env_source.read_text().splitlines()
+        env_lines = _merge_env_lines(env_lines, env_source.read_text().splitlines())
     data_root_written = False
     state_root = runner_state_root()
     for index, line in enumerate(env_lines):

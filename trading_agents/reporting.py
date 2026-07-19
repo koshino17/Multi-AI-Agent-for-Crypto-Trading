@@ -628,6 +628,46 @@ def _build_market_path_review(records: list[dict[str, Any]], *, focus_symbol: st
     }
 
 
+def _annotate_market_path_coverage(
+    market_path_review: dict[str, Any],
+    *,
+    window_start: datetime,
+    window_end: datetime,
+) -> dict[str, Any]:
+    if not market_path_review:
+        return {}
+
+    window_hours = max((window_end - window_start).total_seconds() / 3600.0, 0.0)
+    sample_count = int(market_path_review.get("sample_count", 0) or 0)
+    first_dt = _parse_timestamp_local(market_path_review.get("first_timestamp_local"))
+    last_dt = _parse_timestamp_local(market_path_review.get("last_timestamp_local"))
+    sample_span_hours = 0.0
+    if first_dt is not None and last_dt is not None:
+        sample_span_hours = max((last_dt - first_dt).total_seconds() / 3600.0, 0.0)
+    coverage_ratio = min(sample_span_hours / window_hours, 1.0) if window_hours > 0 else 0.0
+
+    coverage_status = "ok"
+    coverage_note = ""
+    if sample_count < 8 or coverage_ratio < 0.5:
+        coverage_status = "low_coverage"
+        coverage_note = (
+            "runner appears to have produced only a partial decision path inside this noon window; "
+            "treat PO3, POC, VAH, VAL, and FVG path conclusions as low confidence"
+        )
+
+    annotated = dict(market_path_review)
+    annotated.update(
+        {
+            "window_hours": round(window_hours, 2),
+            "sample_span_hours": round(sample_span_hours, 2),
+            "coverage_ratio": round(coverage_ratio, 4),
+            "coverage_status": coverage_status,
+            "coverage_note": coverage_note,
+        }
+    )
+    return annotated
+
+
 def _build_symbol_postmortem(
     records: list[dict[str, Any]],
     *,
@@ -3385,9 +3425,13 @@ def load_daily_summary_data(
     )
     summary["policy_exit_diagnostics"] = _build_policy_exit_diagnostics(records, summary["trade_review"])
     focus_symbol = settings.observation_pool[0] if len(settings.observation_pool) == 1 else ""
-    summary["market_path_review"] = _build_market_path_review(
-        records,
-        focus_symbol=focus_symbol,
+    summary["market_path_review"] = _annotate_market_path_coverage(
+        _build_market_path_review(
+            records,
+            focus_symbol=focus_symbol,
+        ),
+        window_start=window_start,
+        window_end=window_end,
     )
     summary["symbol_postmortem"] = _build_symbol_postmortem(
         records,
@@ -3550,6 +3594,21 @@ def build_daily_summary(
                     f"age={float(financial.get('stale_age_hours', 0.0)):.2f}h"
                 ),
                 f"- Freshness Note: {str(financial.get('data_freshness_reason', '')).strip() or 'n/a'}",
+                "",
+            ]
+        )
+    coverage_status = str(market_path_review.get("coverage_status", "")).strip()
+    if coverage_status and coverage_status != "ok":
+        lines.extend(
+            [
+                (
+                    f"- Market Data Coverage: {coverage_status} | "
+                    f"samples={int(market_path_review.get('sample_count', 0) or 0)} | "
+                    f"span={float(market_path_review.get('sample_span_hours', 0.0) or 0.0):.2f}h / "
+                    f"{float(market_path_review.get('window_hours', 0.0) or 0.0):.2f}h "
+                    f"({float(market_path_review.get('coverage_ratio', 0.0) or 0.0) * 100.0:.1f}%)"
+                ),
+                f"- Coverage Note: {str(market_path_review.get('coverage_note', '')).strip() or 'n/a'}",
                 "",
             ]
         )
@@ -4177,6 +4236,15 @@ def build_daily_summary(
         if market_path_review:
             lines.extend(["", "## Market Path Review", ""])
             lines.append(f"- Focus Symbol: {market_path_review.get('symbol', 'n/a')}")
+            if str(market_path_review.get("coverage_status", "")).strip():
+                lines.append(
+                    f"- Coverage: {market_path_review.get('coverage_status', 'n/a')} | "
+                    f"samples={int(market_path_review.get('sample_count', 0) or 0)} | "
+                    f"span={float(market_path_review.get('sample_span_hours', 0.0) or 0.0):.2f}h / "
+                    f"{float(market_path_review.get('window_hours', 0.0) or 0.0):.2f}h"
+                )
+                if str(market_path_review.get("coverage_note", "")).strip():
+                    lines.append(f"- Coverage Note: {market_path_review.get('coverage_note', '')}")
             lines.append(f"- Summary: {market_path_review.get('summary', '')}")
             lines.append(
                 f"- Sampled Path: start {market_path_review.get('first_timestamp_local', 'n/a')} @ "
@@ -4401,6 +4469,7 @@ def _build_oracle_postmortem_payload(summary: dict) -> dict[str, Any]:
     hold_count = int(summary.get("holds", 0) or 0)
     total = int(summary.get("total", 0) or 0)
     hold_ratio = (hold_count / total) if total > 0 else 0.0
+    coverage_status = str(market_path.get("coverage_status", "") or "").strip()
 
     root_causes: list[str] = []
     if int(loss.get("carry_in_closed_count", 0) or 0) > 0 and float(financial.get("daily_pnl_usdt", 0.0) or 0.0) < 0:
@@ -4413,6 +4482,8 @@ def _build_oracle_postmortem_payload(summary: dict) -> dict[str, Any]:
         root_causes.append("under_participation")
     if float(financial.get("daily_fees_usdt", 0.0) or 0.0) > max(float(financial.get("realized_pnl_usdt", 0.0) or 0.0), 0.0):
         root_causes.append("fee_drag")
+    if coverage_status and coverage_status != "ok":
+        root_causes.append("stale_market_path_evidence")
 
     best_candidate = focus_benchmark if str(focus_benchmark.get("candidate_id", "") or "").strip() else recommendation
     hindsight_method = "observe_only"
@@ -4439,6 +4510,8 @@ def _build_oracle_postmortem_payload(summary: dict) -> dict[str, Any]:
             "hold_ratio": round(hold_ratio, 4),
             "max_drawdown_pct": round(max_drawdown_pct, 4),
             "max_rebound_pct": round(max_rebound_pct, 4),
+            "market_data_coverage_status": coverage_status or "n/a",
+            "market_data_coverage_ratio": round(float(market_path.get("coverage_ratio", 0.0) or 0.0), 4),
         },
         "rationale": "; ".join(rationale_parts),
         "suggested_experiment": {
@@ -4461,6 +4534,7 @@ def _render_ground_truth_markdown(payload: dict[str, Any]) -> str:
         f"- Window: {payload.get('window_start', 'n/a')} -> {payload.get('window_end', 'n/a')}",
         f"- Focus Symbol: {payload.get('focus_symbol', 'n/a')}",
         f"- Market Summary: {market_path.get('summary', 'n/a')}",
+        f"- Market Data Coverage: {market_path.get('coverage_status', 'n/a')} ({float(market_path.get('coverage_ratio', 0.0) or 0.0) * 100.0:.1f}% window span)",
         f"- Largest Down Leg: {float(market_path.get('max_drawdown_pct', 0.0) or 0.0):+.2f}%",
         f"- Largest Rebound: {float(market_path.get('max_rebound_pct', 0.0) or 0.0):+.2f}%",
         f"- Live Decisions: total={int(live_actions.get('total_decisions', 0) or 0)} | accepted={int(live_actions.get('accepted_orders', 0) or 0)} | hold={int(live_actions.get('hold_count', 0) or 0)}",
@@ -4482,6 +4556,7 @@ def _render_oracle_postmortem_markdown(payload: dict[str, Any]) -> str:
         f"- Best Hindsight Candidate: {payload.get('best_hindsight_candidate_id', 'n/a')} (expectancy={float(payload.get('best_hindsight_expectancy_pct', 0.0) or 0.0):+.2f}% | pf={float(payload.get('best_hindsight_profit_factor', 0.0) or 0.0):.2f})",
         f"- Root Causes: {', '.join(str(item) for item in root_causes) if root_causes else 'n/a'}",
         f"- Live Gap: accepted={int(live_gap.get('accepted_orders', 0) or 0)} | hold_ratio={float(live_gap.get('hold_ratio', 0.0) or 0.0):.2f} | drawdown={float(live_gap.get('max_drawdown_pct', 0.0) or 0.0):+.2f}% | rebound={float(live_gap.get('max_rebound_pct', 0.0) or 0.0):+.2f}%",
+        f"- Market Data Coverage: {live_gap.get('market_data_coverage_status', 'n/a')} ({float(live_gap.get('market_data_coverage_ratio', 0.0) or 0.0) * 100.0:.1f}% window span)",
         f"- Rationale: {payload.get('rationale', 'n/a')}",
         f"- Suggested Experiment: {experiment.get('candidate_id', 'n/a')} | metrics={', '.join(str(item) for item in (experiment.get('success_metrics') or []))}",
         "",

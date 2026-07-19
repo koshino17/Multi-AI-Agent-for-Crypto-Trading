@@ -6,6 +6,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from trading_agents.agents import RiskSupervisorAgent, StrategistAgent, StrategyReflectionAgent
 from trading_agents.exchange import _build_fvg_features, _build_microstructure_features, _infer_po3_phase_hint
@@ -25,7 +26,7 @@ from trading_agents.reporting import (
 )
 from trading_agents.research import StrategyResearchAgent
 from trading_agents.runner import _acquire_runner_lock, _cycle_report_summary, _monitor_snapshot, _release_runner_lock
-from trading_agents.service_manager import _runner_launch_agent_plist
+from trading_agents.service_manager import _runner_launch_agent_plist, sync_runner_runtime
 from trading_agents.storage import build_storage_layout, mode_storage_root
 from trading_agents_web import _runtime_settings
 
@@ -63,7 +64,44 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertIn("settings.trading_mode", launcher)
         self.assertIn('"TRADING_MODE"', launcher)
         self.assertIn("refused to start", launcher)
+        self.assertIn('env_payload="$(', launcher)
+        self.assertIn(')" || exit $?', launcher)
         self.assertNotIn('exec >> "$RUNNER_LOG"', launcher)
+
+    def test_sync_runner_runtime_preserves_existing_runtime_env_when_project_env_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir) / "project"
+            runtime_root = Path(tmpdir) / "runtime"
+            state_root = Path(tmpdir) / "state"
+            (project_root / "trading_agents").mkdir(parents=True)
+            (project_root / "trading_agents" / "__init__.py").write_text("")
+            (project_root / "config").mkdir(parents=True)
+            (project_root / "config" / "strategy.json").write_text("{}")
+            (project_root / "scripts").mkdir(parents=True)
+            launcher_source = Path("scripts/launch_trading_runner.sh").read_text()
+            (project_root / "scripts" / "launch_trading_runner.sh").write_text(launcher_source)
+            (project_root / "run_tradepulse_runner.py").write_text("print('ok')\n")
+            runtime_root.mkdir(parents=True)
+            (runtime_root / ".env").write_text(
+                "TRADING_MODE=bybit-demo-perp\n"
+                "SYMBOL=SOL/USDT\n"
+                "OBSERVATION_POOL=SOL/USDT\n"
+                "BYBIT_DEMO_API_KEY=keep_key\n"
+                "BYBIT_DEMO_API_SECRET=keep_secret\n"
+            )
+
+            with mock.patch("trading_agents.service_manager.runner_runtime_root", return_value=runtime_root), mock.patch(
+                "trading_agents.service_manager.runner_state_root", return_value=state_root
+            ):
+                sync_runner_runtime(project_root)
+
+            synced_env = (runtime_root / ".env").read_text()
+            self.assertIn("TRADING_MODE=bybit-demo-perp", synced_env)
+            self.assertIn("SYMBOL=SOL/USDT", synced_env)
+            self.assertIn("OBSERVATION_POOL=SOL/USDT", synced_env)
+            self.assertIn("BYBIT_DEMO_API_KEY=keep_key", synced_env)
+            self.assertIn("BYBIT_DEMO_API_SECRET=keep_secret", synced_env)
+            self.assertIn(f"DATA_ROOT={state_root}", synced_env)
 
     def test_runner_lock_blocks_duplicate_instances(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -687,6 +725,41 @@ class RuntimeRegressionTests(unittest.TestCase):
             oracle_payload = json.loads(Path(oracle_paths["json_path"]).read_text())
             self.assertIn("carry_in_drag", oracle_payload["root_cause_tags"])
             self.assertIn("missed_rebound_participation", oracle_payload["root_cause_tags"])
+
+    def test_oracle_postmortem_marks_low_market_data_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            summary = {
+                "date_label": "2026-05-13",
+                "window_start": "2026-05-12T12:00:00+08:00",
+                "window_end": "2026-05-13T12:00:00+08:00",
+                "total": 2,
+                "accepted_orders": 0,
+                "holds": 2,
+                "financial_snapshot": {
+                    "daily_pnl_usdt": 0.0,
+                    "realized_pnl_usdt": 0.0,
+                    "daily_fees_usdt": 0.0,
+                },
+                "market_path_review": {
+                    "symbol": "SOL/USDT",
+                    "summary": "partial path only",
+                    "sample_count": 2,
+                    "coverage_status": "low_coverage",
+                    "coverage_ratio": 0.0104,
+                    "max_drawdown_pct": -0.07,
+                    "max_rebound_pct": 0.0,
+                    "max_drawdown_action_counts": {"hold": 2},
+                    "max_rebound_action_counts": {"hold": 1},
+                },
+                "loss_attribution": {},
+                "strategy_research_latest": {},
+                "benchmark_watch_candidate_current": {},
+            }
+            oracle_paths = write_oracle_postmortem_artifacts(base, "2026-05-13", summary)
+            oracle_payload = json.loads(Path(oracle_paths["json_path"]).read_text())
+            self.assertIn("stale_market_path_evidence", oracle_payload["root_cause_tags"])
+            self.assertEqual(oracle_payload["live_gap"]["market_data_coverage_status"], "low_coverage")
 
     def test_daily_review_fallback_error_is_persisted_without_repeat_for_same_fingerprint(self) -> None:
         class StubReviewer:
