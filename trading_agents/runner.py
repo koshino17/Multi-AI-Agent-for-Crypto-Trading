@@ -81,6 +81,26 @@ def _rotate_large_log(path: Path, max_bytes: int = _MAX_RUNNER_LOG_BYTES) -> Non
         pass
 
 
+def _write_runner_status(path: Path, payload: dict) -> None:
+    body = dict(payload)
+    body.setdefault("updated_at", datetime.now(timezone.utc).isoformat())
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(body, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _credential_blocker(mode: str, settings) -> str | None:
+    if mode in {"bybit-demo", "bybit-demo-perp"}:
+        if not settings.bybit_demo_api_key or not settings.bybit_demo_secret:
+            return "Missing Bybit Demo API credentials."
+    if mode == "binance-testnet":
+        if not settings.binance_testnet_api_key or not settings.binance_testnet_secret:
+            return "Missing Binance Testnet API credentials."
+    return None
+
+
 def _acquire_runner_lock(path: Path) -> int | None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o644)
@@ -297,6 +317,15 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
     _RUNNER_LOG_PATH = storage.runner_log
     _RUNNER_LOCK_FD = _acquire_runner_lock(storage.runner_lock)
     if _RUNNER_LOCK_FD is None:
+        _write_runner_status(
+            storage.runner_status,
+            {
+                "status": "duplicate_blocked",
+                "mode": mode,
+                "symbol": symbol,
+                "detail": f"another runner already holds {storage.runner_lock}",
+            },
+        )
         _emit(
             {
                 "event": "runner",
@@ -311,7 +340,6 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
             time.sleep(30)
         return 0
     _write_pid(storage.runner_pid)
-    exchange = _build_exchange(mode, settings)
     symbol_pool = _parse_symbol_pool(symbol, settings)
     timeframe = settings.timeframe
     monitor_interval = max(interval_seconds, 5.0)
@@ -336,6 +364,36 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
     strategy_research_every = max(float(settings.strategy_research_refresh_hours or 0.0), 0.0) * 3600.0
     strategy_research_limits = _parse_research_limits(settings.strategy_research_focus_limits)
 
+    blocker = _credential_blocker(mode, settings)
+    if blocker:
+        _write_runner_status(
+            storage.runner_status,
+            {
+                "status": "blocked",
+                "mode": mode,
+                "symbol": ",".join(symbol_pool) or symbol,
+                "detail": blocker,
+                "reason_code": "missing_exchange_credentials",
+            },
+        )
+        _emit(
+            {
+                "event": "runner",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "status": "blocked",
+                "mode": mode,
+                "symbol_pool": symbol_pool,
+                "timeframe": timeframe,
+                "monitor_interval_seconds": monitor_interval,
+                "detail": blocker,
+            }
+        )
+        while _running:
+            time.sleep(30)
+        return 0
+
+    exchange = _build_exchange(mode, settings)
+
     _emit(
         {
             "event": "runner",
@@ -350,6 +408,16 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
             "micro_cycle_trigger_pct": micro_cycle_trigger_pct,
             "position_micro_trigger_pct": position_micro_trigger_pct,
         }
+    )
+    _write_runner_status(
+        storage.runner_status,
+        {
+            "status": "started",
+            "mode": mode,
+            "symbol": ",".join(symbol_pool) or symbol,
+            "detail": "runner active",
+            "timeframe": timeframe,
+        },
     )
 
     try:
@@ -534,6 +602,15 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
                 time.sleep(1)
         return 0
     finally:
+        _write_runner_status(
+            storage.runner_status,
+            {
+                "status": "stopped",
+                "mode": mode,
+                "symbol": ",".join(symbol_pool) or symbol,
+                "detail": "runner stopped",
+            },
+        )
         _remove_pid(storage.runner_pid)
         _release_runner_lock(_RUNNER_LOCK_FD, storage.runner_lock)
         _RUNNER_LOCK_FD = None

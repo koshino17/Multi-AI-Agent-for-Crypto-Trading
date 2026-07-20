@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
@@ -240,10 +241,19 @@ def start_runner_service(settings: Settings, project_root: Path) -> dict[str, st
 
     deadline = time.time() + 8
     while time.time() < deadline:
+        runner_status = _read_runner_status(storage.runner_status)
+        if runner_status and runner_status.get("status") == "blocked":
+            return {
+                "status": "blocked",
+                "label": RUNNER_LABEL,
+                "plist": str(plist_path),
+                "command": f"{python_path} {entrypoint_path}",
+                "detail": str(runner_status.get("detail", "")),
+            }
         runner_pid = _read_pid(storage.runner_pid)
         if runner_pid and _pid_is_alive(runner_pid):
             return {
-                "status": "started",
+                "status": str((runner_status or {}).get("status", "started")),
                 "label": RUNNER_LABEL,
                 "pid": str(runner_pid),
                 "plist": str(plist_path),
@@ -264,10 +274,19 @@ def start_runner_service(settings: Settings, project_root: Path) -> dict[str, st
 
     deadline = time.time() + 8
     while time.time() < deadline:
+        runner_status = _read_runner_status(storage.runner_status)
+        if runner_status and runner_status.get("status") == "blocked":
+            return {
+                "status": "blocked",
+                "label": "detached-runner",
+                "plist": str(plist_path),
+                "command": f"{python_path} {entrypoint_path}",
+                "detail": str(runner_status.get("detail", "")),
+            }
         runner_pid = _read_pid(storage.runner_pid)
         if runner_pid and _pid_is_alive(runner_pid):
             return {
-                "status": "started",
+                "status": str((runner_status or {}).get("status", "started")),
                 "label": "detached-runner",
                 "pid": str(runner_pid),
                 "plist": str(plist_path),
@@ -293,12 +312,33 @@ def stop_runner_service(settings: Settings) -> dict[str, str]:
     _terminate_runner_processes()
     _clear_stale_pid(storage.runner_supervisor_pid)
     _clear_stale_pid(storage.runner_pid)
+    storage.runner_status.write_text(
+        json.dumps(
+            {
+                "status": "stopped",
+                "mode": settings.trading_mode,
+                "symbol": ",".join(settings.observation_pool) or settings.symbol,
+                "detail": "runner stopped",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     return {"status": "stopped", "label": RUNNER_LABEL}
 
 
 def _read_pid(path: Path) -> int | None:
     try:
         return int(path.read_text().strip())
+    except Exception:
+        return None
+
+
+def _read_runner_status(path: Path) -> dict | None:
+    try:
+        return json.loads(path.read_text())
     except Exception:
         return None
 

@@ -25,8 +25,15 @@ from trading_agents.reporting import (
     write_oracle_postmortem_artifacts,
 )
 from trading_agents.research import StrategyResearchAgent
-from trading_agents.runner import _acquire_runner_lock, _cycle_report_summary, _monitor_snapshot, _release_runner_lock
-from trading_agents.service_manager import _runner_launch_agent_plist, sync_runner_runtime
+from trading_agents.runner import (
+    _acquire_runner_lock,
+    _credential_blocker,
+    _cycle_report_summary,
+    _monitor_snapshot,
+    _release_runner_lock,
+    _write_runner_status,
+)
+from trading_agents.service_manager import _read_runner_status, _runner_launch_agent_plist, sync_runner_runtime
 from trading_agents.storage import build_storage_layout, mode_storage_root
 from trading_agents_web import _runtime_settings
 
@@ -117,6 +124,41 @@ class RuntimeRegressionTests(unittest.TestCase):
                 self.assertIsNotNone(second_fd)
             finally:
                 _release_runner_lock(second_fd, storage.runner_lock)
+
+    def test_credential_blocker_flags_missing_bybit_demo_secrets(self) -> None:
+        settings = SimpleNamespace(
+            bybit_demo_api_key="",
+            bybit_demo_secret="",
+            binance_testnet_api_key="",
+            binance_testnet_secret="",
+        )
+        self.assertEqual(
+            _credential_blocker("bybit-demo-perp", settings),
+            "Missing Bybit Demo API credentials.",
+        )
+        self.assertEqual(
+            _credential_blocker("bybit-demo", settings),
+            "Missing Bybit Demo API credentials.",
+        )
+
+    def test_runner_status_round_trip_reads_blocked_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = build_storage_layout(tmpdir)
+            _write_runner_status(
+                storage.runner_status,
+                {
+                    "status": "blocked",
+                    "mode": "bybit-demo-perp",
+                    "symbol": "SOL/USDT",
+                    "detail": "Missing Bybit Demo API credentials.",
+                },
+            )
+            status = _read_runner_status(storage.runner_status)
+            self.assertEqual(status["status"], "blocked")
+            self.assertEqual(status["mode"], "bybit-demo-perp")
+            self.assertEqual(status["symbol"], "SOL/USDT")
+            self.assertEqual(status["detail"], "Missing Bybit Demo API credentials.")
+            self.assertIn("updated_at", status)
 
     def test_runner_event_counts_skip_large_non_event_lines(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

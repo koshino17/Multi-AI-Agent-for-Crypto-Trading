@@ -16,6 +16,39 @@
 
 ---
 
+## v1.1.2 - Hold runner in blocked state when demo credentials are missing
+
+### Why
+
+- The TradePulse daily stewardship run on Monday, July 20, 2026 found that the live `bybit-demo-perp` runner had stopped cycling after Friday, July 18, 2026 12:25 PM Asia/Taipei.
+- `launchd` was repeatedly restarting the managed runtime, but `trading_agents.runner` built the Bybit exchange before entering its retry loop, so missing demo credentials still crashed the process into a restart storm instead of leaving an explicit blocked state.
+- The noon review and web console could therefore only see a generic `runner stopped` status even though the true issue was missing exchange credentials.
+
+### What Changed
+
+- `trading_agents/runner.py`
+  - Added a credential preflight for Bybit demo / demo-perp and Binance testnet startup.
+  - The runner now writes a machine-readable blocked status and stays alive in a closed, no-trade wait state when required exchange credentials are missing, instead of crashing out of process supervision.
+  - Runner startup and shutdown now persist explicit status snapshots to `service/runner_status.json`.
+
+- `trading_agents/service_manager.py`
+  - Service startup now reads the runner status artifact during bootstrap and returns `blocked` when the managed runtime is alive but unable to trade.
+  - Service stop now writes an explicit stopped status artifact.
+
+- `trading_agents/storage.py`
+  - Added the managed `runner_status.json` path to the TradePulse storage layout.
+
+- `trading_agents_web.py`
+  - The local control surface now shows a blocked start reason instead of always logging the runner as active.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for credential blocker detection and runner status persistence.
+
+### Result
+
+- TradePulse now fails closed in a diagnosable blocked state when demo exchange credentials are absent.
+- `launchd` can keep the managed process alive without spamming hard-crash restarts, while daily reviews and the web console can report the real blocker.
+
 ## v1.1.1 - Preserve runtime env on sync and flag low-coverage daily evidence
 
 ### Why

@@ -160,9 +160,15 @@ class AgentController:
         self.interval = interval
         if self._runner_is_running() and not force_restart:
             return
-        start_runner_service(_runtime_settings(mode, symbol, interval), Path(__file__).resolve().parent)
+        result = start_runner_service(_runtime_settings(mode, symbol, interval), Path(__file__).resolve().parent)
         self._reset_stages()
-        self.logs.append(f"Runner active: mode={mode}, symbols={symbol}, monitor_poll={interval}s")
+        if result.get("status") == "blocked":
+            detail = result.get("detail", "runner blocked")
+            self.current_stage = "idle"
+            self.current_stage_detail = detail
+            self.logs.append(f"Runner blocked: {detail}")
+        else:
+            self.logs.append(f"Runner active: mode={mode}, symbols={symbol}, monitor_poll={interval}s")
 
     def stop(self) -> None:
         stop_runner_service(_runtime_settings(self.mode, self.symbol, self.interval))
