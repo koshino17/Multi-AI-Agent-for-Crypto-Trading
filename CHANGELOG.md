@@ -16,6 +16,30 @@
 
 ---
 
+## v1.1.3 - Surface blocked runner state in daily stewardship reports
+
+### Why
+
+- The Tuesday, July 21, 2026 TradePulse noon stewardship run found the managed `bybit-demo-perp` runner alive but blocked, with `runner_status.json` showing `missing_exchange_credentials` while the latest daily report still read mostly like a normal no-trade session.
+- That meant the daily review, downstream Notion sync context, and future autonomous reviews could over-focus on strategy conclusions drawn from stale partial data instead of seeing the real operational blocker first.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Daily summary data now carries the managed runner status snapshot alongside the noon-window statistics.
+  - Human-readable daily reports now print the runner state, blocker detail, and status age relative to the reviewed window end before the financial section.
+
+- `trading_agents/agents.py`
+  - The daily-review LLM context now includes runner blocked/stale state and financial freshness metadata so review agents can treat missing-credential downtime as a first-class diagnosis signal.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage that ensures a blocked runner state appears in the generated daily summary text.
+
+### Result
+
+- TradePulse daily stewardship artifacts now distinguish "flat by choice" from "flat because the runner is blocked."
+- The next review loop should prioritize restoring healthy runtime cycling before drawing confidence from PO3/path observations built on stale records.
+
 ## v1.1.2 - Hold runner in blocked state when demo credentials are missing
 
 ### Why

@@ -156,6 +156,7 @@ def _apply_market_structure_soft_adjustment(
 
 def _daily_summary_llm_context(daily_summary: dict) -> dict[str, object]:
     financial = daily_summary.get("financial_snapshot") or {}
+    runner_status = daily_summary.get("runner_status") or {}
     latest = daily_summary.get("latest") or {}
     symbol_postmortem = daily_summary.get("symbol_postmortem") or {}
     market_path = daily_summary.get("market_path_review") or {}
@@ -179,6 +180,12 @@ def _daily_summary_llm_context(daily_summary: dict) -> dict[str, object]:
         "date_label": daily_summary.get("date_label", ""),
         "window_start": daily_summary.get("window_start", ""),
         "window_end": daily_summary.get("window_end", ""),
+        "runner_status": {
+            "status": str(runner_status.get("status", "") or ""),
+            "detail": str(runner_status.get("detail", "") or ""),
+            "updated_at_local": str(runner_status.get("updated_at_local", "") or ""),
+            "age_hours_vs_window_end": runner_status.get("age_hours_vs_window_end"),
+        },
         "operations": {
             "total_decisions": int(daily_summary.get("total", 0) or 0),
             "trade_proposals": int(daily_summary.get("proposals", 0) or 0),
@@ -201,6 +208,10 @@ def _daily_summary_llm_context(daily_summary: dict) -> dict[str, object]:
             "capital_utilization_pct": float(financial.get("capital_utilization_pct", 0.0) or 0.0),
             "available_usdt": float(financial.get("available_usdt", 0.0) or 0.0),
             "gross_exposure_pct": float(financial.get("gross_exposure_pct", financial.get("capital_utilization_pct", 0.0)) or 0.0),
+            "data_freshness_status": str(financial.get("data_freshness_status", "") or ""),
+            "data_freshness_reason": str(financial.get("data_freshness_reason", "") or ""),
+            "last_runtime_record_timestamp_local": str(financial.get("last_runtime_record_timestamp_local", "") or ""),
+            "stale_age_hours": float(financial.get("stale_age_hours", 0.0) or 0.0),
         },
         "latest_decision": {
             "symbol": latest.get("selected_symbol", ""),

@@ -21,6 +21,7 @@ from trading_agents.reporting import (
     _build_financial_snapshot,
     _build_trade_review,
     _load_runner_event_counts,
+    build_daily_summary,
     write_ground_truth_artifacts,
     write_oracle_postmortem_artifacts,
 )
@@ -802,6 +803,95 @@ class RuntimeRegressionTests(unittest.TestCase):
             oracle_payload = json.loads(Path(oracle_paths["json_path"]).read_text())
             self.assertIn("stale_market_path_evidence", oracle_payload["root_cause_tags"])
             self.assertEqual(oracle_payload["live_gap"]["market_data_coverage_status"], "low_coverage")
+
+    def test_daily_summary_surfaces_blocked_runner_state(self) -> None:
+        summary = {
+            "mode": "bybit-demo-perp",
+            "runner_status": {
+                "status": "blocked",
+                "detail": "Missing Bybit Demo API credentials.",
+                "updated_at_local": "2026-07-20T12:26:22+08:00",
+                "age_hours_vs_window_end": 0.44,
+            },
+            "total": 0,
+            "proposals": 0,
+            "approved": 0,
+            "executed": 0,
+            "submitted_orders": 0,
+            "rejected_orders": 0,
+            "holds": 0,
+            "blocked": 0,
+            "monitor_heartbeats": 0,
+            "avg_decision_latency_seconds": 0.0,
+            "exchange_minimum_blocked": 0,
+            "latest": {},
+            "blocked_reason_counts": {},
+            "rejection_reason_counts": {},
+            "financial_snapshot": {
+                "initial_capital_usdt": 500.0,
+                "total_portfolio_value_usdt": 440.69,
+                "day_start_portfolio_value_usdt": 440.69,
+                "day_start_timestamp_local": "2026-07-18T12:15:42+08:00",
+                "daily_pnl_basis": "no local records inside this window; carrying forward last known portfolio snapshot",
+                "daily_pnl_usdt": 0.0,
+                "daily_pnl_pct": 0.0,
+                "realized_pnl_usdt": 0.0,
+                "realized_long_pnl_usdt": 0.0,
+                "realized_short_pnl_usdt": 0.0,
+                "unrealized_pnl_usdt": 0.0,
+                "unrealized_change_usdt": 0.0,
+                "pnl_bridge_residual_usdt": 0.0,
+                "daily_fees_usdt": 0.0,
+                "cumulative_fees_usdt": 0.0,
+                "available_usdt": 440.69,
+                "capital_utilization_pct": 0.0,
+                "gross_exposure_pct": 0.0,
+                "current_long_exposure_usdt": 0.0,
+                "current_short_exposure_usdt": 0.0,
+                "effective_leverage": 0.0,
+                "holdings": [],
+                "data_freshness_status": "stale_runtime_snapshot",
+                "data_freshness_reason": "no local trade/decision records were found inside this report window",
+                "last_runtime_record_timestamp_local": "2026-07-18T12:15:42+08:00",
+                "stale_age_hours": 23.74,
+            },
+            "equity_curve": {"sparkline": "n/a", "min_value_usdt": 440.69, "max_value_usdt": 440.69, "chart_path": "n/a"},
+            "avg_scores": {},
+            "action_counts": {},
+            "executed_symbol_counts": {},
+            "stage_latency_seconds": {},
+            "stage_latency_p95_seconds": {},
+            "llm_wake_candidates": 0,
+            "llm_wake_enabled": 0,
+            "llm_wake_rate_pct": 0.0,
+            "llm_backend_ok": 0,
+            "llm_backend_unavailable": 0,
+            "llm_enabled_cycles": 0,
+            "result_status_counts": {},
+            "decision_source_counts": {},
+            "accepted_source_counts": {},
+            "trade_review": {"episodes": []},
+            "executed_trade_timeline": [],
+            "policy_exit_diagnostics": {},
+            "external_benchmarks": {},
+            "symbol_postmortem": {},
+            "market_path_review": {},
+            "loss_attribution": {},
+            "shadow_benchmark_watch": {},
+            "strategy_research_latest": {},
+            "daily_strategy_review": {},
+            "external_ai_review": {},
+            "mentor_review": {},
+            "control_impact": {},
+            "agent_trace_archive": {},
+            "ground_truth_artifact": {},
+            "oracle_postmortem_artifact": {},
+        }
+        with mock.patch("trading_agents.reporting.load_daily_summary_data", return_value=summary):
+            report = build_daily_summary(Path("/tmp/unused"), "2026-07-20")
+        self.assertIn("Runner State: blocked", report)
+        self.assertIn("Missing Bybit Demo API credentials.", report)
+        self.assertIn("Data Freshness: stale_runtime_snapshot", report)
 
     def test_daily_review_fallback_error_is_persisted_without_repeat_for_same_fingerprint(self) -> None:
         class StubReviewer:

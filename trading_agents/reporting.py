@@ -3142,6 +3142,36 @@ def _build_financial_snapshot(
     }
 
 
+def _summarize_runner_state(runner_status: dict[str, Any], *, window_end: datetime) -> dict[str, Any]:
+    if not isinstance(runner_status, dict):
+        return {}
+    status = str(runner_status.get("status", "")).strip().lower()
+    if not status:
+        return {}
+    updated_at_raw = str(runner_status.get("updated_at", "")).strip()
+    updated_at_local = "n/a"
+    stale_hours: float | None = None
+    if updated_at_raw:
+        try:
+            updated_at_dt = datetime.fromisoformat(updated_at_raw)
+            if updated_at_dt.tzinfo is None:
+                updated_at_dt = updated_at_dt.replace(tzinfo=timezone.utc)
+            updated_at_local = updated_at_dt.astimezone(LOCAL_TZ).isoformat()
+            stale_hours = max((window_end - updated_at_dt.astimezone(LOCAL_TZ)).total_seconds() / 3600.0, 0.0)
+        except ValueError:
+            updated_at_local = updated_at_raw
+    return {
+        "status": status,
+        "mode": str(runner_status.get("mode", "")).strip(),
+        "symbol": str(runner_status.get("symbol", "")).strip(),
+        "detail": str(runner_status.get("detail", "")).strip(),
+        "reason_code": str(runner_status.get("reason_code", "")).strip(),
+        "updated_at": updated_at_raw,
+        "updated_at_local": updated_at_local,
+        "age_hours_vs_window_end": round(stale_hours, 2) if stale_hours is not None else None,
+    }
+
+
 def _load_runner_event_counts(runner_log_path: Path | None, date_label: str) -> dict[str, float]:
     if runner_log_path is None or not runner_log_path.exists():
         return {"monitor_heartbeats": 0, "avg_decision_latency_seconds": 0.0}
@@ -3398,6 +3428,7 @@ def load_daily_summary_data(
     summary["window_start"] = window_start.isoformat()
     summary["window_end"] = window_end.isoformat()
     summary["mode"] = effective_mode
+    summary["runner_status"] = _summarize_runner_state(_read_json_file(storage.runner_status), window_end=window_end)
     summary["financial_snapshot"] = _build_financial_snapshot(
         records,
         all_records,
@@ -3584,6 +3615,20 @@ def build_daily_summary(
     if summary_mode:
         lines.extend([f"- Mode: {summary_mode}", ""])
     lines.extend([f"- Window: {window_start.isoformat()} -> {window_end.isoformat()}", ""])
+    runner_status = summary.get("runner_status") or {}
+    runner_state = str(runner_status.get("status", "")).strip()
+    if runner_state:
+        runner_state_line = (
+            f"- Runner State: {runner_state} | "
+            f"updated={str(runner_status.get('updated_at_local', 'n/a')) or 'n/a'}"
+        )
+        runner_detail = str(runner_status.get("detail", "")).strip()
+        runner_age_hours = runner_status.get("age_hours_vs_window_end")
+        if runner_detail:
+            runner_state_line += f" | detail={runner_detail}"
+        if isinstance(runner_age_hours, (int, float)):
+            runner_state_line += f" | age_vs_window_end={float(runner_age_hours):.2f}h"
+        lines.extend([runner_state_line, ""])
     freshness_status = str(financial.get("data_freshness_status", "")).strip()
     if freshness_status:
         lines.extend(
