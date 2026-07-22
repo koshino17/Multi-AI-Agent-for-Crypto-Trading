@@ -13,6 +13,7 @@ from trading_agents.exchange import _build_fvg_features, _build_microstructure_f
 from trading_agents.llm import _trace_date_label
 from trading_agents.main import (
     _guard_market_structure_false_breakout,
+    _load_runner_heartbeat,
     _prefilter_untradeable_candidate,
     _resolve_daily_review,
 )
@@ -159,6 +160,25 @@ class RuntimeRegressionTests(unittest.TestCase):
             self.assertEqual(status["symbol"], "SOL/USDT")
             self.assertEqual(status["detail"], "Missing Bybit Demo API credentials.")
             self.assertIn("updated_at", status)
+
+    def test_load_runner_heartbeat_falls_back_to_runner_status_when_monitor_is_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = build_storage_layout(tmpdir)
+            storage.runner_log.write_text("")
+            _write_runner_status(
+                storage.runner_status,
+                {
+                    "status": "blocked",
+                    "mode": "bybit-demo-perp",
+                    "symbol": "SOL/USDT",
+                    "detail": "Missing Bybit Demo API credentials.",
+                    "updated_at": "2026-07-20T04:26:22.375390+00:00",
+                },
+            )
+            heartbeat = _load_runner_heartbeat(storage)
+            self.assertEqual(heartbeat["timestamp"], "2026-07-20T04:26:22.375390+00:00")
+            self.assertIn("runner blocked", heartbeat["text"])
+            self.assertIn("Missing Bybit Demo API credentials.", heartbeat["text"])
 
     def test_runner_event_counts_skip_large_non_event_lines(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

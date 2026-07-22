@@ -16,6 +16,28 @@
 
 ---
 
+## v1.1.3 - Keep daily reviews alive when the runner is blocked
+
+### Why
+
+- The TradePulse daily stewardship run on Wednesday, July 22, 2026 found that the installed `bybit-demo-perp` runner was still alive but had been explicitly `blocked` since Sunday, July 20, 2026 12:26 PM Asia/Taipei because Bybit demo credentials were missing.
+- TradePulse already persisted that blocker to `service/runner_status.json`, but the noon daily-review path still required a fresh `monitor` heartbeat from `runner.log`.
+- Once the runner entered a blocked no-trade wait state, fresh monitor heartbeats stopped, so `daily_strategy_review-*.json` stopped publishing after Friday, July 18, 2026 exactly when ops failures should have become part of the learning loop.
+
+### What Changed
+
+- `trading_agents/main.py`
+  - `_load_runner_heartbeat(...)` now falls back to `service/runner_status.json` when no fresh monitor heartbeat is available.
+  - Blocked or otherwise explicit runner statuses now provide a timestamped heartbeat surrogate, allowing the noon review path to keep generating daily review artifacts during closed-state ops failures.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage to ensure TradePulse uses the persisted blocked runner status when monitor heartbeats are stale or absent.
+
+### Result
+
+- TradePulse can keep publishing daily reviews for blocked windows instead of silently dropping the review loop after the last healthy monitor heartbeat.
+- Ops failures such as missing exchange credentials remain visible to the learning system and the daily stewardship automation.
+
 ## v1.1.2 - Hold runner in blocked state when demo credentials are missing
 
 ### Why

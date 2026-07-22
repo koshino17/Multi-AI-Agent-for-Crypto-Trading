@@ -1188,7 +1188,7 @@ def _daily_review_already_published(state_path: Path, date_label: str) -> bool:
 
 def _load_runner_heartbeat(storage) -> dict[str, str]:
     if not storage.runner_log.exists():
-        return {"text": "No monitor heartbeat yet", "timestamp": ""}
+        return _load_runner_status_heartbeat(storage)
 
     latest_timestamp = ""
     latest_detail = ""
@@ -1205,11 +1205,25 @@ def _load_runner_heartbeat(storage) -> dict[str, str]:
             latest_timestamp = str(payload.get("timestamp", latest_timestamp))
             latest_detail = str(payload.get("detail", latest_detail))
     except Exception:
-        return {"text": "Unable to read runner heartbeat", "timestamp": ""}
+        return _load_runner_status_heartbeat(storage, fallback_text="Unable to read runner heartbeat")
 
     if not latest_timestamp:
-        return {"text": "No monitor heartbeat yet", "timestamp": ""}
+        return _load_runner_status_heartbeat(storage)
     return {"text": f"{latest_timestamp} ({latest_detail or 'runner heartbeat'})", "timestamp": latest_timestamp}
+
+
+def _load_runner_status_heartbeat(storage, fallback_text: str = "No monitor heartbeat yet") -> dict[str, str]:
+    runner_status = _read_json_file(storage.runner_status)
+    status = str(runner_status.get("status", "")).strip()
+    updated_at = str(runner_status.get("updated_at", "")).strip()
+    if status and updated_at:
+        detail = str(runner_status.get("detail", "")).strip()
+        reason = detail or status.replace("_", " ")
+        return {
+            "text": f"{updated_at} (runner {status}: {reason})",
+            "timestamp": updated_at,
+        }
+    return {"text": fallback_text, "timestamp": ""}
 
 
 def _iter_recent_log_lines(path: Path, max_bytes: int = 16 * 1024 * 1024):
