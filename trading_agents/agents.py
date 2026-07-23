@@ -1633,6 +1633,7 @@ class DailyReviewAgent:
         blocked_reason_counts = daily_summary.get("blocked_reason_counts", {})
         rejection_reason_counts = daily_summary.get("rejection_reason_counts", {})
         financial = daily_summary.get("financial_snapshot", {})
+        runner_status = daily_summary.get("runner_status") or {}
         latest = daily_summary.get("latest") or {}
         external_benchmarks = daily_summary.get("external_benchmarks", {})
         symbol_postmortem = daily_summary.get("symbol_postmortem") or {}
@@ -1654,6 +1655,10 @@ class DailyReviewAgent:
         if not isinstance(focus_benchmark, dict):
             focus_benchmark = {}
         review_history = daily_summary.get("review_history") or []
+        runner_state = str(runner_status.get("status", "") or "").strip().lower()
+        runner_detail = str(runner_status.get("detail", "") or "").strip()
+        runner_reason_code = str(runner_status.get("reason_code", "") or "").strip()
+        freshness_status = str(financial.get("data_freshness_status", "") or "").strip().lower()
 
         operations_summary = (
             f"目前總資產約 {float(financial.get('total_portfolio_value_usdt', 0.0)):.2f} USDT，"
@@ -1666,6 +1671,10 @@ class DailyReviewAgent:
             f"{daily_summary.get('rejected_orders', 0)} 次被交易所拒絕。"
             f"主要動作分布為 {action_line}；主要觀察/選中標的是 {symbol_line}。"
         )
+        if runner_state == "blocked":
+            operations_summary += f" 目前 live runner 處於 blocked 狀態：{runner_detail or 'unknown blocker'}。"
+        elif freshness_status == "stale_runtime_snapshot":
+            operations_summary += " 目前 live runtime snapshot 已過期，這個窗口沒有新鮮的本地決策證據。"
         decision_summary = (
             f"最新決策聚焦在 {latest.get('selected_symbol', 'n/a')}，"
             f"訊號為 {latest.get('idea', {}).get('action', 'n/a')} "
@@ -1730,7 +1739,10 @@ class DailyReviewAgent:
         elif len(selected_symbol_counts) <= 2 and sum(selected_symbol_counts.values()) > 20:
             improvements.append("檢查 selector 是否過度集中在單一標的，必要時加入更明確的分散與輪動規則。")
         if daily_summary.get("accepted_orders", 0) == 0:
-            improvements.append("盤中已有訊號但沒有實際成交時，優先檢查 sizing、最小單額與資金切分邏輯。")
+            if runner_state == "blocked":
+                improvements.append("先修復 live runner blocker，再談 sizing、最小單額或進場品質；目前沒有新鮮交易證據可歸因到策略。")
+            else:
+                improvements.append("盤中已有訊號但沒有實際成交時，優先檢查 sizing、最小單額與資金切分邏輯。")
         if float(financial.get("capital_utilization_pct", 0.0)) < 20:
             improvements.append("資金利用率偏低時，優先維持主策略門檻；若要增加 demo 訓練樣本，應額外設計獨立的 exploration budget，而不是直接降低整體進場標準。")
         if top_benchmark.get("candidate_id") and top_benchmark.get("candidate_id") != "donchian_adx_perp_v1":
@@ -1752,6 +1764,8 @@ class DailyReviewAgent:
             f"動作分布為 {action_line}。"
             f" {symbol_postmortem.get('summary', '')}".strip()
         )
+        if runner_state == "blocked":
+            strategist_review += " 這不是標準的 no-trade 策略日，而是 live runner 沒有產出新決策的營運阻塞日。"
         if not strategist_review.strip():
             strategist_review = "策略面目前沒有足夠資料形成明確結論。"
 
@@ -1760,6 +1774,8 @@ class DailyReviewAgent:
             f"主要 rejected 原因是 {top_reject[0]} ({top_reject[1]})。"
             f" Policy exit 摘要：{policy_exit_diagnostics.get('summary', 'n/a')}。"
         )
+        if runner_state == "blocked":
+            risk_review += f" 另外，runner 啟動狀態是 blocked：{runner_detail or 'unknown blocker'}。"
         if top_block[0] == "projected available balance too low of equity" and top_block[1] > 0:
             risk_review += (
                 f" 其中已有曝險倉位時被擋 {projected_balance_blocked_while_exposed} 次，"
@@ -1790,9 +1806,16 @@ class DailyReviewAgent:
             f" 已接受交易來源分布為 "
             f"{' | '.join(f'{k}={int(v)}' for k, v in (loss_attribution.get('accepted_source_counts') or {}).items()) or 'none'}。"
         )
+        if runner_state == "blocked":
+            execution_review += " 由於 runner blocked，這個窗口的 0 送單不能被解讀成正常的 entry filter 表現。"
 
         if loss_attribution.get("primary_driver"):
             action_items.append(f"明天優先驗證 `{loss_attribution.get('primary_driver')}` 是否仍然主導績效。")
+        if runner_state == "blocked":
+            if runner_reason_code == "missing_exchange_credentials":
+                action_items.append("補上 Bybit demo 憑證或維持 blocked fail-closed；在解除 blocker 前不要把 0 交易解讀成策略保守成功。")
+            else:
+                action_items.append(f"先解除 runner blocker：`{runner_detail or runner_state}`。")
         if top_block[0] != "none" and top_block[1] > 0:
             action_items.append(f"針對 `{top_block[0]}` 做下一輪條件調整與複盤。")
         if benchmark_for_review.get("candidate_id"):
@@ -1816,6 +1839,11 @@ class DailyReviewAgent:
             f"目前最值得追的不是新增更多策略，而是確認 {top_block[0] if top_block[0] != 'none' else '進場/出場品質'} "
             f"是否持續拖累績效，並驗證 benchmark 是否值得升級成更正式的候選。"
         )
+        if runner_state == "blocked":
+            consensus_summary = (
+                "綜合策略、風控、benchmark 與執行四個角度，當前主問題不是 edge 選擇，而是 "
+                f"live runner blocked（{runner_detail or runner_state}）導致這個窗口缺乏新鮮交易證據。"
+            )
 
         return DailyReviewSnapshot(
             title=f"Trading Agents Daily Review - {date_label}",

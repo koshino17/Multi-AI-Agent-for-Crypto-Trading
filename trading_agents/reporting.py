@@ -1189,10 +1189,12 @@ def _build_loss_attribution(
     financial_snapshot: dict[str, Any] | None = None,
     external_benchmarks: dict[str, Any] | None = None,
     focus_symbol: str = "",
+    runner_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     trade_review = trade_review or {}
     financial_snapshot = financial_snapshot or {}
     external_benchmarks = external_benchmarks or {}
+    runner_status = runner_status or {}
     episodes = [item for item in (trade_review.get("episodes") or []) if isinstance(item, dict)]
 
     closed_episodes = [item for item in episodes if str(item.get("status", "")).lower() in {"win", "loss", "flat"}]
@@ -1286,9 +1288,18 @@ def _build_loss_attribution(
 
     total_accepted = sum(int(value) for value in accepted_source_counts.values())
     total_losing_episodes = sum(int(value) for value in losing_by_source.values())
+    runner_state = str(runner_status.get("status", "") or "").strip().lower()
+    runner_detail = str(runner_status.get("detail", "") or "").strip()
+    runner_reason_code = str(runner_status.get("reason_code", "") or "").strip()
 
     primary_driver = ""
-    if total_accepted == 0:
+    if total_accepted == 0 and runner_state == "blocked":
+        primary_driver = (
+            "runner blocked before live trading cycles; missing exchange credentials prevented the window from producing fresh decisions"
+            if runner_reason_code == "missing_exchange_credentials"
+            else "runner blocked before live trading cycles; operational issue prevented fresh decisions"
+        )
+    elif total_accepted == 0:
         primary_driver = "no-trade day; no validated edge passed entry filters"
     elif carry_in_closed and not new_closed and accepted_source_counts.get("policy_exit", 0) >= 1:
         primary_driver = "carry-in position was closed in this window; fees dominated the net result"
@@ -1307,6 +1318,10 @@ def _build_loss_attribution(
 
     observations: list[str] = []
     baseline_strategy_id = str((external_benchmarks or {}).get("baseline_strategy_id", "") or "donchian_adx_perp_v1").strip() or "donchian_adx_perp_v1"
+    if runner_state == "blocked":
+        observations.append(
+            f"runner status was blocked{f': {runner_detail}' if runner_detail else ''}"
+        )
     if total_accepted == 0:
         observations.append("no orders were accepted; today was primarily an observe-only session")
     if carry_in_closed:
@@ -3405,6 +3420,7 @@ def load_daily_summary_data(
         taker_fee_pct=settings.taker_fee_pct,
         position_policy_metadata=position_policy_metadata,
     )
+    summary["runner_status"] = _read_json_file(storage.runner_status)
     summary["equity_curve"] = load_equity_curve_summary(
         mode_scoped_path(storage.equity_curve_history_state, effective_mode),
         mode_scoped_path(storage.equity_curve_svg, effective_mode),
@@ -3445,6 +3461,7 @@ def load_daily_summary_data(
         financial_snapshot=summary["financial_snapshot"],
         external_benchmarks=summary["external_benchmarks"],
         focus_symbol=focus_symbol,
+        runner_status=summary["runner_status"],
     )
     summary["strategy_memory_current"] = _read_json_file(storage.strategy_memory_state)
     summary["strategy_research_latest"] = _load_strategy_research_latest(
@@ -3570,6 +3587,7 @@ def build_daily_summary(
     symbol_postmortem = summary.get("symbol_postmortem") or {}
     market_path_review = summary.get("market_path_review") or {}
     loss_attribution = summary.get("loss_attribution") or {}
+    runner_status = summary.get("runner_status") or {}
     shadow_benchmark_watch = summary.get("shadow_benchmark_watch") or {}
     strategy_research_latest = summary.get("strategy_research_latest") or {}
     daily_strategy_review = summary.get("daily_strategy_review") or {}
@@ -3594,6 +3612,16 @@ def build_daily_summary(
                     f"age={float(financial.get('stale_age_hours', 0.0)):.2f}h"
                 ),
                 f"- Freshness Note: {str(financial.get('data_freshness_reason', '')).strip() or 'n/a'}",
+                "",
+            ]
+        )
+    runner_state = str(runner_status.get("status", "") or "").strip()
+    if runner_state:
+        runner_detail = str(runner_status.get("detail", "") or "").strip() or "n/a"
+        runner_updated = str(runner_status.get("updated_at", "") or "").strip() or "n/a"
+        lines.extend(
+            [
+                f"- Runner Status: {runner_state} | detail={runner_detail} | updated_at={runner_updated}",
                 "",
             ]
         )

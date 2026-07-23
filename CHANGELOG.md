@@ -16,6 +16,36 @@
 
 ---
 
+## v1.1.3 - Label blocked runner windows as ops failures in daily review
+
+### Why
+
+- The Thursday, July 23, 2026 TradePulse stewardship run found that the live `bybit-demo-perp` runner had been `blocked` since Sunday, July 20, 2026 because Bybit demo credentials were missing, while the freshest real live cycles stopped on Friday, July 18, 2026.
+- Daily summaries already flagged `stale_runtime_snapshot`, but the fallback daily review still described those windows as `no-trade day; no validated edge passed entry filters`.
+- That wording misclassified an operations outage as a strategy-quality verdict, which is dangerous for profit research because it can trigger the wrong next experiment.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Added `runner_status` into daily summary data.
+  - Loss attribution now prefers an operations blocker diagnosis when the runner is explicitly `blocked` and no fresh live trades were accepted.
+  - Daily markdown summaries now print the runner status, detail, and update timestamp near the freshness section.
+
+- `trading_agents/agents.py`
+  - The fallback daily review now distinguishes blocked-runtime windows from genuine no-trade strategy windows.
+  - Review summaries, strategist/risk/execution commentary, improvements, and action items now point first to the live runner blocker when that is the real cause of missing evidence.
+
+- `trading_agents/main.py`
+  - The cached daily review fingerprint now includes runner-status and freshness fields so stale blocked-window language is regenerated when the underlying operations state changes.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for blocked-runner fingerprint invalidation and blocked-runner loss attribution.
+
+### Result
+
+- TradePulse daily review artifacts now fail closed toward an operations diagnosis when live trading was blocked before fresh decisions could be produced.
+- Future stewardship runs should stop treating credential outages as proof that entry filters correctly rejected the market.
+
 ## v1.1.2 - Hold runner in blocked state when demo credentials are missing
 
 ### Why

@@ -145,6 +145,7 @@ def _daily_review_fingerprint(daily_summary: dict) -> str:
     financial = daily_summary.get("financial_snapshot") or {}
     loss = daily_summary.get("loss_attribution") or {}
     postmortem = daily_summary.get("symbol_postmortem") or {}
+    runner_status = daily_summary.get("runner_status") or {}
     external_benchmarks = daily_summary.get("external_benchmarks") or {}
     top_by_symbol = external_benchmarks.get("top_by_symbol") or {}
     if not isinstance(top_by_symbol, dict):
@@ -166,9 +167,13 @@ def _daily_review_fingerprint(daily_summary: dict) -> str:
         "daily_pnl_usdt": round(float(financial.get("daily_pnl_usdt", 0.0) or 0.0), 4),
         "realized_pnl_usdt": round(float(financial.get("realized_pnl_usdt", 0.0) or 0.0), 4),
         "daily_fees_usdt": round(float(financial.get("daily_fees_usdt", 0.0) or 0.0), 4),
+        "data_freshness_status": str(financial.get("data_freshness_status", "") or ""),
         "carry_in_closed_count": int(loss.get("carry_in_closed_count", 0) or 0),
         "new_closed_count": int(loss.get("new_closed_count", 0) or 0),
         "primary_driver": str(loss.get("primary_driver", "") or ""),
+        "runner_status": str(runner_status.get("status", "") or ""),
+        "runner_reason_code": str(runner_status.get("reason_code", "") or ""),
+        "runner_detail": str(runner_status.get("detail", "") or ""),
         "focus_symbol": focus_symbol,
         "focus_benchmark_candidate": str(focus_benchmark.get("candidate_id", "") or ""),
         "focus_benchmark_expectancy": round(float(focus_benchmark.get("expectancy_pct", 0.0) or 0.0), 4),

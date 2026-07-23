@@ -12,12 +12,14 @@ from trading_agents.agents import RiskSupervisorAgent, StrategistAgent, Strategy
 from trading_agents.exchange import _build_fvg_features, _build_microstructure_features, _infer_po3_phase_hint
 from trading_agents.llm import _trace_date_label
 from trading_agents.main import (
+    _daily_review_fingerprint,
     _guard_market_structure_false_breakout,
     _prefilter_untradeable_candidate,
     _resolve_daily_review,
 )
 from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyCandidate, StrategyResearchSnapshot, TradeIdea
 from trading_agents.reporting import (
+    _build_loss_attribution,
     _build_financial_snapshot,
     _build_trade_review,
     _load_runner_event_counts,
@@ -849,6 +851,43 @@ class RuntimeRegressionTests(unittest.TestCase):
             self.assertEqual(reviewer.calls, 1)
             self.assertEqual(first.get("review_status"), "fallback_error")
             self.assertEqual(second.get("review_status"), "fallback_error")
+
+    def test_daily_review_fingerprint_changes_when_runner_block_state_changes(self) -> None:
+        summary = {
+            "date_label": "2026-07-22",
+            "mode": "bybit-demo-perp",
+            "financial_snapshot": {
+                "daily_pnl_usdt": 0.0,
+                "realized_pnl_usdt": 0.0,
+                "daily_fees_usdt": 0.0,
+                "data_freshness_status": "stale_runtime_snapshot",
+            },
+            "loss_attribution": {"primary_driver": "no-trade day; no validated edge passed entry filters"},
+            "symbol_postmortem": {"symbol": "SOL/USDT"},
+            "external_benchmarks": {},
+            "strategy_memory_current": {},
+            "runner_status": {"status": "blocked", "reason_code": "missing_exchange_credentials", "detail": "Missing Bybit Demo API credentials."},
+        }
+        blocked_fingerprint = _daily_review_fingerprint(summary)
+        summary["runner_status"] = {"status": "started", "reason_code": "", "detail": "runner active"}
+        started_fingerprint = _daily_review_fingerprint(summary)
+        self.assertNotEqual(blocked_fingerprint, started_fingerprint)
+
+    def test_loss_attribution_prefers_runner_block_for_zero_trade_window(self) -> None:
+        attribution = _build_loss_attribution(
+            [],
+            trade_review={},
+            financial_snapshot={"realized_pnl_usdt": 0.0, "daily_fees_usdt": 0.0},
+            external_benchmarks={},
+            focus_symbol="SOL/USDT",
+            runner_status={
+                "status": "blocked",
+                "reason_code": "missing_exchange_credentials",
+                "detail": "Missing Bybit Demo API credentials.",
+            },
+        )
+        self.assertIn("runner blocked before live trading cycles", attribution["primary_driver"])
+        self.assertIn("runner status was blocked", " ".join(attribution["observations"]))
 
     def test_prefilter_blocks_negative_edge_candidate_before_risk(self) -> None:
         strategy_research = StrategyResearchSnapshot(
