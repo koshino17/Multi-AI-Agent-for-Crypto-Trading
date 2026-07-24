@@ -628,6 +628,100 @@ def _build_market_path_review(records: list[dict[str, Any]], *, focus_symbol: st
     }
 
 
+def _first_symbol_hint(*values: Any) -> str:
+    pattern = re.compile(r"[A-Z0-9]+/[A-Z0-9]+")
+    for value in values:
+        if isinstance(value, dict):
+            direct = str(value.get("symbol", "") or "").strip()
+            if direct:
+                return direct
+        elif isinstance(value, str):
+            text = value.strip()
+            if not text:
+                continue
+            if "/" in text and " " not in text and text == text.upper():
+                return text
+            match = pattern.search(text.upper())
+            if match:
+                return match.group(0)
+    return ""
+
+
+def _resolve_report_focus_symbol(
+    *,
+    settings: Any,
+    records: list[dict[str, Any]],
+    all_records: list[dict[str, Any]],
+    strategy_memory: dict[str, Any] | None = None,
+    runner_status: dict[str, Any] | None = None,
+) -> str:
+    if len(settings.observation_pool) == 1:
+        return str(settings.observation_pool[0]).strip()
+
+    strategy_memory = strategy_memory if isinstance(strategy_memory, dict) else {}
+    controls = strategy_memory.get("controls") if isinstance(strategy_memory.get("controls"), dict) else {}
+    focus_symbols = strategy_memory.get("focus_symbols") if isinstance(strategy_memory.get("focus_symbols"), list) else []
+    runner_status = runner_status if isinstance(runner_status, dict) else {}
+
+    recent_symbols = [
+        str(item.get("selected_symbol", "") or "").strip()
+        for item in reversed(records)
+        if str(item.get("selected_symbol", "") or "").strip()
+    ]
+    historical_symbols = [
+        str(item.get("selected_symbol", "") or "").strip()
+        for item in reversed(all_records)
+        if str(item.get("selected_symbol", "") or "").strip()
+    ]
+
+    candidates: list[Any] = [
+        *recent_symbols,
+        *historical_symbols,
+        controls.get("benchmark_watch_symbol"),
+        controls.get("focus_symbol"),
+        controls.get("live_symbol"),
+        *focus_symbols,
+        runner_status.get("symbol"),
+        getattr(settings, "symbol", ""),
+    ]
+    if settings.observation_pool:
+        candidates.extend(settings.observation_pool)
+    return _first_symbol_hint(*candidates)
+
+
+def _build_empty_market_path_review(symbol: str, reason: str) -> dict[str, Any]:
+    symbol = str(symbol or "").strip()
+    if not symbol:
+        return {}
+    return {
+        "symbol": symbol,
+        "sample_count": 0,
+        "first_price": 0.0,
+        "first_timestamp_local": "",
+        "last_price": 0.0,
+        "last_timestamp_local": "",
+        "high_price": 0.0,
+        "high_timestamp_local": "",
+        "low_price": 0.0,
+        "low_timestamp_local": "",
+        "net_move_pct": 0.0,
+        "range_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "max_drawdown_start_local": "",
+        "max_drawdown_end_local": "",
+        "max_drawdown_start_price": 0.0,
+        "max_drawdown_end_price": 0.0,
+        "max_drawdown_action_counts": {},
+        "max_rebound_pct": 0.0,
+        "max_rebound_start_local": "",
+        "max_rebound_end_local": "",
+        "max_rebound_start_price": 0.0,
+        "max_rebound_end_price": 0.0,
+        "max_rebound_action_counts": {},
+        "summary": reason,
+    }
+
+
 def _annotate_market_path_coverage(
     market_path_review: dict[str, Any],
     *,
@@ -648,7 +742,13 @@ def _annotate_market_path_coverage(
 
     coverage_status = "ok"
     coverage_note = ""
-    if sample_count < 8 or coverage_ratio < 0.5:
+    if sample_count <= 0:
+        coverage_status = "no_samples"
+        coverage_note = (
+            "runner produced no in-window decision price samples for the intended focus symbol; "
+            "treat PO3, POC, VAH, VAL, and FVG path conclusions as unavailable until fresh cycles resume"
+        )
+    elif sample_count < 8 or coverage_ratio < 0.5:
         coverage_status = "low_coverage"
         coverage_note = (
             "runner appears to have produced only a partial decision path inside this noon window; "
@@ -3405,6 +3505,8 @@ def load_daily_summary_data(
         taker_fee_pct=settings.taker_fee_pct,
         position_policy_metadata=position_policy_metadata,
     )
+    summary["runner_status_current"] = _read_json_file(storage.runner_status)
+    summary["strategy_memory_current"] = _read_json_file(storage.strategy_memory_state)
     summary["equity_curve"] = load_equity_curve_summary(
         mode_scoped_path(storage.equity_curve_history_state, effective_mode),
         mode_scoped_path(storage.equity_curve_svg, effective_mode),
@@ -3424,11 +3526,19 @@ def load_daily_summary_data(
         taker_fee_pct=settings.taker_fee_pct,
     )
     summary["policy_exit_diagnostics"] = _build_policy_exit_diagnostics(records, summary["trade_review"])
-    focus_symbol = settings.observation_pool[0] if len(settings.observation_pool) == 1 else ""
+    focus_symbol = _resolve_report_focus_symbol(
+        settings=settings,
+        records=records,
+        all_records=all_records,
+        strategy_memory=summary["strategy_memory_current"],
+        runner_status=summary["runner_status_current"],
+    )
+    summary["focus_symbol"] = focus_symbol
     summary["market_path_review"] = _annotate_market_path_coverage(
-        _build_market_path_review(
-            records,
-            focus_symbol=focus_symbol,
+        _build_market_path_review(records, focus_symbol=focus_symbol)
+        or _build_empty_market_path_review(
+            focus_symbol,
+            f"no local decision-price samples were recorded for {focus_symbol} inside this noon window",
         ),
         window_start=window_start,
         window_end=window_end,
@@ -3446,7 +3556,6 @@ def load_daily_summary_data(
         external_benchmarks=summary["external_benchmarks"],
         focus_symbol=focus_symbol,
     )
-    summary["strategy_memory_current"] = _read_json_file(storage.strategy_memory_state)
     summary["strategy_research_latest"] = _load_strategy_research_latest(
         storage.service / "strategy_research_latest.json"
     )
@@ -4424,7 +4533,7 @@ def _build_ground_truth_payload(summary: dict) -> dict[str, Any]:
         "date_label": summary.get("date_label", ""),
         "window_start": summary.get("window_start", ""),
         "window_end": summary.get("window_end", ""),
-        "focus_symbol": str(market_path.get("symbol", "") or ""),
+        "focus_symbol": str(market_path.get("symbol", "") or summary.get("focus_symbol", "") or ""),
         "market_path_review": market_path,
         "financial_snapshot": {
             "daily_pnl_usdt": float(financial.get("daily_pnl_usdt", 0.0) or 0.0),
@@ -4500,7 +4609,7 @@ def _build_oracle_postmortem_payload(summary: dict) -> dict[str, Any]:
 
     return {
         "date_label": summary.get("date_label", ""),
-        "focus_symbol": str(market_path.get("symbol", "") or ""),
+        "focus_symbol": str(market_path.get("symbol", "") or summary.get("focus_symbol", "") or ""),
         "best_hindsight_candidate_id": hindsight_method,
         "best_hindsight_expectancy_pct": float(best_candidate.get("expectancy_pct", 0.0) or 0.0),
         "best_hindsight_profit_factor": float(best_candidate.get("profit_factor", 0.0) or 0.0),

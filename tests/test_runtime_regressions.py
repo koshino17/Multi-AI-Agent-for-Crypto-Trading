@@ -19,6 +19,7 @@ from trading_agents.main import (
 from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyCandidate, StrategyResearchSnapshot, TradeIdea
 from trading_agents.reporting import (
     _build_financial_snapshot,
+    _build_oracle_postmortem_payload,
     _build_trade_review,
     _load_runner_event_counts,
     write_ground_truth_artifacts,
@@ -802,6 +803,35 @@ class RuntimeRegressionTests(unittest.TestCase):
             oracle_payload = json.loads(Path(oracle_paths["json_path"]).read_text())
             self.assertIn("stale_market_path_evidence", oracle_payload["root_cause_tags"])
             self.assertEqual(oracle_payload["live_gap"]["market_data_coverage_status"], "low_coverage")
+
+    def test_oracle_postmortem_preserves_focus_symbol_when_market_path_has_no_samples(self) -> None:
+        summary = {
+            "date_label": "2026-07-22",
+            "focus_symbol": "SOL/USDT",
+            "market_path_review": {
+                "symbol": "SOL/USDT",
+                "summary": "no local decision-price samples were recorded for SOL/USDT inside this noon window",
+                "sample_count": 0,
+                "coverage_status": "no_samples",
+                "coverage_ratio": 0.0,
+                "max_drawdown_pct": 0.0,
+                "max_rebound_pct": 0.0,
+                "max_drawdown_action_counts": {},
+                "max_rebound_action_counts": {},
+            },
+            "financial_snapshot": {
+                "daily_pnl_usdt": 0.0,
+                "realized_pnl_usdt": 0.0,
+                "daily_fees_usdt": 0.0,
+            },
+            "loss_attribution": {},
+            "strategy_research_latest": {},
+            "benchmark_watch_candidate_current": {},
+        }
+        oracle_payload = _build_oracle_postmortem_payload(summary)
+        self.assertEqual(oracle_payload["focus_symbol"], "SOL/USDT")
+        self.assertIn("stale_market_path_evidence", oracle_payload["root_cause_tags"])
+        self.assertEqual(oracle_payload["live_gap"]["market_data_coverage_status"], "no_samples")
 
     def test_daily_review_fallback_error_is_persisted_without_repeat_for_same_fingerprint(self) -> None:
         class StubReviewer:

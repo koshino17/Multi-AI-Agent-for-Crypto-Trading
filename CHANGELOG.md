@@ -16,6 +16,29 @@
 
 ---
 
+## v1.1.3 - Preserve blocked-window focus symbol in TradePulse review artifacts
+
+### Why
+
+- The Friday, July 24, 2026 TradePulse daily stewardship review found that the noon-window artifacts for Tuesday, July 22, 2026 correctly reported the runner blocker, but the ground-truth and oracle postmortem dropped the live focus symbol entirely.
+- When the runner is blocked and produces zero in-window decisions, `trading_agents.reporting` previously only derived the report focus symbol from a single-item `OBSERVATION_POOL` or from the window's decision records.
+- That made blocked windows collapse to `focus_symbol=""` and `market_path_review={}`, which erased the intended symbol context for PO3/POC/VAH/VAL/FVG review even though TradePulse still had symbol hints in runner status and strategy memory.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Added a conservative report focus-symbol resolver that falls back through recent TradePulse records, strategy-memory controls, runner status, configured symbol, and observation pool.
+  - Blocked/no-record windows now emit an explicit no-samples market-path placeholder instead of silently dropping the focus symbol.
+  - Ground-truth and oracle postmortem payloads now preserve the resolved focus symbol even when there is no in-window decision-price path.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for no-sample oracle payloads so blocked windows keep the intended TradePulse focus symbol and mark market-path evidence as stale.
+
+### Result
+
+- TradePulse daily review artifacts now keep the correct live focus symbol during blocked windows instead of degrading to blank symbol context.
+- PO3-centered review remains explicitly unavailable when no fresh path exists, but the report now says which symbol was affected and why the evidence is stale.
+
 ## v1.1.2 - Hold runner in blocked state when demo credentials are missing
 
 ### Why
