@@ -2613,8 +2613,10 @@ def _stale_financial_snapshot_from_last_record(
     *,
     initial_balance_usdt: float,
     position_policy_metadata: dict[str, dict[str, Any]] | None = None,
+    runner_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     position_policy_metadata = position_policy_metadata or {}
+    runner_status = runner_status or {}
     latest_snapshot = _portfolio_from_record(last_record)
     latest_positions = latest_snapshot.get("positions", [])
     latest_timestamp_local = str(last_record.get("__record_timestamp_local", "")).strip()
@@ -2673,6 +2675,26 @@ def _stale_financial_snapshot_from_last_record(
         )
     holdings.sort(key=lambda item: float(item["value_usdt"]), reverse=True)
     cumulative_pnl = total_portfolio_value - initial_balance_usdt
+    runner_state = str(runner_status.get("status", "")).strip().lower()
+    runner_detail = str(runner_status.get("detail", "")).strip()
+    runner_reason_code = str(runner_status.get("reason_code", "")).strip()
+    runner_updated_at_text = ""
+    runner_updated_at = _parse_timestamp_local(runner_status.get("updated_at"))
+    if runner_updated_at is not None:
+        runner_updated_at_text = runner_updated_at.isoformat()
+    elif str(runner_status.get("updated_at", "")).strip():
+        runner_updated_at_text = str(runner_status.get("updated_at", "")).strip()
+    freshness_status = "stale_runtime_snapshot"
+    freshness_reason = "no local trade/decision records were found inside this report window"
+    if runner_state == "blocked":
+        freshness_status = "blocked_runtime_runner"
+        if runner_reason_code == "missing_exchange_credentials":
+            freshness_status = "blocked_runtime_missing_exchange_credentials"
+        freshness_reason = "runner blocked before fresh records landed"
+        if runner_detail:
+            freshness_reason = f"{freshness_reason}: {runner_detail}"
+        if runner_updated_at_text:
+            freshness_reason = f"{freshness_reason} (status updated {runner_updated_at_text})"
     return {
         "initial_capital_usdt": initial_balance_usdt,
         "day_start_portfolio_value_usdt": total_portfolio_value,
@@ -2703,10 +2725,14 @@ def _stale_financial_snapshot_from_last_record(
         "current_long_exposure_usdt": current_long_exposure,
         "current_short_exposure_usdt": current_short_exposure,
         "holdings": holdings,
-        "data_freshness_status": "stale_runtime_snapshot",
-        "data_freshness_reason": "no local trade/decision records were found inside this report window",
+        "data_freshness_status": freshness_status,
+        "data_freshness_reason": freshness_reason,
         "last_runtime_record_timestamp_local": latest_timestamp_local,
         "stale_age_hours": round(stale_age_hours, 2),
+        "runner_status": runner_state or "unknown",
+        "runner_detail": runner_detail,
+        "runner_reason_code": runner_reason_code,
+        "runner_status_updated_at_local": runner_updated_at_text,
     }
 
 
@@ -2822,6 +2848,7 @@ def _build_financial_snapshot(
     initial_balance_usdt: float,
     taker_fee_pct: float,
     position_policy_metadata: dict[str, dict[str, Any]] | None = None,
+    runner_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     position_policy_metadata = position_policy_metadata or {}
     if not records:
@@ -2831,6 +2858,7 @@ def _build_financial_snapshot(
                 latest_record,
                 initial_balance_usdt=initial_balance_usdt,
                 position_policy_metadata=position_policy_metadata,
+                runner_status=runner_status,
             )
         return {
             "initial_capital_usdt": initial_balance_usdt,
@@ -3392,6 +3420,7 @@ def load_daily_summary_data(
     records = _filter_records_by_mode(_load_daily_records(trade_logs_dir, date_label), effective_mode)
     all_records = _filter_records_by_mode(_load_all_records(trade_logs_dir), effective_mode)
     runner_event_counts = _load_runner_event_counts(runner_log_path, date_label)
+    runner_status = _read_json_file(storage.runner_status)
     position_policy_metadata = _load_position_policy_metadata(storage.position_policy_state, effective_mode)
     summary = summarize_daily_records(records, runner_event_counts)
     summary["date_label"] = date_label
@@ -3404,7 +3433,9 @@ def load_daily_summary_data(
         initial_balance_usdt=settings.initial_balance_usdt,
         taker_fee_pct=settings.taker_fee_pct,
         position_policy_metadata=position_policy_metadata,
+        runner_status=runner_status,
     )
+    summary["runner_status"] = runner_status
     summary["equity_curve"] = load_equity_curve_summary(
         mode_scoped_path(storage.equity_curve_history_state, effective_mode),
         mode_scoped_path(storage.equity_curve_svg, effective_mode),

@@ -160,6 +160,42 @@ class RuntimeRegressionTests(unittest.TestCase):
             self.assertEqual(status["detail"], "Missing Bybit Demo API credentials.")
             self.assertIn("updated_at", status)
 
+    def test_stale_financial_snapshot_uses_blocked_runner_freshness_when_runtime_is_blocked(self) -> None:
+        record = {
+            "__record_timestamp_local": "2026-07-18T12:15:42.646522+08:00",
+            "selected_symbol": "SOL/USDT",
+            "last_price": 75.3,
+            "account": {
+                "market_type": "perp",
+                "base_symbol": "SOL",
+                "position_side": "flat",
+                "net_position": 0.0,
+                "free_usdt": 440.6961,
+                "available_balance_usdt": 440.6961,
+                "total_equity_usdt": 440.7056,
+                "cum_realized_pnl_usdt": 0.0,
+            },
+        }
+        snapshot = _build_financial_snapshot(
+            [],
+            [record],
+            initial_balance_usdt=500.0,
+            taker_fee_pct=0.001,
+            runner_status={
+                "status": "blocked",
+                "detail": "Missing Bybit Demo API credentials.",
+                "reason_code": "missing_exchange_credentials",
+                "updated_at": "2026-07-20T04:26:22.375390+00:00",
+            },
+        )
+        self.assertEqual(
+            snapshot["data_freshness_status"],
+            "blocked_runtime_missing_exchange_credentials",
+        )
+        self.assertIn("Missing Bybit Demo API credentials.", snapshot["data_freshness_reason"])
+        self.assertEqual(snapshot["runner_status"], "blocked")
+        self.assertEqual(snapshot["runner_reason_code"], "missing_exchange_credentials")
+
     def test_runner_event_counts_skip_large_non_event_lines(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             runner_log = Path(tmpdir) / "runner.log"

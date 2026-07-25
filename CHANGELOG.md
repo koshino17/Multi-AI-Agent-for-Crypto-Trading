@@ -16,6 +16,29 @@
 
 ---
 
+## v1.1.3 - Label blocked live windows explicitly in daily reports
+
+### Why
+
+- The TradePulse daily stewardship run on Saturday, July 25, 2026 found that the installed `bybit-demo-perp` runtime still had no Bybit demo credentials in `~/Library/Application Support/TradePulse/runtime/.env`, so the runner remained correctly fail-closed.
+- Recent noon-to-noon reports such as Tuesday, July 22, 2026 already mentioned the missing-credentials blocker in later sections, but the top-level freshness label still said `stale_runtime_snapshot`.
+- That generic freshness tag made blocked live windows look like ordinary stale evidence instead of an operational blocker, which weakens daily diagnosis and RL-style policy updates.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Daily financial snapshots now read the managed `service/runner_status.json` artifact during summary generation.
+  - When a report window has no fresh in-window records and the runner is blocked, the top-level freshness status now escalates from generic stale snapshot to an explicit blocked-runtime label.
+  - Missing-exchange-credentials blockers are now called out directly in the freshness reason, including the blocked status timestamp when available.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for stale-window reporting when the runner status is blocked due to missing exchange credentials.
+
+### Result
+
+- Future TradePulse noon-window reviews should distinguish "no evidence because the runner is blocked" from normal stale or low-coverage windows.
+- This makes ops blockers easier to prioritize before interpreting strategy inactivity as a market-fit or entry-filter success.
+
 ## v1.1.2 - Hold runner in blocked state when demo credentials are missing
 
 ### Why
