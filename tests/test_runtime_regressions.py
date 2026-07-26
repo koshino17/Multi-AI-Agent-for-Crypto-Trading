@@ -18,6 +18,8 @@ from trading_agents.main import (
 )
 from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyCandidate, StrategyResearchSnapshot, TradeIdea
 from trading_agents.reporting import (
+    _fetch_public_market_path_review,
+    _resolve_focus_symbol,
     _build_financial_snapshot,
     _build_trade_review,
     _load_runner_event_counts,
@@ -802,6 +804,53 @@ class RuntimeRegressionTests(unittest.TestCase):
             oracle_payload = json.loads(Path(oracle_paths["json_path"]).read_text())
             self.assertIn("stale_market_path_evidence", oracle_payload["root_cause_tags"])
             self.assertEqual(oracle_payload["live_gap"]["market_data_coverage_status"], "low_coverage")
+
+    def test_focus_symbol_falls_back_to_runner_status_when_window_has_no_records(self) -> None:
+        settings = SimpleNamespace(observation_pool=[], symbol="BTC/USDT")
+        chosen = _resolve_focus_symbol(
+            records=[],
+            settings=settings,
+            runner_status={"symbol": "SOL/USDT"},
+            strategy_research_latest={"focus_symbol": "ETH/USDT"},
+            external_benchmarks={},
+        )
+        self.assertEqual(chosen, "SOL/USDT")
+
+    def test_public_market_path_review_builds_full_window_summary(self) -> None:
+        payload = {
+            "retCode": 0,
+            "result": {
+                "list": [
+                    ["1747024200000", "102", "103", "101", "102.5", "1", "1"],
+                    ["1747023300000", "100", "102", "99", "101", "1", "1"],
+                    ["1747022400000", "101", "101.5", "98", "100", "1", "1"],
+                ]
+            },
+        }
+
+        class StubResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(payload).encode("utf-8")
+
+        window_start = datetime.fromisoformat("2025-05-12T12:00:00+08:00")
+        window_end = datetime.fromisoformat("2025-05-12T12:30:00+08:00")
+        with mock.patch("trading_agents.reporting.urlopen", return_value=StubResponse()):
+            review = _fetch_public_market_path_review(
+                focus_symbol="SOL/USDT",
+                window_start=window_start,
+                window_end=window_end,
+            )
+        self.assertEqual(review["symbol"], "SOL/USDT")
+        self.assertEqual(review["sample_count"], 3)
+        self.assertEqual(review["source"], "public_bybit_ohlcv")
+        self.assertIn("public Bybit OHLCV", review["source_note"])
+        self.assertAlmostEqual(review["net_move_pct"], 2.5, places=4)
 
     def test_daily_review_fallback_error_is_persisted_without_repeat_for_same_fingerprint(self) -> None:
         class StubReviewer:

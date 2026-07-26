@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from statistics import fmean
 from typing import Any
+from urllib.parse import urlencode
+from urllib.request import urlopen
 from zoneinfo import ZoneInfo
 
 
@@ -529,7 +531,11 @@ def _build_market_path_review(records: list[dict[str, Any]], *, focus_symbol: st
                 "source": _decision_source(item),
             }
         )
-    if len(samples) < 2:
+    return _summarize_market_path_samples(chosen_symbol, samples)
+
+
+def _summarize_market_path_samples(chosen_symbol: str, samples: list[dict[str, Any]]) -> dict[str, Any]:
+    if not chosen_symbol or len(samples) < 2:
         return {}
 
     samples.sort(key=lambda item: item["timestamp_dt"])
@@ -573,7 +579,7 @@ def _build_market_path_review(records: list[dict[str, Any]], *, focus_symbol: st
         counts: Counter[str] = Counter()
         for sample in samples:
             if start_dt <= sample["timestamp_dt"] <= end_dt:
-                counts[sample["action"]] += 1
+                counts[str(sample.get("action", "")).strip().lower() or "unknown"] += 1
         return dict(counts)
 
     drawdown_actions = _window_action_counts(max_drawdown_start["timestamp_dt"], max_drawdown_end["timestamp_dt"])
@@ -626,6 +632,98 @@ def _build_market_path_review(records: list[dict[str, Any]], *, focus_symbol: st
         "max_rebound_action_counts": rebound_actions,
         "summary": summary,
     }
+
+
+def _fetch_public_market_path_review(
+    *,
+    focus_symbol: str,
+    window_start: datetime,
+    window_end: datetime,
+    timeframe_minutes: int = 15,
+) -> dict[str, Any]:
+    chosen_symbol = str(focus_symbol or "").strip()
+    if not chosen_symbol:
+        return {}
+    interval = str(max(int(timeframe_minutes), 1))
+    window_minutes = max(int((window_end - window_start).total_seconds() / 60.0), timeframe_minutes)
+    limit = max(8, min(200, int(window_minutes / max(timeframe_minutes, 1)) + 8))
+    params = urlencode(
+        {
+            "category": "linear",
+            "symbol": chosen_symbol.replace("/", ""),
+            "interval": interval,
+            "limit": limit,
+            "end": int(window_end.astimezone(timezone.utc).timestamp() * 1000),
+        }
+    )
+    try:
+        with urlopen(f"https://api.bybit.com/v5/market/kline?{params}", timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return {}
+    if payload.get("retCode") not in (0, None):
+        return {}
+    raw_rows = ((payload.get("result") or {}).get("list")) or []
+    if not isinstance(raw_rows, list) or len(raw_rows) < 2:
+        return {}
+
+    samples: list[dict[str, Any]] = []
+    for row in reversed(raw_rows):
+        if not isinstance(row, list) or len(row) < 5:
+            continue
+        try:
+            stamp_ms = int(str(row[0]))
+            close_price = float(row[4])
+        except (TypeError, ValueError):
+            continue
+        timestamp_dt = datetime.fromtimestamp(stamp_ms / 1000.0, tz=timezone.utc).astimezone(LOCAL_TZ)
+        if timestamp_dt < window_start or timestamp_dt > window_end:
+            continue
+        samples.append(
+            {
+                "timestamp_local": timestamp_dt.isoformat(),
+                "timestamp_dt": timestamp_dt,
+                "price": close_price,
+                "action": "market",
+                "source": "public_bybit_ohlcv",
+            }
+        )
+    review = _summarize_market_path_samples(chosen_symbol, samples)
+    if not review:
+        return {}
+    review["source"] = "public_bybit_ohlcv"
+    review["source_note"] = "filled from public Bybit OHLCV because local TradePulse decision logs were empty for this window"
+    return review
+
+
+def _resolve_focus_symbol(
+    *,
+    records: list[dict[str, Any]],
+    settings: Any,
+    runner_status: dict[str, Any] | None = None,
+    strategy_research_latest: dict[str, Any] | None = None,
+    external_benchmarks: dict[str, Any] | None = None,
+) -> str:
+    observation_pool = list(getattr(settings, "observation_pool", []) or [])
+    if len(observation_pool) == 1 and str(observation_pool[0]).strip():
+        return str(observation_pool[0]).strip()
+    symbol_counts = Counter(str(item.get("selected_symbol", "")).strip() for item in records if item.get("selected_symbol"))
+    symbol_counts = Counter({symbol: count for symbol, count in symbol_counts.items() if symbol})
+    if symbol_counts:
+        return symbol_counts.most_common(1)[0][0]
+    runner_symbol = str((runner_status or {}).get("symbol", "") or "").strip()
+    if runner_symbol:
+        return runner_symbol
+    explicit_symbol = str(getattr(settings, "symbol", "") or "").strip()
+    if explicit_symbol:
+        return explicit_symbol
+    research_symbol = str((strategy_research_latest or {}).get("focus_symbol", "") or "").strip()
+    if research_symbol:
+        return research_symbol
+    benchmark_symbols = list((external_benchmarks or {}).get("symbols") or [])
+    if len(benchmark_symbols) == 1 and str(benchmark_symbols[0]).strip():
+        return str(benchmark_symbols[0]).strip()
+    return ""
 
 
 def _annotate_market_path_coverage(
@@ -3414,6 +3512,13 @@ def load_daily_summary_data(
         benchmark_reports_dir=storage.benchmark_reports,
         window_end=window_end,
     )
+    summary["strategy_research_latest"] = _load_strategy_research_latest(
+        storage.service / "strategy_research_latest.json"
+    )
+    runner_status = _read_json_file(storage.runner_status)
+    if not isinstance(runner_status, dict):
+        runner_status = {}
+    summary["runner_status"] = runner_status
     summary["trade_review"] = _build_trade_review(
         records,
         financial_snapshot=summary["financial_snapshot"],
@@ -3424,12 +3529,25 @@ def load_daily_summary_data(
         taker_fee_pct=settings.taker_fee_pct,
     )
     summary["policy_exit_diagnostics"] = _build_policy_exit_diagnostics(records, summary["trade_review"])
-    focus_symbol = settings.observation_pool[0] if len(settings.observation_pool) == 1 else ""
-    summary["market_path_review"] = _annotate_market_path_coverage(
-        _build_market_path_review(
-            records,
+    focus_symbol = _resolve_focus_symbol(
+        records=records,
+        settings=settings,
+        runner_status=runner_status,
+        strategy_research_latest=summary["strategy_research_latest"],
+        external_benchmarks=summary["external_benchmarks"],
+    )
+    market_path_review = _build_market_path_review(
+        records,
+        focus_symbol=focus_symbol,
+    )
+    if not market_path_review and focus_symbol:
+        market_path_review = _fetch_public_market_path_review(
             focus_symbol=focus_symbol,
-        ),
+            window_start=window_start,
+            window_end=window_end,
+        )
+    summary["market_path_review"] = _annotate_market_path_coverage(
+        market_path_review,
         window_start=window_start,
         window_end=window_end,
     )
@@ -3447,9 +3565,6 @@ def load_daily_summary_data(
         focus_symbol=focus_symbol,
     )
     summary["strategy_memory_current"] = _read_json_file(storage.strategy_memory_state)
-    summary["strategy_research_latest"] = _load_strategy_research_latest(
-        storage.service / "strategy_research_latest.json"
-    )
     summary["shadow_benchmark_watch"] = _build_shadow_benchmark_watch(
         summary["external_benchmarks"],
         focus_symbol=focus_symbol or str(summary.get("symbol_postmortem", {}).get("symbol", "")).strip(),

@@ -16,6 +16,31 @@
 
 ---
 
+## v1.1.3 - Recover blocked-window market path from public candles
+
+### Why
+
+- The TradePulse noon review for Friday, July 25, 2026 correctly detected that the live `bybit-demo-perp` runtime was blocked, but the generated ground-truth and oracle postmortem artifacts still collapsed to `n/a` because there were no fresh decision logs inside the window.
+- When the runtime is blocked on missing Bybit demo credentials, TradePulse still has enough public market data to reconstruct the noon-to-noon path for the live focus symbol and keep the daily review useful for PO3 and benchmark research.
+- The first fallback attempt also surfaced a symbol-priority bug: when no records existed, reporting could fall back to the repo default symbol instead of the blocked live runner's actual symbol.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Added a focus-symbol resolver that prefers live runner status when the reviewed window has no local decision records.
+  - Added a public Bybit kline fallback that reconstructs the full noon-window market path from unauthenticated OHLCV when local trade logs are empty.
+  - Refactored market-path summarization so both local-decision samples and public candle fallback share the same drawdown/rebound summary logic.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for runner-status symbol fallback.
+  - Added regression coverage for the public market-path reconstruction helper.
+
+### Result
+
+- TradePulse daily ground-truth and oracle artifacts stay actionable during blocked runtime windows instead of degenerating into blank `n/a` market context.
+- The July 25, 2026 noon-window review now reconstructs the full `SOL/USDT` public market path even though the live runner produced no fresh decisions.
+- This improves research continuity without weakening the fail-closed blocked state for missing exchange credentials.
+
 ## v1.1.2 - Hold runner in blocked state when demo credentials are missing
 
 ### Why
