@@ -21,6 +21,8 @@ from trading_agents.reporting import (
     _build_financial_snapshot,
     _build_trade_review,
     _load_runner_event_counts,
+    build_daily_summary,
+    load_daily_summary_data,
     write_ground_truth_artifacts,
     write_oracle_postmortem_artifacts,
 )
@@ -159,6 +161,60 @@ class RuntimeRegressionTests(unittest.TestCase):
             self.assertEqual(status["symbol"], "SOL/USDT")
             self.assertEqual(status["detail"], "Missing Bybit Demo API credentials.")
             self.assertIn("updated_at", status)
+
+    def test_daily_summary_surfaces_runner_block_and_stale_notion_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = build_storage_layout(tmpdir)
+            _write_runner_status(
+                storage.runner_status,
+                {
+                    "status": "blocked",
+                    "mode": "bybit-demo-perp",
+                    "symbol": "SOL/USDT",
+                    "detail": "Missing Bybit Demo API credentials.",
+                    "reason_code": "missing_exchange_credentials",
+                    "updated_at": "2026-07-20T04:26:22+00:00",
+                },
+            )
+            storage.notion_daily_review_state.write_text(
+                json.dumps(
+                    {
+                        "date_label": "2026-07-18",
+                        "page_id": "notion-page-123",
+                    }
+                )
+            )
+            settings = SimpleNamespace(
+                trading_mode="bybit-demo-perp",
+                data_root=tmpdir,
+                initial_balance_usdt=500.0,
+                taker_fee_pct=0.001,
+                observation_pool=["SOL/USDT"],
+                external_ai_review_enabled=False,
+            )
+            with mock.patch("trading_agents.config.load_settings", return_value=settings):
+                summary = load_daily_summary_data(
+                    storage.trade_logs,
+                    "2026-07-25",
+                    storage.runner_log,
+                    trading_mode="bybit-demo-perp",
+                    storage_root=tmpdir,
+                )
+                content = build_daily_summary(
+                    storage.trade_logs,
+                    "2026-07-25",
+                    storage.runner_log,
+                    trading_mode="bybit-demo-perp",
+                    storage_root=tmpdir,
+                )
+
+            self.assertEqual(summary["runner_health"]["status"], "blocked")
+            self.assertEqual(summary["runner_health"]["reason_code"], "missing_exchange_credentials")
+            self.assertEqual(summary["notion_review_status"]["status"], "stale")
+            self.assertEqual(summary["notion_review_status"]["lag_windows"], 7)
+            self.assertIn("- Runner Health: blocked", content)
+            self.assertIn("Missing Bybit Demo API credentials.", content)
+            self.assertIn("- Notion Daily Review: stale | latest_published_window=2026-07-18 | lag=7 windows", content)
 
     def test_runner_event_counts_skip_large_non_event_lines(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
