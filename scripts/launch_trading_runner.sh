@@ -11,7 +11,10 @@ fi
 
 env_payload="$(
 "$PYTHON_BIN" - <<'PY'
+from datetime import datetime, timezone
+import json
 import os
+from pathlib import Path
 import shlex
 import sys
 from trading_agents.config import load_settings
@@ -20,6 +23,28 @@ from trading_agents.storage import build_storage_layout, mode_storage_root
 required = ("TRADING_MODE", "SYMBOL", "OBSERVATION_POOL")
 missing = [name for name in required if not os.getenv(name)]
 if missing:
+    mode = os.getenv("TRADING_MODE", "bybit-demo-perp")
+    data_root = os.getenv("DATA_ROOT") or str(
+        Path.home() / "Library" / "Application Support" / "TradePulse" / "state"
+    )
+    storage = build_storage_layout(str(mode_storage_root(data_root, mode)))
+    detail = "Runtime .env missing required launch keys: " + ", ".join(missing)
+    storage.runner_status.write_text(
+        json.dumps(
+            {
+                "status": "blocked",
+                "mode": mode,
+                "symbol": os.getenv("SYMBOL", ""),
+                "detail": detail,
+                "reason_code": "missing_runtime_env",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     sys.stderr.write(
         "TradePulse launcher refused to start because runtime .env is missing: "
         + ", ".join(missing)

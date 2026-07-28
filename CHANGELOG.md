@@ -16,6 +16,28 @@
 
 ---
 
+## v1.1.3 - Persist blocked status when runtime launch env is incomplete
+
+### Why
+
+- The Tuesday, July 28, 2026 TradePulse stewardship run confirmed the live `bybit-demo-perp` runtime had been stale since Sunday, July 20, 2026 because demo credentials were missing, while `launchd` restart attempts also surfaced `.env` bootstrap errors.
+- TradePulse already failed closed once `trading_agents.runner` started, but if the managed runtime `.env` lost required launch keys before Python reached the runner, the launcher exited without refreshing `service/runner_status.json`.
+- That left a gap where the web surface and follow-on noon reviews could inherit an old runner status instead of the current `missing_runtime_env` blocker.
+
+### What Changed
+
+- `scripts/launch_trading_runner.sh`
+  - The launcher now writes a machine-readable blocked status before exiting when `TRADING_MODE`, `SYMBOL`, or `OBSERVATION_POOL` are missing from the runtime `.env`.
+  - The blocked payload records `reason_code=missing_runtime_env` and uses the managed TradePulse state root even when only partial env is available.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression assertions so the launcher failure path keeps persisting blocked state metadata.
+
+### Result
+
+- TradePulse now reports incomplete runtime bootstrap env as an explicit blocked state instead of silently leaving stale runner health behind.
+- Future noon-window reviews can distinguish missing credentials from missing launch metadata with less ambiguity.
+
 ## v1.1.2 - Hold runner in blocked state when demo credentials are missing
 
 ### Why
