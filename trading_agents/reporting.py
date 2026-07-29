@@ -2183,6 +2183,52 @@ def _read_json_file(path: Path | None) -> dict[str, Any]:
     return payload
 
 
+def _build_runner_health_summary(runner_status: dict[str, Any], *, window_end: datetime) -> dict[str, Any]:
+    if not isinstance(runner_status, dict) or not runner_status:
+        return {}
+    updated_at = _parse_timestamp_local(runner_status.get("updated_at"))
+    age_hours = 0.0
+    updated_at_local = ""
+    if updated_at is not None:
+        updated_at_local = updated_at.isoformat()
+        age_hours = max((window_end - updated_at).total_seconds() / 3600.0, 0.0)
+    return {
+        "status": str(runner_status.get("status", "")).strip() or "unknown",
+        "mode": str(runner_status.get("mode", "")).strip(),
+        "symbol": str(runner_status.get("symbol", "")).strip(),
+        "detail": str(runner_status.get("detail", "")).strip(),
+        "reason_code": str(runner_status.get("reason_code", "")).strip(),
+        "updated_at_local": updated_at_local,
+        "age_hours_vs_window_end": round(age_hours, 2),
+    }
+
+
+def _build_notion_review_summary(notion_state: dict[str, Any], *, date_label: str) -> dict[str, Any]:
+    if not isinstance(notion_state, dict) or not notion_state:
+        return {"status": "missing", "latest_published_window": "", "lag_windows": 0, "page_id": ""}
+    latest_window = str(notion_state.get("date_label", "")).strip()
+    page_id = str(notion_state.get("page_id", "")).strip()
+    lag_windows = 0
+    status = "unknown"
+    if latest_window:
+        try:
+            latest_end, current_end = (
+                datetime.strptime(label, "%Y-%m-%d").date() for label in (latest_window, date_label)
+            )
+            lag_windows = max((current_end - latest_end).days, 0)
+            status = "fresh" if lag_windows == 0 else "stale"
+        except ValueError:
+            status = "invalid_state"
+    else:
+        status = "missing"
+    return {
+        "status": status,
+        "latest_published_window": latest_window,
+        "lag_windows": lag_windows,
+        "page_id": page_id,
+    }
+
+
 def active_report_date_label(now: datetime | None = None, anchor_hour: int = REPORT_WINDOW_ANCHOR_HOUR_LOCAL) -> str:
     local_now = now.astimezone(LOCAL_TZ) if now is not None else _local_now()
     anchor_today = local_now.replace(hour=anchor_hour, minute=0, second=0, microsecond=0)
@@ -3447,6 +3493,14 @@ def load_daily_summary_data(
         focus_symbol=focus_symbol,
     )
     summary["strategy_memory_current"] = _read_json_file(storage.strategy_memory_state)
+    summary["runner_health"] = _build_runner_health_summary(
+        _read_json_file(storage.runner_status),
+        window_end=window_end,
+    )
+    summary["notion_review_status"] = _build_notion_review_summary(
+        _read_json_file(storage.notion_daily_review_state),
+        date_label=date_label,
+    )
     summary["strategy_research_latest"] = _load_strategy_research_latest(
         storage.service / "strategy_research_latest.json"
     )
@@ -3579,6 +3633,8 @@ def build_daily_summary(
     agent_trace_archive = summary.get("agent_trace_archive") or {}
     ground_truth_artifact = summary.get("ground_truth_artifact") or {}
     oracle_postmortem_artifact = summary.get("oracle_postmortem_artifact") or {}
+    runner_health = summary.get("runner_health") or {}
+    notion_review_status = summary.get("notion_review_status") or {}
 
     lines = [f"# Daily Summary: {date_label}", ""]
     if summary_mode:
@@ -3594,6 +3650,41 @@ def build_daily_summary(
                     f"age={float(financial.get('stale_age_hours', 0.0)):.2f}h"
                 ),
                 f"- Freshness Note: {str(financial.get('data_freshness_reason', '')).strip() or 'n/a'}",
+                "",
+            ]
+        )
+    if runner_health:
+        lines.extend(
+            [
+                (
+                    f"- Runner Health: {runner_health.get('status', 'unknown')} | "
+                    f"updated={runner_health.get('updated_at_local', 'n/a') or 'n/a'} | "
+                    f"lag_vs_window_end={float(runner_health.get('age_hours_vs_window_end', 0.0)):.2f}h"
+                ),
+                (
+                    f"- Runner Health Note: "
+                    f"{runner_health.get('detail', 'n/a') or 'n/a'}"
+                    + (
+                        f" (reason_code={runner_health.get('reason_code')})"
+                        if runner_health.get("reason_code")
+                        else ""
+                    )
+                ),
+                "",
+            ]
+        )
+    if notion_review_status:
+        lines.extend(
+            [
+                (
+                    f"- Notion Daily Review: {notion_review_status.get('status', 'unknown')} | "
+                    f"latest_published_window={notion_review_status.get('latest_published_window', 'n/a') or 'n/a'} | "
+                    f"lag={int(notion_review_status.get('lag_windows', 0) or 0)} windows"
+                ),
+                (
+                    f"- Notion Review Note: page_id="
+                    f"{notion_review_status.get('page_id', 'n/a') or 'n/a'}"
+                ),
                 "",
             ]
         )

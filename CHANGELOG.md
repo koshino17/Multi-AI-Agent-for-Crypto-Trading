@@ -16,6 +16,29 @@
 
 ---
 
+## v1.1.3 - Surface blocked runner and stale Notion state in daily reports
+
+### Why
+
+- The TradePulse daily stewardship review on Monday, July 27, 2026 found that the installed `bybit-demo-perp` runtime was still blocked by missing Bybit demo credentials, with the last runner status update on Sunday, July 20, 2026 UTC.
+- The latest completed daily summary for Friday, July 25, 2026 only said the runtime snapshot was stale and had no local decisions, which hid the more important diagnosis: the live loop was not cycling because startup had been blocked for multiple days.
+- The local Notion daily-review state was also stale at Friday, July 18, 2026, but the report did not expose that review-pipeline freshness gap either.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Added runner-health summary enrichment from `service/runner_status.json`.
+  - Added Notion daily-review freshness enrichment from `service/notion_daily_review.json`.
+  - Daily summaries now print runner blocked state, blocker reason, and Notion review lag near the top of the report so ops failures are visible before strategy interpretation.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage that a blocked runner plus stale Notion review state appears in the generated daily summary.
+
+### Result
+
+- TradePulse daily reviews now distinguish "no trades happened" from "the live loop was operationally blocked".
+- Noon-window reports give a clearer basis for deciding when the correct next step is an ops fix instead of strategy research.
+
 ## v1.1.2 - Hold runner in blocked state when demo credentials are missing
 
 ### Why
