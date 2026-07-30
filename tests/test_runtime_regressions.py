@@ -19,8 +19,11 @@ from trading_agents.main import (
 from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyCandidate, StrategyResearchSnapshot, TradeIdea
 from trading_agents.reporting import (
     _build_financial_snapshot,
+    _build_market_path_review,
+    _build_symbol_postmortem,
     _build_trade_review,
     _load_runner_event_counts,
+    _resolve_daily_focus_symbol,
     build_daily_summary,
     load_daily_summary_data,
     write_ground_truth_artifacts,
@@ -823,6 +826,66 @@ class RuntimeRegressionTests(unittest.TestCase):
             oracle_payload = json.loads(Path(oracle_paths["json_path"]).read_text())
             self.assertIn("carry_in_drag", oracle_payload["root_cause_tags"])
             self.assertIn("missed_rebound_participation", oracle_payload["root_cause_tags"])
+
+    def test_multi_symbol_daily_focus_prefers_research_focus_for_market_path(self) -> None:
+        settings = SimpleNamespace(
+            observation_pool=["SOL/USDT", "AVAX/USDT", "LINK/USDT"],
+            symbol="SOL/USDT",
+        )
+        records = [
+            {
+                "selected_symbol": "AVAX/USDT",
+                "last_price": 24.0,
+                "timestamp": "2026-07-29T12:00:00+08:00",
+                "__record_timestamp_local": "2026-07-29T12:00:00+08:00",
+                "idea": {"action": "hold"},
+                "decision_source": "base_strategy",
+            },
+            {
+                "selected_symbol": "SOL/USDT",
+                "last_price": 150.0,
+                "timestamp": "2026-07-29T12:15:00+08:00",
+                "__record_timestamp_local": "2026-07-29T12:15:00+08:00",
+                "idea": {"action": "hold"},
+                "decision_source": "base_strategy",
+            },
+            {
+                "selected_symbol": "SOL/USDT",
+                "last_price": 153.0,
+                "timestamp": "2026-07-29T18:00:00+08:00",
+                "__record_timestamp_local": "2026-07-29T18:00:00+08:00",
+                "idea": {"action": "hold"},
+                "decision_source": "base_strategy",
+            },
+        ]
+        external_benchmarks = {
+            "top_by_symbol": {
+                "SOL/USDT": {"candidate_id": "grid_range_reversion_maker_v1"},
+            }
+        }
+        strategy_research_latest = {
+            "focus_symbol": "SOL/USDT",
+        }
+
+        focus_symbol = _resolve_daily_focus_symbol(
+            settings,
+            records,
+            external_benchmarks=external_benchmarks,
+            strategy_research_latest=strategy_research_latest,
+        )
+        market_path = _build_market_path_review(records, focus_symbol=focus_symbol)
+        symbol_postmortem = _build_symbol_postmortem(
+            records,
+            focus_symbol=focus_symbol,
+            external_benchmarks=external_benchmarks,
+            market_path_review=market_path,
+        )
+
+        self.assertEqual(focus_symbol, "SOL/USDT")
+        self.assertEqual(market_path["symbol"], "SOL/USDT")
+        self.assertEqual(market_path["sample_count"], 2)
+        self.assertEqual(symbol_postmortem["symbol"], "SOL/USDT")
+        self.assertEqual(symbol_postmortem["action_counts"]["hold"], 2)
 
     def test_oracle_postmortem_marks_low_market_data_coverage(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

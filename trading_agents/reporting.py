@@ -37,6 +37,42 @@ STAGE_LABELS = {
 }
 
 
+def _resolve_daily_focus_symbol(
+    settings: Any,
+    records: list[dict[str, Any]],
+    *,
+    external_benchmarks: dict[str, Any] | None = None,
+    strategy_research_latest: dict[str, Any] | None = None,
+) -> str:
+    observation_pool = list(getattr(settings, "observation_pool", []) or [])
+    if len(observation_pool) == 1 and str(observation_pool[0]).strip():
+        return str(observation_pool[0]).strip()
+
+    research_focus = str((strategy_research_latest or {}).get("focus_symbol", "") or "").strip()
+    if research_focus:
+        return research_focus
+
+    top_by_symbol = (external_benchmarks or {}).get("top_by_symbol") or {}
+    if isinstance(top_by_symbol, dict):
+        symbol_keys = [str(symbol).strip() for symbol in top_by_symbol.keys() if str(symbol).strip()]
+        if len(symbol_keys) == 1:
+            return symbol_keys[0]
+
+    symbol_counts = Counter(
+        str(item.get("selected_symbol", "")).strip()
+        for item in records
+        if str(item.get("selected_symbol", "")).strip()
+    )
+    if symbol_counts:
+        return symbol_counts.most_common(1)[0][0]
+
+    primary_symbol = str(getattr(settings, "symbol", "") or "").strip()
+    if primary_symbol:
+        return primary_symbol
+
+    return str(observation_pool[0]).strip() if observation_pool else ""
+
+
 def _normalize_blocked_reason(reason: str) -> str:
     normalized = (reason or "").strip()
     lowered = normalized.lower()
@@ -509,10 +545,7 @@ def _build_market_path_review(records: list[dict[str, Any]], *, focus_symbol: st
         return {}
 
     samples: list[dict[str, Any]] = []
-    for item in records:
-        symbol = str(item.get("selected_symbol", "")).strip()
-        if symbol != chosen_symbol:
-            continue
+    for item in _symbol_observation_records(records, chosen_symbol):
         price = _safe_float(item.get("last_price"))
         timestamp_local = _record_timestamp_local(item)
         timestamp_dt = _parse_timestamp_local(
@@ -668,6 +701,44 @@ def _annotate_market_path_coverage(
     return annotated
 
 
+def _symbol_observation_records(records: list[dict[str, Any]], symbol: str) -> list[dict[str, Any]]:
+    chosen_symbol = str(symbol or "").strip()
+    if not chosen_symbol:
+        return []
+
+    symbol_records: list[dict[str, Any]] = []
+    for item in records:
+        selected_symbol = str(item.get("selected_symbol", "")).strip()
+        if selected_symbol == chosen_symbol:
+            symbol_records.append(item)
+            continue
+
+        candidates = item.get("candidates") or []
+        if not isinstance(candidates, list):
+            continue
+        candidate = next(
+            (
+                entry
+                for entry in candidates
+                if isinstance(entry, dict) and str(entry.get("symbol", "")).strip() == chosen_symbol
+            ),
+            None,
+        )
+        if not candidate:
+            continue
+
+        symbol_records.append(
+            {
+                **item,
+                **candidate,
+                "selected_symbol": chosen_symbol,
+                "__record_timestamp_local": item.get("__record_timestamp_local"),
+                "timestamp": item.get("timestamp"),
+            }
+        )
+    return symbol_records
+
+
 def _build_symbol_postmortem(
     records: list[dict[str, Any]],
     *,
@@ -681,7 +752,7 @@ def _build_symbol_postmortem(
     if not chosen_symbol:
         return {}
 
-    symbol_records = [item for item in records if str(item.get("selected_symbol", "")).strip() == chosen_symbol]
+    symbol_records = _symbol_observation_records(records, chosen_symbol)
     if not symbol_records:
         return {}
 
@@ -3470,7 +3541,15 @@ def load_daily_summary_data(
         taker_fee_pct=settings.taker_fee_pct,
     )
     summary["policy_exit_diagnostics"] = _build_policy_exit_diagnostics(records, summary["trade_review"])
-    focus_symbol = settings.observation_pool[0] if len(settings.observation_pool) == 1 else ""
+    summary["strategy_research_latest"] = _load_strategy_research_latest(
+        storage.service / "strategy_research_latest.json"
+    )
+    focus_symbol = _resolve_daily_focus_symbol(
+        settings,
+        records,
+        external_benchmarks=summary["external_benchmarks"],
+        strategy_research_latest=summary["strategy_research_latest"],
+    )
     summary["market_path_review"] = _annotate_market_path_coverage(
         _build_market_path_review(
             records,
@@ -3500,9 +3579,6 @@ def load_daily_summary_data(
     summary["notion_review_status"] = _build_notion_review_summary(
         _read_json_file(storage.notion_daily_review_state),
         date_label=date_label,
-    )
-    summary["strategy_research_latest"] = _load_strategy_research_latest(
-        storage.service / "strategy_research_latest.json"
     )
     summary["shadow_benchmark_watch"] = _build_shadow_benchmark_watch(
         summary["external_benchmarks"],

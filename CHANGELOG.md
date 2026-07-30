@@ -16,6 +16,28 @@
 
 ---
 
+## v1.1.4 - Preserve focus-symbol market path in multi-symbol daily reviews
+
+### Why
+
+- The TradePulse daily stewardship run on Thursday, July 30, 2026 found that the latest completed noon-window review was active and writing fresh decisions, but the generated ground-truth and oracle artifacts still left `focus_symbol` and `market_path_review` empty.
+- The reporting pipeline only seeded market-path analysis from `observation_pool[0]` when exactly one symbol was configured, so multi-symbol mock/demo runs silently dropped the benchmark/watch focus even when strategy research and shadow benchmarking were clearly centered on `SOL/USDT`.
+- That made the daily learning loop weaker: PO3/POC/VAH/VAL/FVG review could not attach to the live focus symbol's real sampled path, and the oracle postmortem under-reported market-path coverage quality.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Added `_resolve_daily_focus_symbol()` so completed noon-window reviews prefer the strategy-research focus symbol, then benchmark symbol coverage, before falling back to the most common selected symbol.
+  - Daily summary generation now resolves the focus symbol before building market-path, symbol postmortem, loss attribution, ground truth, and oracle artifacts.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for the multi-symbol case where strategy research focuses on `SOL/USDT` while another symbol appears in the decision stream.
+
+### Result
+
+- TradePulse daily reviews now preserve the intended live focus symbol in multi-symbol runs instead of collapsing to an empty market path.
+- Ground-truth and oracle artifacts can once again carry the prior 24-hour sampled market path needed for PO3-centered noon-window review.
+
 ## v1.1.3 - Surface blocked runner and stale Notion state in daily reports
 
 ### Why
