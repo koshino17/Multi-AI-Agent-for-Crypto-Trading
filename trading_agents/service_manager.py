@@ -16,6 +16,7 @@ from trading_agents.storage import build_storage_layout, mode_storage_root
 RUNNER_LABEL = "com.koshino.trading-agents.runner"
 RUNNER_PROCESS_MARKER = "run_tradepulse_runner.py"
 MAX_RUNNER_LOG_BYTES = 64 * 1024 * 1024
+LAUNCHCTL_TIMEOUT_SECONDS = 10
 
 
 def runner_launch_agent_path() -> Path:
@@ -44,6 +45,19 @@ def runner_service_storage(mode: str = "bybit-demo-perp"):
 
 def runtime_python_path(runtime_root: Path) -> Path:
     return runtime_root / ".venv" / "bin" / "python3"
+
+
+def _run_launchctl(args: list[str], *, timeout_seconds: float = LAUNCHCTL_TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str] | None:
+    try:
+        return subprocess.run(
+            ["launchctl", *args],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        return None
 
 
 def _parse_env_assignments(lines: list[str]) -> dict[str, str]:
@@ -208,12 +222,9 @@ def ensure_runner_launch_agent(settings: Settings, project_root: Path) -> tuple[
 
 
 def is_runner_launch_agent_loaded() -> bool:
-    result = subprocess.run(
-        ["launchctl", "print", runner_launch_target()],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = _run_launchctl(["print", runner_launch_target()])
+    if result is None:
+        return False
     return result.returncode == 0
 
 
@@ -229,15 +240,15 @@ def start_runner_service(settings: Settings, project_root: Path) -> dict[str, st
     _clear_stale_lock(storage.notion_sync_lock, max_age_seconds=180)
 
     if is_runner_launch_agent_loaded():
-        subprocess.run(["launchctl", "bootout", runner_launch_target()], capture_output=True, text=True, check=False)
+        _run_launchctl(["bootout", runner_launch_target()])
         deadline = time.time() + 10
         while time.time() < deadline and is_runner_launch_agent_loaded():
             time.sleep(0.2)
     _terminate_runner_processes()
 
-    subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist_path)], capture_output=True, text=True, check=False)
-    subprocess.run(["launchctl", "enable", runner_launch_target()], capture_output=True, text=True, check=False)
-    subprocess.run(["launchctl", "kickstart", "-k", runner_launch_target()], capture_output=True, text=True, check=False)
+    _run_launchctl(["bootstrap", f"gui/{os.getuid()}", str(plist_path)])
+    _run_launchctl(["enable", runner_launch_target()])
+    _run_launchctl(["kickstart", "-k", runner_launch_target()])
 
     deadline = time.time() + 8
     while time.time() < deadline:
@@ -299,7 +310,7 @@ def start_runner_service(settings: Settings, project_root: Path) -> dict[str, st
 def stop_runner_service(settings: Settings) -> dict[str, str]:
     storage = runner_service_storage(settings.trading_mode)
     if is_runner_launch_agent_loaded():
-        subprocess.run(["launchctl", "bootout", runner_launch_target()], capture_output=True, text=True, check=False)
+        _run_launchctl(["bootout", runner_launch_target()])
         deadline = time.time() + 10
         while time.time() < deadline and is_runner_launch_agent_loaded():
             time.sleep(0.2)

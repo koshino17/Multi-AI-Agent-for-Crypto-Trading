@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -38,7 +39,7 @@ from trading_agents.runner import (
     _release_runner_lock,
     _write_runner_status,
 )
-from trading_agents.service_manager import _read_runner_status, _runner_launch_agent_plist, sync_runner_runtime
+from trading_agents.service_manager import _read_runner_status, _runner_launch_agent_plist, start_runner_service, sync_runner_runtime
 from trading_agents.storage import build_storage_layout, mode_storage_root
 from trading_agents_web import _runtime_settings
 
@@ -79,6 +80,59 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertIn('env_payload="$(', launcher)
         self.assertIn(')" || exit $?', launcher)
         self.assertNotIn('exec >> "$RUNNER_LOG"', launcher)
+
+    def test_start_runner_service_survives_launchctl_kickstart_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir) / "project"
+            runtime_root = Path(tmpdir) / "runtime"
+            state_root = Path(tmpdir) / "state"
+            plist_path = Path(tmpdir) / "runner.plist"
+            storage = build_storage_layout(str(mode_storage_root(state_root, "bybit-demo-perp")))
+            project_root.mkdir(parents=True)
+            runtime_root.mkdir(parents=True)
+            storage.runner_pid.parent.mkdir(parents=True, exist_ok=True)
+            storage.runner_pid.write_text("43210\n")
+            storage.runner_status.write_text(
+                json.dumps(
+                    {
+                        "status": "blocked",
+                        "mode": "bybit-demo-perp",
+                        "symbol": "SOL/USDT",
+                        "detail": "Missing Bybit Demo API credentials.",
+                    }
+                )
+            )
+            settings = SimpleNamespace(
+                trading_mode="bybit-demo-perp",
+                observation_pool=("SOL/USDT",),
+                symbol="SOL/USDT",
+                monitor_interval_seconds=30.0,
+            )
+
+            def fake_run(args, **kwargs):
+                if args[:2] == ["launchctl", "kickstart"]:
+                    raise subprocess.TimeoutExpired(args, kwargs.get("timeout", 0))
+                return subprocess.CompletedProcess(args, 0, "", "")
+
+            with mock.patch("trading_agents.service_manager.sync_runner_runtime", return_value=runtime_root), mock.patch(
+                "trading_agents.service_manager.ensure_runner_launch_agent", return_value=(plist_path, False)
+            ), mock.patch("trading_agents.service_manager.runner_service_storage", return_value=storage), mock.patch(
+                "trading_agents.service_manager._clear_stale_pid"
+            ), mock.patch("trading_agents.service_manager._clear_stale_lock"), mock.patch(
+                "trading_agents.service_manager._terminate_runner_processes"
+            ), mock.patch(
+                "trading_agents.service_manager.preferred_python", return_value=runtime_root / ".venv/bin/python3"
+            ), mock.patch(
+                "trading_agents.service_manager.is_runner_launch_agent_loaded", side_effect=[False]
+            ), mock.patch(
+                "trading_agents.service_manager._pid_is_alive", return_value=True
+            ), mock.patch(
+                "trading_agents.service_manager.subprocess.run", side_effect=fake_run
+            ):
+                result = start_runner_service(settings, project_root)
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["detail"], "Missing Bybit Demo API credentials.")
 
     def test_sync_runner_runtime_preserves_existing_runtime_env_when_project_env_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

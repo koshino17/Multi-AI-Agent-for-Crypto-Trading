@@ -16,6 +16,28 @@
 
 ---
 
+## v1.1.5 - Bound launchctl startup hangs during TradePulse runtime recovery
+
+### Why
+
+- The TradePulse daily stewardship run on Friday, July 31, 2026 attempted to sync the current repo into the installed runtime and restart the managed `bybit-demo-perp` service.
+- The live blocker was still missing Bybit demo credentials, but the repo-level recovery path hit a separate ops defect first: `trading_agents.service_manager.start_runner_service()` could hang indefinitely inside `launchctl kickstart`, which stalls autonomous stewardship before the code can even observe the expected blocked state.
+- That hang is operationally worse than a clean `blocked` result because it prevents noon-window automation from finishing its review and leaves the runtime sync outcome ambiguous.
+
+### What Changed
+
+- `trading_agents/service_manager.py`
+  - Added a bounded `launchctl` wrapper with a 10-second timeout for `print`, `bootout`, `bootstrap`, `enable`, and `kickstart`.
+  - Service start/stop paths now tolerate a stuck `launchctl` call and continue toward the existing runner-status / detached-runner fallback flow instead of hanging forever.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage that `start_runner_service()` still returns the expected blocked status when `launchctl kickstart` times out during bootstrap.
+
+### Result
+
+- TradePulse runtime recovery no longer lets a stuck `launchctl` call wedge the stewardship loop.
+- When demo credentials are still absent, the service can now fail closed as `blocked` quickly enough for automation to finish the daily review and report the real blocker.
+
 ## v1.1.4 - Preserve focus-symbol market path in multi-symbol daily reviews
 
 ### Why
