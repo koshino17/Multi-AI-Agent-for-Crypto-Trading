@@ -16,6 +16,26 @@
 
 ---
 
+## v1.1.3 - Require live health gate before autonomous reviews
+
+### Why
+
+- TradePulse had not produced a real `bybit-demo-perp` cycle since `2026-07-18` even though later mock-mode artifacts could make the system look active.
+- Autonomous reviews and mentor reviews must not analyze stale or mock-only evidence as if live demo trading were healthy.
+- The review workflow needed a persistent hard gate so future Codex runs repair or report live-health failures before drawing strategy conclusions.
+
+### What Changed
+
+- `AGENTS.md`
+  - Added an Autonomous Review Health Gate for daily reviews, mentor reviews, and profitability diagnosis.
+  - Requires launchd/PID, `runner_status.json`, `runner.log`, canonical `bybit-demo-perp` decisions, runtime `.env` keys, Notion heartbeat, and mock-vs-live evidence checks before review.
+  - Requires stale/blocked live runtime findings to stop the normal review path until safe restart/sync/self-heal is attempted and re-verified.
+
+### Result
+
+- Future TradePulse autonomous review work should first prove that live demo trading is cycling before judging performance or strategy quality.
+- If TradePulse is stopped again, the expected behavior is to report and repair the health issue rather than produce a misleading trading review.
+
 ## v1.1.2 - Keep live runner status fresh after recovery
 
 ### Why

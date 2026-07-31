@@ -54,6 +54,15 @@ TradePulse should improve incrementally like a reinforcement-learning system, ev
 - Exploration: try small, reversible experiments in demo/research mode before expanding scope.
 - Exploitation: keep or scale only strategies that survive cost-aware forward review.
 
+## Autonomous Review Health Gate
+
+Before any autonomous daily review, mentor review, or profitability diagnosis, first prove that the installed live runtime is actually operating in canonical `bybit-demo-perp` mode.
+
+- Check launchd service state and PID, `runner_status.json` freshness, latest `runner.log` monitor/cycle events, latest canonical `bybit-demo-perp` decision under the installed state directory, runtime `.env` required keys without printing secrets, Notion heartbeat freshness when available, and whether only mock-mode decisions are fresh.
+- If TradePulse is stopped, blocked, stale, missing credentials, not cycling, or only mock-mode activity is fresh, stop the normal review path and classify the evidence as stale.
+- State the last real `bybit-demo-perp` cycle or decision time, distinguish mock-mode activity from live demo trading, perform only safe restart/sync/self-heal steps when credentials and permissions allow, then re-verify before drawing trading conclusions.
+- Never analyze profitability, strategy quality, or mentor lessons as if live trading evidence is fresh when this gate fails.
+
 ## Default Workflow
 
 1. Check health first: runner process, latest runner log, latest decision file, latest daily report, Notion heartbeat, and API errors.
