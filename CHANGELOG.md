@@ -16,6 +16,29 @@
 
 ---
 
+## v1.1.6 - Defer active-window postmortems until the noon window is complete
+
+### Why
+
+- The TradePulse daily stewardship run on Saturday, August 1, 2026 found that the installed runtime produced `2026-08-02` ground-truth and oracle postmortem artifacts at 12:16 PM Asia/Taipei on August 1, while the `2026-08-01T12:00:00+08:00 -> 2026-08-02T12:00:00+08:00` window had only just opened.
+- TradePulse intentionally keeps an active next-window daily summary draft after noon, but writing reinforcement-learning artifacts for that still-open window made an in-progress period look completed and polluted the evidence bundle with future-dated postmortems.
+- That is operationally dangerous for PO3 review and policy learning because the next noon review can mistake draft/open-window evidence for completed hindsight.
+
+### What Changed
+
+- `trading_agents/main.py`
+  - Added a shared daily-artifact path helper.
+  - `_refresh_daily_artifacts()` now supports a deferred mode that returns the planned ground-truth/oracle paths without writing files.
+  - Active next-window reporting now defers ground-truth and oracle postmortem persistence until the noon window is actually complete.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage that active-window artifact refreshes do not write future-dated ground-truth or oracle files.
+
+### Result
+
+- TradePulse still keeps the active next-window daily summary draft for live monitoring, but it no longer persists completed-looking postmortem artifacts for an open noon window.
+- The installed runtime cleanup for this run removed the incorrect `2026-08-02` ground-truth and oracle artifacts so the current evidence bundle only reflects completed windows.
+
 ## v1.1.5 - Bound launchctl startup hangs during TradePulse runtime recovery
 
 ### Why

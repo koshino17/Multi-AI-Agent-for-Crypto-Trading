@@ -13,6 +13,7 @@ from trading_agents.agents import RiskSupervisorAgent, StrategistAgent, Strategy
 from trading_agents.exchange import _build_fvg_features, _build_microstructure_features, _infer_po3_phase_hint
 from trading_agents.llm import _trace_date_label
 from trading_agents.main import (
+    _refresh_daily_artifacts,
     _guard_market_structure_false_breakout,
     _prefilter_untradeable_candidate,
     _resolve_daily_review,
@@ -880,6 +881,30 @@ class RuntimeRegressionTests(unittest.TestCase):
             oracle_payload = json.loads(Path(oracle_paths["json_path"]).read_text())
             self.assertIn("carry_in_drag", oracle_payload["root_cause_tags"])
             self.assertIn("missed_rebound_participation", oracle_payload["root_cause_tags"])
+
+    def test_active_daily_artifacts_are_deferred_until_window_completes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = build_storage_layout(tmpdir)
+            summary = {
+                "date_label": "2026-08-02",
+                "window_start": "2026-08-01T12:00:00+08:00",
+                "window_end": "2026-08-02T12:00:00+08:00",
+                "financial_snapshot": {"daily_pnl_usdt": 0.0},
+                "market_path_review": {"symbol": "SOL/USDT", "summary": "active window"},
+                "loss_attribution": {},
+            }
+
+            artifacts = _refresh_daily_artifacts(
+                storage,
+                "2026-08-02",
+                "bybit-demo-perp",
+                summary,
+                persist=False,
+            )
+
+            self.assertEqual(artifacts["status"], "deferred")
+            self.assertFalse((storage.ground_truth_reports / "2026-08-02.json").exists())
+            self.assertFalse((storage.oracle_postmortems / "2026-08-02.json").exists())
 
     def test_multi_symbol_daily_focus_prefers_research_focus_for_market_path(self) -> None:
         settings = SimpleNamespace(

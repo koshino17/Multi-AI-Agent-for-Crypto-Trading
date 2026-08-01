@@ -121,7 +121,27 @@ def _resolve_daily_review(
     return stored_review
 
 
-def _refresh_daily_artifacts(storage, date_label: str, mode: str, summary: dict | None = None) -> dict[str, dict[str, str]]:
+def _daily_artifact_paths(storage, date_label: str) -> dict[str, dict[str, str]]:
+    return {
+        "ground_truth": {
+            "json_path": str(storage.ground_truth_reports / f"{date_label}.json"),
+            "md_path": str(storage.ground_truth_reports / f"{date_label}.md"),
+        },
+        "oracle_postmortem": {
+            "json_path": str(storage.oracle_postmortems / f"{date_label}.json"),
+            "md_path": str(storage.oracle_postmortems / f"{date_label}.md"),
+        },
+    }
+
+
+def _refresh_daily_artifacts(
+    storage,
+    date_label: str,
+    mode: str,
+    summary: dict | None = None,
+    *,
+    persist: bool = True,
+) -> dict[str, object]:
     if summary is None:
         summary = load_daily_summary_data(
             storage.trade_logs,
@@ -133,9 +153,17 @@ def _refresh_daily_artifacts(storage, date_label: str, mode: str, summary: dict 
     if not isinstance(summary, dict):
         summary = {}
     summary["date_label"] = date_label
+    paths = _daily_artifact_paths(storage, date_label)
+    if not persist:
+        return {
+            "status": "deferred",
+            "reason": "active noon window is still open",
+            **paths,
+        }
     ground_truth = write_ground_truth_artifacts(storage.ground_truth_reports, date_label, summary)
     oracle_postmortem = write_oracle_postmortem_artifacts(storage.oracle_postmortems, date_label, summary)
     return {
+        "status": "updated",
         "ground_truth": ground_truth,
         "oracle_postmortem": oracle_postmortem,
     }
@@ -1808,7 +1836,13 @@ def _finalize_reporting(
         trading_mode=mode,
         storage_root=storage.root,
     )
-    active_artifacts = _refresh_daily_artifacts(storage, active_date_label, mode, daily_summary)
+    active_artifacts = _refresh_daily_artifacts(
+        storage,
+        active_date_label,
+        mode,
+        daily_summary,
+        persist=False,
+    )
     report["active_daily_artifacts"] = active_artifacts
     daily_summary["review_history"] = _load_recent_daily_review_history(storage, active_date_label)
     equity_history_path = mode_scoped_path(storage.equity_curve_history_state, mode)
@@ -1957,7 +1991,12 @@ def _finalize_reporting(
             storage_root=storage.root,
         )
         daily_report_path = write_daily_summary(storage.daily_reports, active_date_label, daily_content)
-        report["active_daily_artifacts"] = _refresh_daily_artifacts(storage, active_date_label, mode)
+        report["active_daily_artifacts"] = _refresh_daily_artifacts(
+            storage,
+            active_date_label,
+            mode,
+            persist=False,
+        )
         report["daily_report"] = str(daily_report_path)
         daily_summary = load_daily_summary_data(
             storage.trade_logs,
@@ -2046,7 +2085,12 @@ def _finalize_reporting(
                 storage_root=storage.root,
             )
             daily_report_path = write_daily_summary(storage.daily_reports, active_date_label, daily_content)
-            report["active_daily_artifacts"] = _refresh_daily_artifacts(storage, active_date_label, mode)
+            report["active_daily_artifacts"] = _refresh_daily_artifacts(
+                storage,
+                active_date_label,
+                mode,
+                persist=False,
+            )
             report["daily_report"] = str(daily_report_path)
         except Exception as exc:
             report["strategy_memory_rebuild"] = {"status": "error", "reason": str(exc)}
