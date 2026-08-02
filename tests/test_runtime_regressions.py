@@ -36,6 +36,7 @@ from trading_agents.runner import (
     _acquire_runner_lock,
     _credential_blocker,
     _cycle_report_summary,
+    _heartbeat_runner_status,
     _monitor_snapshot,
     _release_runner_lock,
     _write_runner_status,
@@ -218,6 +219,34 @@ class RuntimeRegressionTests(unittest.TestCase):
             self.assertEqual(status["mode"], "bybit-demo-perp")
             self.assertEqual(status["symbol"], "SOL/USDT")
             self.assertEqual(status["detail"], "Missing Bybit Demo API credentials.")
+            self.assertIn("updated_at", status)
+
+    def test_runner_active_heartbeat_refreshes_live_status_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = build_storage_layout(tmpdir)
+            _heartbeat_runner_status(
+                storage.runner_status,
+                mode="bybit-demo-perp",
+                symbol_pool=["SOL/USDT"],
+                timeframe="15m",
+                detail="monitoring for new candle, account change, or breakout",
+                selected_symbol="SOL/USDT",
+                cycle_mode="full",
+                cycle_reason="new 15m candle window",
+                last_cycle_at="2026-08-02T04:16:08+00:00",
+                last_decision_source="memory_guard",
+                last_action="hold",
+            )
+            status = _read_runner_status(storage.runner_status)
+            self.assertEqual(status["status"], "started")
+            self.assertEqual(status["mode"], "bybit-demo-perp")
+            self.assertEqual(status["symbol"], "SOL/USDT")
+            self.assertEqual(status["selected_symbol"], "SOL/USDT")
+            self.assertEqual(status["cycle_mode"], "full")
+            self.assertEqual(status["cycle_reason"], "new 15m candle window")
+            self.assertEqual(status["last_cycle_at"], "2026-08-02T04:16:08+00:00")
+            self.assertEqual(status["last_decision_source"], "memory_guard")
+            self.assertEqual(status["last_action"], "hold")
             self.assertIn("updated_at", status)
 
     def test_daily_summary_surfaces_runner_block_and_stale_notion_review(self) -> None:

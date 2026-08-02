@@ -91,6 +91,42 @@ def _write_runner_status(path: Path, payload: dict) -> None:
         pass
 
 
+def _heartbeat_runner_status(
+    path: Path,
+    *,
+    mode: str,
+    symbol_pool: list[str],
+    timeframe: str,
+    detail: str,
+    selected_symbol: str | None = None,
+    cycle_mode: str | None = None,
+    cycle_reason: str | None = None,
+    last_cycle_at: str | None = None,
+    last_decision_source: str | None = None,
+    last_action: str | None = None,
+) -> None:
+    payload = {
+        "status": "started",
+        "mode": mode,
+        "symbol": ",".join(symbol_pool),
+        "detail": detail,
+        "timeframe": timeframe,
+    }
+    if selected_symbol:
+        payload["selected_symbol"] = selected_symbol
+    if cycle_mode:
+        payload["cycle_mode"] = cycle_mode
+    if cycle_reason:
+        payload["cycle_reason"] = cycle_reason
+    if last_cycle_at:
+        payload["last_cycle_at"] = last_cycle_at
+    if last_decision_source:
+        payload["last_decision_source"] = last_decision_source
+    if last_action:
+        payload["last_action"] = last_action
+    _write_runner_status(path, payload)
+
+
 def _credential_blocker(mode: str, settings) -> str | None:
     if mode in {"bybit-demo", "bybit-demo-perp"}:
         if not settings.bybit_demo_api_key or not settings.bybit_demo_secret:
@@ -159,6 +195,16 @@ def _cycle_report_summary(report: dict) -> dict:
 
 def _timeframe_seconds(label: str) -> int:
     return _TIMEFRAME_SECONDS.get(label, 900)
+
+
+def _epoch_to_utc_iso(value: object) -> str | None:
+    try:
+        stamp = float(value)
+    except (TypeError, ValueError):
+        return None
+    if stamp <= 0:
+        return None
+    return datetime.fromtimestamp(stamp, tz=timezone.utc).isoformat()
 
 
 def _bucket_id(now: datetime, timeframe: str) -> int:
@@ -409,15 +455,12 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
             "position_micro_trigger_pct": position_micro_trigger_pct,
         }
     )
-    _write_runner_status(
+    _heartbeat_runner_status(
         storage.runner_status,
-        {
-            "status": "started",
-            "mode": mode,
-            "symbol": ",".join(symbol_pool) or symbol,
-            "detail": "runner active",
-            "timeframe": timeframe,
-        },
+        mode=mode,
+        symbol_pool=symbol_pool,
+        timeframe=timeframe,
+        detail="runner active",
     )
 
     try:
@@ -455,6 +498,16 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
                     "detail": reason,
                     "prices": snapshot["prices"],
                 }
+            )
+            _heartbeat_runner_status(
+                storage.runner_status,
+                mode=mode,
+                symbol_pool=symbol_pool,
+                timeframe=timeframe,
+                detail=reason,
+                selected_symbol=str(monitor_state.get("selected_symbol") or "") or None,
+                last_cycle_at=_epoch_to_utc_iso(monitor_state.get("cycle_at")),
+                last_action=str(monitor_state.get("selected_action") or "") or None,
             )
 
             if settings.notion_api_token and settings.notion_status_page_id:
@@ -562,6 +615,18 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
                         "cycle_mode": cycle_mode,
                     }
                 )
+                _heartbeat_runner_status(
+                    storage.runner_status,
+                    mode=mode,
+                    symbol_pool=symbol_pool,
+                    timeframe=timeframe,
+                    detail=f"running cycle: {reason}",
+                    selected_symbol=str(monitor_state.get("selected_symbol") or "") or None,
+                    cycle_mode=cycle_mode,
+                    cycle_reason=reason,
+                    last_cycle_at=started_at,
+                    last_action=str(monitor_state.get("selected_action") or "") or None,
+                )
                 try:
                     report = execute_cycle(
                         mode=mode,
@@ -582,8 +647,33 @@ def loop(mode: str, symbol: str | None, interval_seconds: float) -> int:
                             "cycle_mode": cycle_mode,
                         }
                     )
+                    _heartbeat_runner_status(
+                        storage.runner_status,
+                        mode=mode,
+                        symbol_pool=symbol_pool,
+                        timeframe=timeframe,
+                        detail="runner active",
+                        selected_symbol=str(report.get("selected_symbol") or "") or None,
+                        cycle_mode=cycle_mode,
+                        cycle_reason=reason,
+                        last_cycle_at=datetime.now(timezone.utc).isoformat(),
+                        last_decision_source=str(report.get("decision_source") or "") or None,
+                        last_action=str((report.get("idea") or {}).get("action") or "") or None,
+                    )
                     _emit(_cycle_report_summary(report))
                 except Exception as exc:
+                    _heartbeat_runner_status(
+                        storage.runner_status,
+                        mode=mode,
+                        symbol_pool=symbol_pool,
+                        timeframe=timeframe,
+                        detail=f"last cycle error: {exc}",
+                        selected_symbol=str(monitor_state.get("selected_symbol") or "") or None,
+                        cycle_mode=cycle_mode,
+                        cycle_reason=reason,
+                        last_cycle_at=datetime.now(timezone.utc).isoformat(),
+                        last_action=str(monitor_state.get("selected_action") or "") or None,
+                    )
                     _emit(
                         {
                             "event": "cycle",

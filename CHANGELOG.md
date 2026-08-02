@@ -16,6 +16,28 @@
 
 ---
 
+## v1.1.7 - Keep active runner health fresh during live monitor cycles
+
+### Why
+
+- The TradePulse daily stewardship run on Sunday, August 2, 2026 found that the installed `bybit-demo-perp` runtime was actively cycling, writing fresh decisions, and syncing Notion heartbeats, but `service/runner_status.json` still showed `updated_at` from Friday, August 1, 2026.
+- Daily reporting trusts `runner_status.json` for the top-level health freshness check, so that stale timestamp made the completed `2026-08-02` noon-window review report a false `lag_vs_window_end=23.57h` even though the live loop was healthy.
+- That is a profitability issue because TradePulse should fix ops telemetry before drawing PO3/POC/VAH/VAL/FVG conclusions from a daily evidence bundle.
+
+### What Changed
+
+- `trading_agents/runner.py`
+  - Added an active-runner heartbeat status writer that refreshes `runner_status.json` during monitor loops and around cycle start/finish/error events.
+  - Active status now carries the latest selected symbol, cycle mode/reason, last cycle timestamp, decision source, and action instead of only the original startup snapshot.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage that the active heartbeat persists fresh live-status fields while keeping the runner in `started` state.
+
+### Result
+
+- TradePulse daily reviews no longer have to infer runner freshness from a startup-only timestamp while the live loop keeps trading.
+- Installed runtime reports can distinguish a genuinely stale runner from a healthy monitor loop that is intentionally holding after a loss-control or no-trade regime.
+
 ## v1.1.6 - Defer active-window postmortems until the noon window is complete
 
 ### Why
