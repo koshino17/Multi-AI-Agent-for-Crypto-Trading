@@ -14,7 +14,12 @@ from pathlib import Path
 from urllib.parse import parse_qs
 
 from trading_agents.config import load_settings
-from trading_agents.reporting import _format_stage_latency_breakdown, load_daily_summary_data, local_date_label
+from trading_agents.reporting import (
+    _format_stage_latency_breakdown,
+    completed_report_date_label,
+    load_daily_summary_data,
+    local_date_label,
+)
 from trading_agents.service_manager import start_runner_service, stop_runner_service
 from trading_agents.storage import build_storage_layout, mode_storage_root
 
@@ -378,7 +383,9 @@ class AgentController:
 
     def latest_summary_content(self) -> tuple[str, str]:
         current_storage = _storage_for_mode(controller.mode)
-        target = current_storage.daily_reports / f"{local_date_label()}.md"
+        target = current_storage.daily_reports / f"{completed_report_date_label()}.md"
+        if not target.exists():
+            target = current_storage.daily_reports / f"{local_date_label()}.md"
         if not target.exists():
             return "No daily summary yet.", str(target)
         try:

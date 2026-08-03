@@ -2316,6 +2316,16 @@ def completed_report_date_label(now: datetime | None = None, anchor_hour: int = 
     return (anchor_today - timedelta(days=1)).strftime("%Y-%m-%d")
 
 
+def _artifact_is_deferred_for_active_window(date_label: str, artifact: dict[str, Any]) -> bool:
+    if not isinstance(artifact, dict):
+        return False
+    json_path = Path(str(artifact.get("json_path", "") or ""))
+    md_path = Path(str(artifact.get("md_path", "") or ""))
+    if json_path.exists() or md_path.exists():
+        return False
+    return date_label == active_report_date_label() and date_label != completed_report_date_label()
+
+
 def _stamp() -> str:
     return _utc_now().strftime("%Y%m%dT%H%M%S%fZ")
 
@@ -4325,12 +4335,16 @@ def build_daily_summary(
         lines.extend(["", "## Research Artifacts", ""])
         if agent_trace_archive.get("directory"):
             lines.append(f"- Agent Trace Archive: {agent_trace_archive.get('directory')}")
-        if ground_truth_artifact.get("json_path") or ground_truth_artifact.get("md_path"):
+        if _artifact_is_deferred_for_active_window(date_label, ground_truth_artifact):
+            lines.append("- Ground Truth: deferred until the active noon window completes")
+        elif ground_truth_artifact.get("json_path") or ground_truth_artifact.get("md_path"):
             lines.append(
                 f"- Ground Truth: {ground_truth_artifact.get('json_path', 'n/a')} | "
                 f"{ground_truth_artifact.get('md_path', 'n/a')}"
             )
-        if oracle_postmortem_artifact.get("json_path") or oracle_postmortem_artifact.get("md_path"):
+        if _artifact_is_deferred_for_active_window(date_label, oracle_postmortem_artifact):
+            lines.append("- Oracle Postmortem: deferred until the active noon window completes")
+        elif oracle_postmortem_artifact.get("json_path") or oracle_postmortem_artifact.get("md_path"):
             lines.append(
                 f"- Oracle Postmortem: {oracle_postmortem_artifact.get('json_path', 'n/a')} | "
                 f"{oracle_postmortem_artifact.get('md_path', 'n/a')}"

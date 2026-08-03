@@ -20,6 +20,7 @@ from trading_agents.main import (
 )
 from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyCandidate, StrategyResearchSnapshot, TradeIdea
 from trading_agents.reporting import (
+    _artifact_is_deferred_for_active_window,
     _build_financial_snapshot,
     _build_market_path_review,
     _build_symbol_postmortem,
@@ -43,7 +44,7 @@ from trading_agents.runner import (
 )
 from trading_agents.service_manager import _read_runner_status, _runner_launch_agent_plist, start_runner_service, sync_runner_runtime
 from trading_agents.storage import build_storage_layout, mode_storage_root
-from trading_agents_web import _runtime_settings
+from trading_agents_web import AgentController, _runtime_settings
 
 
 class RuntimeRegressionTests(unittest.TestCase):
@@ -934,6 +935,31 @@ class RuntimeRegressionTests(unittest.TestCase):
             self.assertEqual(artifacts["status"], "deferred")
             self.assertFalse((storage.ground_truth_reports / "2026-08-02.json").exists())
             self.assertFalse((storage.oracle_postmortems / "2026-08-02.json").exists())
+
+    def test_active_window_missing_artifacts_are_rendered_as_deferred(self) -> None:
+        artifact = {
+            "json_path": "/tmp/tradepulse/ground_truth/2026-08-04.json",
+            "md_path": "/tmp/tradepulse/ground_truth/2026-08-04.md",
+        }
+        with mock.patch("trading_agents.reporting.active_report_date_label", return_value="2026-08-04"):
+            with mock.patch("trading_agents.reporting.completed_report_date_label", return_value="2026-08-03"):
+                self.assertTrue(_artifact_is_deferred_for_active_window("2026-08-04", artifact))
+                self.assertFalse(_artifact_is_deferred_for_active_window("2026-08-03", artifact))
+
+    def test_web_latest_summary_prefers_completed_noon_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = build_storage_layout(tmpdir)
+            completed = storage.daily_reports / "2026-08-03.md"
+            active = storage.daily_reports / "2026-08-04.md"
+            completed.write_text("completed noon window")
+            active.write_text("active draft window")
+            controller = AgentController()
+            with mock.patch("trading_agents_web._storage_for_mode", return_value=storage):
+                with mock.patch("trading_agents_web.completed_report_date_label", return_value="2026-08-03"):
+                    with mock.patch("trading_agents_web.local_date_label", return_value="2026-08-04"):
+                        content, target = controller.latest_summary_content()
+            self.assertEqual(content, "completed noon window")
+            self.assertEqual(target, str(completed))
 
     def test_multi_symbol_daily_focus_prefers_research_focus_for_market_path(self) -> None:
         settings = SimpleNamespace(

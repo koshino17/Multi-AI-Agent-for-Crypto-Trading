@@ -16,6 +16,31 @@
 
 ---
 
+## v1.1.8 - Keep latest summary views anchored to completed noon windows
+
+### Why
+
+- The TradePulse daily stewardship run on Monday, August 3, 2026 found that the installed `bybit-demo-perp` runtime was healthy and still intentionally writing an active next-window draft after the noon anchor.
+- That draft is expected, but the local web view still treated `local_date_label()` as the latest summary, so on August 3 it defaulted to the future-dated `2026-08-04.md` draft instead of the completed `2026-08-03.md` noon-window review.
+- The draft also still listed future ground-truth and oracle artifact paths even though those files are intentionally deferred until the window completes.
+- That is operationally dangerous because it makes the freshest visible evidence look more complete than it is and can pollute the next PO3 / RL-style review loop.
+
+### What Changed
+
+- `trading_agents_web.py`
+  - Changed the latest-summary reader to prefer the latest completed noon-window report and only fall back to the active draft when no completed report exists.
+
+- `trading_agents/reporting.py`
+  - Added deferred-artifact detection so active-window daily drafts explicitly say ground-truth and oracle postmortem artifacts are deferred until the noon window completes.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for deferred active-window artifact labeling and for the web latest-summary preference toward the completed noon-window report.
+
+### Result
+
+- TradePulse keeps the active next-window draft for live monitoring without letting it masquerade as the primary completed review.
+- The default latest-summary view and the report body now steer the user toward the trustworthy completed noon-window evidence bundle first.
+
 ## v1.1.7 - Keep active runner health fresh during live monitor cycles
 
 ### Why
