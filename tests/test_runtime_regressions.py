@@ -4,7 +4,7 @@ import json
 import subprocess
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -20,7 +20,10 @@ from trading_agents.main import (
 )
 from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyCandidate, StrategyResearchSnapshot, TradeIdea
 from trading_agents.reporting import (
+    _annotate_market_path_coverage,
     _build_financial_snapshot,
+    _build_notion_review_summary,
+    _build_runner_health_summary,
     _build_market_path_review,
     _build_symbol_postmortem,
     _build_trade_review,
@@ -786,6 +789,44 @@ class RuntimeRegressionTests(unittest.TestCase):
         after_noon = datetime(2026, 5, 12, 8, 0, tzinfo=timezone.utc)
         self.assertEqual(_trace_date_label(before_noon), "2026-05-11")
         self.assertEqual(_trace_date_label(after_noon), "2026-05-12")
+
+    def test_active_window_notion_status_stays_pending_for_completed_window(self) -> None:
+        now = datetime(2026, 8, 4, 4, 16, tzinfo=timezone.utc)
+        notion = _build_notion_review_summary(
+            {"date_label": "2026-08-04", "page_id": "page-123"},
+            date_label="2026-08-05",
+            active_window=True,
+            now=now,
+        )
+        self.assertEqual(notion["status"], "pending_active_window")
+        self.assertEqual(notion["reference_window"], "2026-08-04")
+        self.assertEqual(notion["lag_windows"], 0)
+
+    def test_active_window_market_coverage_uses_elapsed_time(self) -> None:
+        local_tz = timezone(timedelta(hours=8))
+        annotated = _annotate_market_path_coverage(
+            {
+                "sample_count": 2,
+                "first_timestamp_local": "2026-08-04T12:00:52+08:00",
+                "last_timestamp_local": "2026-08-04T12:15:17+08:00",
+            },
+            window_start=datetime(2026, 8, 4, 12, 0, tzinfo=local_tz),
+            window_end=datetime(2026, 8, 5, 12, 0, tzinfo=local_tz),
+            now=datetime(2026, 8, 4, 4, 16, tzinfo=timezone.utc),
+        )
+        self.assertEqual(annotated["coverage_status"], "in_progress")
+        self.assertGreater(float(annotated["coverage_ratio"]), 0.9)
+        self.assertEqual(annotated["coverage_reference"], "elapsed_window")
+
+    def test_active_window_runner_health_uses_current_time_reference(self) -> None:
+        local_tz = timezone(timedelta(hours=8))
+        with mock.patch("trading_agents.reporting._local_now", return_value=datetime(2026, 8, 4, 12, 16, tzinfo=local_tz)):
+            health = _build_runner_health_summary(
+                {"status": "started", "updated_at": "2026-08-04T04:15:06+00:00"},
+                window_end=datetime(2026, 8, 5, 12, 0, tzinfo=local_tz),
+            )
+        self.assertEqual(health["age_reference"], "now")
+        self.assertLess(float(health["age_hours"]), 0.05)
 
     def test_reporting_infers_unlogged_perp_close_from_account_transition(self) -> None:
         records = [

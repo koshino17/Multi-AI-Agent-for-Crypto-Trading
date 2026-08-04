@@ -666,11 +666,15 @@ def _annotate_market_path_coverage(
     *,
     window_start: datetime,
     window_end: datetime,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     if not market_path_review:
         return {}
 
-    window_hours = max((window_end - window_start).total_seconds() / 3600.0, 0.0)
+    local_now = now.astimezone(LOCAL_TZ) if now is not None else _local_now()
+    active_window = window_start <= local_now < window_end
+    reference_end = min(window_end, local_now) if active_window else window_end
+    window_hours = max((reference_end - window_start).total_seconds() / 3600.0, 0.0)
     sample_count = int(market_path_review.get("sample_count", 0) or 0)
     first_dt = _parse_timestamp_local(market_path_review.get("first_timestamp_local"))
     last_dt = _parse_timestamp_local(market_path_review.get("last_timestamp_local"))
@@ -681,7 +685,20 @@ def _annotate_market_path_coverage(
 
     coverage_status = "ok"
     coverage_note = ""
-    if sample_count < 8 or coverage_ratio < 0.5:
+    if active_window:
+        if sample_count <= 0:
+            coverage_status = "pending"
+            coverage_note = "active noon window is still open; no sampled market path has landed yet"
+        elif window_hours >= 2.0 and (sample_count < 8 or coverage_ratio < 0.5):
+            coverage_status = "low_coverage"
+            coverage_note = (
+                "active noon window is still open, but sampled market coverage is lagging elapsed time; "
+                "treat PO3, POC, VAH, VAL, and FVG path conclusions as low confidence"
+            )
+        else:
+            coverage_status = "in_progress"
+            coverage_note = "active noon window is still open; coverage is measured against elapsed window time"
+    elif sample_count < 8 or coverage_ratio < 0.5:
         coverage_status = "low_coverage"
         coverage_note = (
             "runner appears to have produced only a partial decision path inside this noon window; "
@@ -696,6 +713,7 @@ def _annotate_market_path_coverage(
             "coverage_ratio": round(coverage_ratio, 4),
             "coverage_status": coverage_status,
             "coverage_note": coverage_note,
+            "coverage_reference": "elapsed_window" if active_window else "full_window",
         }
     )
     return annotated
@@ -2255,6 +2273,9 @@ def _read_json_file(path: Path | None) -> dict[str, Any]:
 
 
 def _build_runner_health_summary(runner_status: dict[str, Any], *, window_end: datetime) -> dict[str, Any]:
+    now_local = _local_now()
+    reference_end = min(window_end, now_local)
+    age_reference = "now" if reference_end < window_end else "window_end"
     if not isinstance(runner_status, dict) or not runner_status:
         return {}
     updated_at = _parse_timestamp_local(runner_status.get("updated_at"))
@@ -2262,7 +2283,7 @@ def _build_runner_health_summary(runner_status: dict[str, Any], *, window_end: d
     updated_at_local = ""
     if updated_at is not None:
         updated_at_local = updated_at.isoformat()
-        age_hours = max((window_end - updated_at).total_seconds() / 3600.0, 0.0)
+        age_hours = max((reference_end - updated_at).total_seconds() / 3600.0, 0.0)
     return {
         "status": str(runner_status.get("status", "")).strip() or "unknown",
         "mode": str(runner_status.get("mode", "")).strip(),
@@ -2270,24 +2291,37 @@ def _build_runner_health_summary(runner_status: dict[str, Any], *, window_end: d
         "detail": str(runner_status.get("detail", "")).strip(),
         "reason_code": str(runner_status.get("reason_code", "")).strip(),
         "updated_at_local": updated_at_local,
-        "age_hours_vs_window_end": round(age_hours, 2),
+        "age_hours": round(age_hours, 2),
+        "age_reference": age_reference,
     }
 
 
-def _build_notion_review_summary(notion_state: dict[str, Any], *, date_label: str) -> dict[str, Any]:
+def _build_notion_review_summary(
+    notion_state: dict[str, Any],
+    *,
+    date_label: str,
+    active_window: bool = False,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     if not isinstance(notion_state, dict) or not notion_state:
         return {"status": "missing", "latest_published_window": "", "lag_windows": 0, "page_id": ""}
     latest_window = str(notion_state.get("date_label", "")).strip()
     page_id = str(notion_state.get("page_id", "")).strip()
     lag_windows = 0
     status = "unknown"
+    reference_window = date_label
+    if active_window:
+        reference_window = completed_report_date_label(now=now)
     if latest_window:
         try:
             latest_end, current_end = (
-                datetime.strptime(label, "%Y-%m-%d").date() for label in (latest_window, date_label)
+                datetime.strptime(label, "%Y-%m-%d").date() for label in (latest_window, reference_window)
             )
             lag_windows = max((current_end - latest_end).days, 0)
-            status = "fresh" if lag_windows == 0 else "stale"
+            if active_window and lag_windows == 0:
+                status = "pending_active_window"
+            else:
+                status = "fresh" if lag_windows == 0 else "stale"
         except ValueError:
             status = "invalid_state"
     else:
@@ -2297,6 +2331,33 @@ def _build_notion_review_summary(notion_state: dict[str, Any], *, date_label: st
         "latest_published_window": latest_window,
         "lag_windows": lag_windows,
         "page_id": page_id,
+        "reference_window": reference_window,
+        "active_window": active_window,
+    }
+
+
+def _window_progress_summary(
+    window_start: datetime,
+    window_end: datetime,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    local_now = now.astimezone(LOCAL_TZ) if now is not None else _local_now()
+    total_seconds = max((window_end - window_start).total_seconds(), 0.0)
+    elapsed_seconds = max((min(local_now, window_end) - window_start).total_seconds(), 0.0)
+    remaining_seconds = max((window_end - max(local_now, window_start)).total_seconds(), 0.0)
+    if window_start <= local_now < window_end:
+        status = "active"
+    elif local_now >= window_end:
+        status = "completed"
+    else:
+        status = "scheduled"
+    return {
+        "status": status,
+        "elapsed_hours": round(elapsed_seconds / 3600.0, 2),
+        "remaining_hours": round(remaining_seconds / 3600.0, 2),
+        "progress_ratio": round((elapsed_seconds / total_seconds), 4) if total_seconds > 0 else 0.0,
+        "as_of_local": local_now.isoformat(),
     }
 
 
@@ -3506,6 +3567,7 @@ def load_daily_summary_data(
     effective_root = storage_root if storage_root is not None else settings.data_root
     storage = build_storage_layout(str(mode_storage_root(effective_root, effective_mode)))
     window_start, window_end = _window_label_to_bounds(date_label)
+    window_progress = _window_progress_summary(window_start, window_end)
     records = _filter_records_by_mode(_load_daily_records(trade_logs_dir, date_label), effective_mode)
     all_records = _filter_records_by_mode(_load_all_records(trade_logs_dir), effective_mode)
     runner_event_counts = _load_runner_event_counts(runner_log_path, date_label)
@@ -3514,6 +3576,7 @@ def load_daily_summary_data(
     summary["date_label"] = date_label
     summary["window_start"] = window_start.isoformat()
     summary["window_end"] = window_end.isoformat()
+    summary["window_progress"] = window_progress
     summary["mode"] = effective_mode
     summary["financial_snapshot"] = _build_financial_snapshot(
         records,
@@ -3557,6 +3620,7 @@ def load_daily_summary_data(
         ),
         window_start=window_start,
         window_end=window_end,
+        now=_parse_timestamp_local(window_progress.get("as_of_local")),
     )
     summary["symbol_postmortem"] = _build_symbol_postmortem(
         records,
@@ -3579,6 +3643,8 @@ def load_daily_summary_data(
     summary["notion_review_status"] = _build_notion_review_summary(
         _read_json_file(storage.notion_daily_review_state),
         date_label=date_label,
+        active_window=str(window_progress.get("status", "")) == "active",
+        now=_parse_timestamp_local(window_progress.get("as_of_local")),
     )
     summary["shadow_benchmark_watch"] = _build_shadow_benchmark_watch(
         summary["external_benchmarks"],
@@ -3711,11 +3777,21 @@ def build_daily_summary(
     oracle_postmortem_artifact = summary.get("oracle_postmortem_artifact") or {}
     runner_health = summary.get("runner_health") or {}
     notion_review_status = summary.get("notion_review_status") or {}
+    window_progress = summary.get("window_progress") or {}
+    active_window = str(window_progress.get("status", "")).strip() == "active"
 
     lines = [f"# Daily Summary: {date_label}", ""]
     if summary_mode:
         lines.extend([f"- Mode: {summary_mode}", ""])
     lines.extend([f"- Window: {window_start.isoformat()} -> {window_end.isoformat()}", ""])
+    if window_progress:
+        progress_line = (
+            f"- Window Status: {window_progress.get('status', 'unknown')} | "
+            f"as_of={window_progress.get('as_of_local', 'n/a') or 'n/a'} | "
+            f"elapsed={float(window_progress.get('elapsed_hours', 0.0) or 0.0):.2f}h | "
+            f"remaining={float(window_progress.get('remaining_hours', 0.0) or 0.0):.2f}h"
+        )
+        lines.extend([progress_line, ""])
     freshness_status = str(financial.get("data_freshness_status", "")).strip()
     if freshness_status:
         lines.extend(
@@ -3735,7 +3811,8 @@ def build_daily_summary(
                 (
                     f"- Runner Health: {runner_health.get('status', 'unknown')} | "
                     f"updated={runner_health.get('updated_at_local', 'n/a') or 'n/a'} | "
-                    f"lag_vs_window_end={float(runner_health.get('age_hours_vs_window_end', 0.0)):.2f}h"
+                    f"lag_vs_{runner_health.get('age_reference', 'window_end')}="
+                    f"{float(runner_health.get('age_hours', 0.0)):.2f}h"
                 ),
                 (
                     f"- Runner Health Note: "
@@ -3750,16 +3827,24 @@ def build_daily_summary(
             ]
         )
     if notion_review_status:
+        notion_status = notion_review_status.get("status", "unknown")
+        notion_line = (
+            f"- Notion Daily Review: {notion_status} | "
+            f"latest_published_window={notion_review_status.get('latest_published_window', 'n/a') or 'n/a'}"
+        )
+        if notion_status == "pending_active_window":
+            notion_line += (
+                f" | completed_window={notion_review_status.get('reference_window', 'n/a') or 'n/a'}"
+            )
+        else:
+            notion_line += f" | lag={int(notion_review_status.get('lag_windows', 0) or 0)} windows"
         lines.extend(
             [
-                (
-                    f"- Notion Daily Review: {notion_review_status.get('status', 'unknown')} | "
-                    f"latest_published_window={notion_review_status.get('latest_published_window', 'n/a') or 'n/a'} | "
-                    f"lag={int(notion_review_status.get('lag_windows', 0) or 0)} windows"
-                ),
+                notion_line,
                 (
                     f"- Notion Review Note: page_id="
                     f"{notion_review_status.get('page_id', 'n/a') or 'n/a'}"
+                    + (" | active report window still open" if active_window else "")
                 ),
                 "",
             ]

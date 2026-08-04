@@ -16,6 +16,31 @@
 
 ---
 
+## v1.1.8 - Mark active noon-window reports as in-progress instead of stale
+
+### Why
+
+- The TradePulse daily stewardship run on Tuesday, August 4, 2026 found the installed `bybit-demo-perp` runtime healthy and cycling, with fresh decisions and fresh Notion heartbeats after local noon.
+- After `12:00 +08:00` on August 4, 2026, TradePulse intentionally opened the next active draft report at `2026-08-05`, but that draft was still rendered like a completed window.
+- That created false signals in the evidence bundle: the active draft looked like a stale Notion daily review, a `23.75h` runner-health lag, and a low-coverage market-path failure even though the window had only been open for about 15 minutes.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Added active-window progress metadata so noon-window drafts now declare whether the window is `active`, `completed`, or `scheduled`.
+  - Runner health now measures freshness against `now` while a draft window is still open, instead of against the future window end.
+  - Notion review freshness now compares active drafts to the latest completed window and surfaces `pending_active_window` instead of a false stale alert.
+  - Market-path coverage now evaluates active drafts against elapsed window time and reports `in_progress`/`pending` when appropriate instead of automatically flagging low coverage.
+  - Daily summary rendering now prints explicit window status and active-window context so future-dated drafts are clearly in-progress artifacts.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for active-window Notion status, elapsed-time market-path coverage, and runner-health freshness semantics.
+
+### Result
+
+- On Tuesday, August 4, 2026, the open `2026-08-05` draft no longer misreads as a completed-window failure.
+- TradePulse still keeps an active next-window draft after noon, but the draft now preserves clean evidence separation between the completed `2026-08-04` review window and the still-open `2026-08-05` monitoring window.
+
 ## v1.1.7 - Keep active runner health fresh during live monitor cycles
 
 ### Why
