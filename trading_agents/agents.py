@@ -324,6 +324,15 @@ def _reflection_context_llm_context(reflection_context: dict | None) -> dict[str
             "candidate_id": ((context.get("strategy_research_recommendation") or {}).get("candidate_id", "")),
             "verdict": ((context.get("strategy_research_recommendation") or {}).get("verdict", "")),
             "rationale": ((context.get("strategy_research_recommendation") or {}).get("rationale", "")),
+            "avg_focus_expectancy_pct": float(((context.get("strategy_research_recommendation") or {}).get("avg_focus_expectancy_pct", 0.0)) or 0.0),
+            "avg_focus_profit_factor": float(((context.get("strategy_research_recommendation") or {}).get("avg_focus_profit_factor", 0.0)) or 0.0),
+            "focus_positive_windows": int(((context.get("strategy_research_recommendation") or {}).get("focus_positive_windows", 0)) or 0),
+            "focus_window_count": int(((context.get("strategy_research_recommendation") or {}).get("focus_window_count", 0)) or 0),
+            "avg_validation_expectancy_pct": float(((context.get("strategy_research_recommendation") or {}).get("avg_validation_expectancy_pct", 0.0)) or 0.0),
+            "avg_validation_profit_factor": float(((context.get("strategy_research_recommendation") or {}).get("avg_validation_profit_factor", 0.0)) or 0.0),
+            "validation_window_count": int(((context.get("strategy_research_recommendation") or {}).get("validation_window_count", 0)) or 0),
+            "validation_guard_pass": bool(((context.get("strategy_research_recommendation") or {}).get("validation_guard_pass", False))),
+            "uses_custom_cost_model": bool(((context.get("strategy_research_recommendation") or {}).get("uses_custom_cost_model", False))),
         },
         "live_symbol_benchmark": {
             "candidate_id": ((context.get("live_symbol_benchmark") or {}).get("candidate_id", "")),
@@ -460,6 +469,8 @@ def _reflection_context_llm_brief(reflection_context: dict) -> str:
                 "research: "
                 f"candidate={((reflection_context.get('strategy_research_recommendation') or {}).get('candidate_id', ''))}, "
                 f"verdict={((reflection_context.get('strategy_research_recommendation') or {}).get('verdict', ''))}, "
+                f"exp={float(((reflection_context.get('strategy_research_recommendation') or {}).get('avg_focus_expectancy_pct', 0.0)) or 0.0):+.2f}%, "
+                f"pf={float(((reflection_context.get('strategy_research_recommendation') or {}).get('avg_focus_profit_factor', 0.0)) or 0.0):.2f}, "
                 f"benchmark={((reflection_context.get('live_symbol_benchmark') or {}).get('candidate_id', ''))}"
             ),
             f"previous_controls: {json.dumps(reflection_context.get('previous_controls') or {}, ensure_ascii=False)}",
@@ -1919,8 +1930,10 @@ class StrategyReflectionAgent:
                     "You are the strategy reflection agent for a crypto trading system. "
                     "This reflection runs only once every 12 hours to avoid overfitting. "
                     "Return JSON with keys summary, biases, risk_adjustments, focus_symbols, controls. "
-                    "controls may include fallback_entry_mode (normal/base_only), entry_mode (normal/capital_preservation), cooldown_scale (0.25-1.0), "
-                    "and benchmark_watch_candidate / benchmark_watch_symbol. "
+                    "controls may include fallback_entry_mode (normal/base_only), "
+                    "entry_mode (normal/capital_preservation/capital_preservation_pilot), cooldown_scale (0.25-1.0), "
+                    "benchmark_watch_candidate / benchmark_watch_symbol, and when evidence supports it "
+                    "pilot_candidate_id / pilot_max_position_pct for a tightly bounded pilot. "
                     f"slot={slot}; daily_summary_brief=\n{llm_summary_brief}\n"
                     f"reflection_context_brief=\n{llm_reflection_brief}"
                 ),
@@ -2015,6 +2028,10 @@ class StrategyReflectionAgent:
         research_recommendation = reflection_context.get("strategy_research_recommendation") or {}
         research_candidate_id = str(research_recommendation.get("candidate_id", "") or "").strip()
         research_verdict = str(research_recommendation.get("verdict", "") or "").strip().lower()
+        research_expectancy_pct = float(research_recommendation.get("avg_focus_expectancy_pct", 0.0) or 0.0)
+        research_profit_factor = float(research_recommendation.get("avg_focus_profit_factor", 0.0) or 0.0)
+        research_validation_guard_pass = bool(research_recommendation.get("validation_guard_pass", False))
+        research_uses_custom_cost_model = bool(research_recommendation.get("uses_custom_cost_model", False))
         low_participation_threshold = int(self.settings.strategy_learning_pilot_low_participation_windows or 0)
         recent_windows = reflection_context.get("recent_windows") or []
         if not isinstance(recent_windows, list):
@@ -2103,12 +2120,12 @@ class StrategyReflectionAgent:
             and pilot_uses_custom_cost_model
         )
         low_participation_pilot_ready = bool(
-            pilot_candidate_id
-            and pilot_candidate_id == research_candidate_id
+            research_candidate_id
             and research_verdict in {"shadow_candidate", "promotion_candidate"}
-            and pilot_expectancy_pct >= float(self.settings.strategy_learning_pilot_min_expectancy_pct or 0.0)
-            and pilot_profit_factor >= float(self.settings.strategy_learning_pilot_min_profit_factor or 0.0)
-            and pilot_uses_custom_cost_model
+            and research_validation_guard_pass
+            and research_expectancy_pct >= float(self.settings.strategy_learning_pilot_min_expectancy_pct or 0.0)
+            and research_profit_factor >= float(self.settings.strategy_learning_pilot_min_profit_factor or 0.0)
+            and research_uses_custom_cost_model
             and low_participation_streak >= low_participation_threshold
             and positive_streak >= 1
         )
@@ -2138,7 +2155,7 @@ class StrategyReflectionAgent:
                 "allow a strictly bounded maker-only pilot for the research-aligned candidate after repeated high-hold / low-trade windows"
             )
             controls["entry_mode"] = "capital_preservation_pilot"
-            controls["pilot_candidate_id"] = pilot_candidate_id
+            controls["pilot_candidate_id"] = research_candidate_id
             controls["pilot_max_position_pct"] = float(self.settings.strategy_learning_pilot_max_position_pct or 0.10)
         previous_carry_in_mode = str(previous_controls.get("carry_in_mode", "") or "").strip().lower()
         if previous_carry_in_mode == "de_risk" and not bool(reflection_context.get("restore_ready")) and negative_streak > 0:
@@ -2234,7 +2251,7 @@ class StrategyReflectionAgent:
             )
         elif low_participation_pilot_ready:
             summary_parts.append(
-                f"tiny_pilot={pilot_candidate_id} low_participation_streak={low_participation_streak} expectancy={pilot_expectancy_pct:+.2f}% pf={pilot_profit_factor:.2f} max_position={float(self.settings.strategy_learning_pilot_max_position_pct or 0.10):.2f}"
+                f"tiny_pilot={research_candidate_id} low_participation_streak={low_participation_streak} expectancy={research_expectancy_pct:+.2f}% pf={research_profit_factor:.2f} max_position={float(self.settings.strategy_learning_pilot_max_position_pct or 0.10):.2f}"
             )
         elif capital_preservation_mode:
             summary_parts.append(

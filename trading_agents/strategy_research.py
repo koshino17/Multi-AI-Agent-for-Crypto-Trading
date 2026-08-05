@@ -226,10 +226,12 @@ def _aggregate_candidate_rows(
                     "validation_expectancies": [],
                     "validation_profit_factors": [],
                     "validation_window_count": 0,
+                    "uses_custom_cost_model": False,
                 },
             )
             expectancy = float(row.get("expectancy_pct", 0.0) or 0.0)
             pf = float(row.get("profit_factor", 0.0) or 0.0)
+            bucket["uses_custom_cost_model"] = bool(bucket["uses_custom_cost_model"] or bool(row.get("uses_custom_cost_model")))
             if symbol == focus_symbol.upper():
                 bucket["focus_expectancies"].append(expectancy)
                 bucket["focus_profit_factors"].append(pf)
@@ -269,6 +271,7 @@ def _aggregate_candidate_rows(
                 "avg_validation_profit_factor": avg_validation_pf,
                 "validation_window_count": item["validation_window_count"],
                 "validation_guard_pass": validation_guard_pass,
+                "uses_custom_cost_model": bool(item["uses_custom_cost_model"]),
             }
         )
     aggregated.sort(
@@ -398,6 +401,15 @@ def run_strategy_research_cycle(
             "candidate_id": top_candidate.get("candidate_id", "") if top_candidate else "",
             "verdict": verdict,
             "rationale": rationale,
+            "avg_focus_expectancy_pct": float(top_candidate.get("avg_focus_expectancy_pct", 0.0) or 0.0) if top_candidate else 0.0,
+            "avg_focus_profit_factor": float(top_candidate.get("avg_focus_profit_factor", 0.0) or 0.0) if top_candidate else 0.0,
+            "focus_positive_windows": int(top_candidate.get("focus_positive_windows", 0) or 0) if top_candidate else 0,
+            "focus_window_count": int(top_candidate.get("focus_window_count", 0) or 0) if top_candidate else 0,
+            "avg_validation_expectancy_pct": float(top_candidate.get("avg_validation_expectancy_pct", 0.0) or 0.0) if top_candidate else 0.0,
+            "avg_validation_profit_factor": float(top_candidate.get("avg_validation_profit_factor", 0.0) or 0.0) if top_candidate else 0.0,
+            "validation_window_count": int(top_candidate.get("validation_window_count", 0) or 0) if top_candidate else 0,
+            "validation_guard_pass": bool(top_candidate.get("validation_guard_pass", False)) if top_candidate else False,
+            "uses_custom_cost_model": bool(top_candidate.get("uses_custom_cost_model", False)) if top_candidate else False,
         },
     }
     json_path = storage.benchmark_reports / f"strategy-research-{focus_symbol.replace('/', '-')}-{stamp}.json"

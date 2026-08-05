@@ -16,6 +16,33 @@
 
 ---
 
+## v1.1.8 - Let research-backed maker candidates graduate into bounded pilots
+
+### Why
+
+- The TradePulse daily stewardship run on Wednesday, August 5, 2026 found that the installed `bybit-demo-perp` runtime was healthy, fresh, and repeatedly reselecting `grid_range_reversion_maker_v1` as the strategy-research winner for `SOL/USDT`.
+- But the reflection loop could only open a low-participation pilot when `live_symbol_benchmark.candidate_id` matched the research recommendation, so a positive research candidate could be blocked by an unrelated benchmark row and never graduate into the bounded maker-pilot path.
+- The same reflection prompt also underspecified pilot controls, which made it harder for TradePulse to explicitly express a guarded pilot when evidence supported one.
+
+### What Changed
+
+- `trading_agents/strategy_research.py`
+  - Aggregate research rankings now preserve whether the candidate relied on custom costs.
+  - `strategy_research_latest` recommendations now carry post-cost expectancy / profit-factor metrics, validation-pass state, focus-window counts, and custom-cost usage for the promoted candidate.
+
+- `trading_agents/agents.py`
+  - Strategy-reflection LLM instructions now explicitly allow `capital_preservation_pilot`, `pilot_candidate_id`, and `pilot_max_position_pct`.
+  - The low-participation pilot gate now keys off the research recommendation's own post-cost metrics and validation guard instead of requiring a separate benchmark candidate to match first.
+  - Reflection context now forwards the richer research recommendation fields so both fallback logic and the LLM can reason about guarded pilot eligibility consistently.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage that a research-backed maker candidate can still enter bounded pilot mode when the benchmark row differs.
+
+### Result
+
+- TradePulse can now promote a research-backed maker candidate into a tiny guarded pilot when repeated observe-only windows justify collecting live evidence, even if the benchmark watch row is tracking a different candidate.
+- The bounded pilot path remains cost-aware and validation-aware instead of depending on a brittle candidate-ID coincidence.
+
 ## v1.1.7 - Keep active runner health fresh during live monitor cycles
 
 ### Why

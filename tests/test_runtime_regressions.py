@@ -516,6 +516,62 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(str(reflection.controls.get("entry_mode", "")), "capital_preservation_pilot")
         self.assertEqual(str(reflection.controls.get("pilot_candidate_id", "")), "grid_range_reversion_maker_v1")
 
+    def test_strategy_reflection_low_participation_pilot_uses_research_metrics_when_benchmark_differs(self) -> None:
+        agent = StrategyReflectionAgent(llm_client=None)
+        daily_summary = {
+            "blocked_reason_counts": {},
+            "rejection_reason_counts": {},
+            "selected_symbol_counts": {"SOL/USDT": 10},
+            "financial_snapshot": {
+                "daily_pnl_usdt": 0.04,
+                "realized_pnl_usdt": 0.0,
+                "unrealized_pnl_usdt": 0.0,
+                "daily_fees_usdt": 0.0,
+            },
+            "accepted_source_counts": {"fallback": 0, "base_strategy": 0},
+            "accepted_orders": 0,
+            "blocked": 0,
+            "loss_attribution": {"closed_episode_count": 0},
+            "external_benchmarks": {"top_candidates": [{}]},
+        }
+        reflection_context = {
+            "live_symbols": ["SOL/USDT"],
+            "current_live_symbol": "SOL/USDT",
+            "lookback_days": 5,
+            "negative_day_count": 0,
+            "negative_streak": 0,
+            "positive_streak": 2,
+            "low_participation_window_count": 3,
+            "low_participation_streak": 3,
+            "carry_in_loss_window_count": 0,
+            "carry_in_loss_streak": 0,
+            "stagnation_exit_window_count": 0,
+            "stagnation_exit_streak": 0,
+            "previous_controls": {
+                "entry_mode": "normal",
+                "benchmark_watch_candidate": "grid_range_reversion_maker_v1",
+            },
+            "current_window_accepted_orders": 0,
+            "current_window_closed_episodes": 0,
+            "strategy_research_recommendation": {
+                "candidate_id": "grid_range_reversion_maker_v1",
+                "verdict": "promotion_candidate",
+                "avg_focus_expectancy_pct": 0.13,
+                "avg_focus_profit_factor": 2.20,
+                "validation_guard_pass": True,
+                "uses_custom_cost_model": True,
+            },
+            "live_symbol_benchmark": {
+                "candidate_id": "grid_range_reversion_v1",
+                "expectancy_pct": -0.11,
+                "profit_factor": 0.50,
+                "uses_custom_cost_model": False,
+            },
+        }
+        reflection = agent.evaluate("2026-08-05-day", daily_summary, reflection_context=reflection_context)
+        self.assertEqual(str(reflection.controls.get("entry_mode", "")), "capital_preservation_pilot")
+        self.assertEqual(str(reflection.controls.get("pilot_candidate_id", "")), "grid_range_reversion_maker_v1")
+
     def test_low_sample_guard_does_not_stack_base_only_on_top_of_pilot(self) -> None:
         agent = StrategyReflectionAgent(llm_client=None)
         guarded = agent._apply_low_sample_guard(  # type: ignore[attr-defined]
