@@ -681,7 +681,13 @@ def _annotate_market_path_coverage(
 
     coverage_status = "ok"
     coverage_note = ""
-    if sample_count < 8 or coverage_ratio < 0.5:
+    if _local_now() < window_end:
+        coverage_status = "in_progress"
+        coverage_note = (
+            "active noon window still collecting the live market path; treat PO3, POC, VAH, VAL, "
+            "and FVG path conclusions as provisional until the window closes"
+        )
+    elif sample_count < 8 or coverage_ratio < 0.5:
         coverage_status = "low_coverage"
         coverage_note = (
             "runner appears to have produced only a partial decision path inside this noon window; "
@@ -2230,6 +2236,22 @@ def _window_label_to_bounds(date_label: str, anchor_hour: int = REPORT_WINDOW_AN
     return window_start, window_end
 
 
+def _window_progress(date_label: str, *, now: datetime | None = None) -> dict[str, Any]:
+    local_now = now.astimezone(LOCAL_TZ) if now is not None else _local_now()
+    window_start, window_end = _window_label_to_bounds(date_label)
+    is_complete = local_now >= window_end
+    reference_time = window_end if is_complete else local_now
+    elapsed_hours = max((max(min(reference_time, window_end), window_start) - window_start).total_seconds() / 3600.0, 0.0)
+    return {
+        "window_start": window_start,
+        "window_end": window_end,
+        "is_complete": is_complete,
+        "is_active": not is_complete,
+        "reference_time": reference_time,
+        "elapsed_hours": round(elapsed_hours, 2),
+    }
+
+
 def _load_strategy_research_latest(path: Path | None) -> dict[str, Any]:
     if path is None or not path.exists():
         return {}
@@ -2260,9 +2282,11 @@ def _build_runner_health_summary(runner_status: dict[str, Any], *, window_end: d
     updated_at = _parse_timestamp_local(runner_status.get("updated_at"))
     age_hours = 0.0
     updated_at_local = ""
+    reference_time = min(_local_now(), window_end)
+    reference_label = "window_end" if reference_time == window_end else "now"
     if updated_at is not None:
         updated_at_local = updated_at.isoformat()
-        age_hours = max((window_end - updated_at).total_seconds() / 3600.0, 0.0)
+        age_hours = max((reference_time - updated_at).total_seconds() / 3600.0, 0.0)
     return {
         "status": str(runner_status.get("status", "")).strip() or "unknown",
         "mode": str(runner_status.get("mode", "")).strip(),
@@ -2271,6 +2295,7 @@ def _build_runner_health_summary(runner_status: dict[str, Any], *, window_end: d
         "reason_code": str(runner_status.get("reason_code", "")).strip(),
         "updated_at_local": updated_at_local,
         "age_hours_vs_window_end": round(age_hours, 2),
+        "age_reference_label": reference_label,
     }
 
 
@@ -2281,13 +2306,18 @@ def _build_notion_review_summary(notion_state: dict[str, Any], *, date_label: st
     page_id = str(notion_state.get("page_id", "")).strip()
     lag_windows = 0
     status = "unknown"
+    progress = _window_progress(date_label)
+    target_label = _previous_report_date_label(date_label) if progress["is_active"] else date_label
     if latest_window:
         try:
             latest_end, current_end = (
-                datetime.strptime(label, "%Y-%m-%d").date() for label in (latest_window, date_label)
+                datetime.strptime(label, "%Y-%m-%d").date() for label in (latest_window, target_label)
             )
             lag_windows = max((current_end - latest_end).days, 0)
-            status = "fresh" if lag_windows == 0 else "stale"
+            if progress["is_active"] and lag_windows == 0 and latest_window != date_label:
+                status = "pending_current_window"
+            else:
+                status = "fresh" if lag_windows == 0 else "stale"
         except ValueError:
             status = "invalid_state"
     else:
@@ -3730,12 +3760,17 @@ def build_daily_summary(
             ]
         )
     if runner_health:
+        lag_label = (
+            "lag_vs_window_end"
+            if runner_health.get("age_reference_label") == "window_end"
+            else "lag_vs_now"
+        )
         lines.extend(
             [
                 (
                     f"- Runner Health: {runner_health.get('status', 'unknown')} | "
                     f"updated={runner_health.get('updated_at_local', 'n/a') or 'n/a'} | "
-                    f"lag_vs_window_end={float(runner_health.get('age_hours_vs_window_end', 0.0)):.2f}h"
+                    f"{lag_label}={float(runner_health.get('age_hours_vs_window_end', 0.0)):.2f}h"
                 ),
                 (
                     f"- Runner Health Note: "

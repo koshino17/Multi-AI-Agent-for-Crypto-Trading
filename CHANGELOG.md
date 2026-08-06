@@ -16,6 +16,30 @@
 
 ---
 
+## v1.1.8 - Mark active noon-window reports as in-progress instead of stale
+
+### Why
+
+- The TradePulse daily stewardship run on Thursday, August 6, 2026 found that the installed `bybit-demo-perp` runtime was healthy and cycling, but the freshly opened `2026-08-07` noon-window draft already read like a failed completed review.
+- The active-window report showed `lag_vs_window_end=23.75h`, `Notion Daily Review: stale`, and `Market Data Coverage: low_coverage` even though that window had only been live for about 15 minutes and the latest completed review was already published in Notion.
+- That ambiguity weakens the TradePulse learning loop because automation can misclassify an in-progress evidence bundle as stale ops data and overreact with unnecessary strategy changes.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Added active-window progress detection for noon-anchored daily reports.
+  - Runner freshness now reports against `now` while a window is still open, so the active draft shows `lag_vs_now` instead of a false lag against the future window end.
+  - Notion review status now reports `pending_current_window` when the latest published review matches the most recent completed noon window.
+  - Market-path coverage now reports `in_progress` for active noon windows instead of `low_coverage`.
+
+- `tests/test_runtime_regressions.py`
+  - Added regressions for active-window Notion status, active-window market-path coverage, and the rendered `lag_vs_now` summary line.
+
+### Result
+
+- TradePulse daily stewardship can distinguish a healthy in-progress noon draft from a genuinely stale completed review.
+- PO3/POC/VAH/VAL/FVG conclusions for the active window are still marked provisional, but the report no longer creates a false ops alarm before the window closes.
+
 ## v1.1.7 - Keep active runner health fresh during live monitor cycles
 
 ### Why

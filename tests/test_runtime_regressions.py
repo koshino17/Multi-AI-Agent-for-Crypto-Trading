@@ -4,7 +4,7 @@ import json
 import subprocess
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -20,6 +20,8 @@ from trading_agents.main import (
 )
 from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyCandidate, StrategyResearchSnapshot, TradeIdea
 from trading_agents.reporting import (
+    _annotate_market_path_coverage,
+    _build_notion_review_summary,
     _build_financial_snapshot,
     _build_market_path_review,
     _build_symbol_postmortem,
@@ -302,6 +304,79 @@ class RuntimeRegressionTests(unittest.TestCase):
             self.assertIn("- Runner Health: blocked", content)
             self.assertIn("Missing Bybit Demo API credentials.", content)
             self.assertIn("- Notion Daily Review: stale | latest_published_window=2026-07-18 | lag=7 windows", content)
+
+    def test_active_window_notion_review_marks_pending_current_window(self) -> None:
+        active_now = datetime.fromisoformat("2026-08-06T12:30:00+08:00")
+        with mock.patch("trading_agents.reporting._local_now", return_value=active_now):
+            status = _build_notion_review_summary(
+                {"date_label": "2026-08-06", "page_id": "notion-page-123"},
+                date_label="2026-08-07",
+            )
+        self.assertEqual(status["status"], "pending_current_window")
+        self.assertEqual(status["lag_windows"], 0)
+
+    def test_active_window_market_path_coverage_is_in_progress(self) -> None:
+        active_now = datetime.fromisoformat("2026-08-06T12:30:00+08:00")
+        window_start = datetime.fromisoformat("2026-08-06T12:00:00+08:00")
+        window_end = window_start + timedelta(days=1)
+        market_path = {
+            "symbol": "SOL/USDT",
+            "sample_count": 2,
+            "first_timestamp_local": "2026-08-06T12:01:29+08:00",
+            "last_timestamp_local": "2026-08-06T12:15:30+08:00",
+        }
+        with mock.patch("trading_agents.reporting._local_now", return_value=active_now):
+            annotated = _annotate_market_path_coverage(
+                market_path,
+                window_start=window_start,
+                window_end=window_end,
+            )
+        self.assertEqual(annotated["coverage_status"], "in_progress")
+        self.assertIn("active noon window still collecting", annotated["coverage_note"])
+
+    def test_daily_summary_uses_lag_vs_now_for_active_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = build_storage_layout(tmpdir)
+            _write_runner_status(
+                storage.runner_status,
+                {
+                    "status": "started",
+                    "mode": "bybit-demo-perp",
+                    "symbol": "SOL/USDT",
+                    "detail": "monitoring for new candle, account change, or breakout",
+                    "updated_at": "2026-08-06T04:21:52+00:00",
+                },
+            )
+            storage.notion_daily_review_state.write_text(
+                json.dumps(
+                    {
+                        "date_label": "2026-08-06",
+                        "page_id": "notion-page-123",
+                    }
+                )
+            )
+            settings = SimpleNamespace(
+                trading_mode="bybit-demo-perp",
+                data_root=tmpdir,
+                initial_balance_usdt=500.0,
+                taker_fee_pct=0.001,
+                observation_pool=["SOL/USDT"],
+                external_ai_review_enabled=False,
+            )
+            active_now = datetime.fromisoformat("2026-08-06T12:30:00+08:00")
+            with mock.patch("trading_agents.config.load_settings", return_value=settings), mock.patch(
+                "trading_agents.reporting._local_now", return_value=active_now
+            ):
+                content = build_daily_summary(
+                    storage.trade_logs,
+                    "2026-08-07",
+                    storage.runner_log,
+                    trading_mode="bybit-demo-perp",
+                    storage_root=tmpdir,
+                )
+
+            self.assertIn("lag_vs_now=", content)
+            self.assertIn("- Notion Daily Review: pending_current_window | latest_published_window=2026-08-06 | lag=0 windows", content)
 
     def test_runner_event_counts_skip_large_non_event_lines(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
