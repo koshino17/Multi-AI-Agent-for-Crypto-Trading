@@ -1582,7 +1582,8 @@ class DailyReviewAgent:
                     "Return JSON with keys title, operations_summary, decision_summary, strategist_review, "
                     "risk_review, benchmark_review, execution_review, consensus_summary, "
                     "improvement_directions, action_items. "
-                    "improvement_directions and action_items must be short arrays of concrete next steps. "
+                    "Keep every narrative value to one short sentence. "
+                    "improvement_directions and action_items must be short arrays of concrete next steps with at most 4 items each. "
                     f"date_label={date_label}; "
                     f"daily_summary_brief=\n{llm_brief}"
                 ),

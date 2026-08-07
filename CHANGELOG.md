@@ -16,6 +16,27 @@
 
 ---
 
+## v1.1.8 - Stabilize TradePulse noon-window daily reviewer completions
+
+### Why
+
+- The TradePulse daily stewardship run on Friday, August 7, 2026 found that the installed `bybit-demo-perp` runtime was healthy and cycling, but the machine-written `daily_strategy_review-YYYY-MM-DD.json` kept falling back with `review_status=fallback_error` and `review_error=timed out`.
+- This was not isolated noise: the installed runtime showed repeated daily reviewer timeouts from Friday, August 1, 2026 through Friday, August 7, 2026, which weakened the TradePulse learning loop even when the strategy reflection step still completed.
+- A broken noon-window reviewer is a profitability issue because TradePulse loses compact RL-style lessons and keeps relying on fallback prose while under-participation persists.
+
+### What Changed
+
+- `trading_agents/config.py`
+  - Increased the dedicated `STRATEGY_REVIEW_LLM_TIMEOUT_SECONDS` default from `60` to `120` seconds so the noon-window daily reviewer has more headroom than the regular cycle LLM.
+
+- `trading_agents/agents.py`
+  - Tightened the daily reviewer prompt so each narrative field stays to one short sentence and action arrays stay compact, reducing response size while preserving the same JSON schema.
+
+### Result
+
+- TradePulse daily reviews have a materially better chance of completing with an actual model-written review instead of a timeout fallback.
+- The fix is scoped to the noon-window review path only; it does not loosen live trade sizing, entry thresholds, or runtime execution guardrails.
+
 ## v1.1.7 - Keep active runner health fresh during live monitor cycles
 
 ### Why

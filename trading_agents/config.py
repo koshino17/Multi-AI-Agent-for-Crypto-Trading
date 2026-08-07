@@ -104,7 +104,7 @@ class Settings:
     strategy_research_focus_limits: tuple[str, ...] = _list("STRATEGY_RESEARCH_FOCUS_LIMITS", "320,1000")
     strategy_research_validation_symbols: tuple[str, ...] = _list("STRATEGY_RESEARCH_VALIDATION_SYMBOLS", "BTC/USDT,ETH/USDT")
     llm_timeout_seconds: float = _float("LLM_TIMEOUT_SECONDS", 45.0)
-    strategy_review_llm_timeout_seconds: float = _float("STRATEGY_REVIEW_LLM_TIMEOUT_SECONDS", 60.0)
+    strategy_review_llm_timeout_seconds: float = _float("STRATEGY_REVIEW_LLM_TIMEOUT_SECONDS", 120.0)
     sentiment_request_timeout_seconds: float = _float("SENTIMENT_REQUEST_TIMEOUT_SECONDS", 6.0)
     sentiment_cache_ttl_seconds: float = _float("SENTIMENT_CACHE_TTL_SECONDS", 120.0)
     llm_full_cycle_only: bool = _bool("LLM_FULL_CYCLE_ONLY", True)
