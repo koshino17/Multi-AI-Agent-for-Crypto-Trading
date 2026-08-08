@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from trading_agents.agents import RiskSupervisorAgent, StrategistAgent, StrategyReflectionAgent
+from trading_agents.agents import RiskSupervisorAgent, SelectorAgent, StrategistAgent, StrategyReflectionAgent
 from trading_agents.exchange import _build_fvg_features, _build_microstructure_features, _infer_po3_phase_hint
 from trading_agents.llm import _trace_date_label
 from trading_agents.main import (
@@ -515,6 +515,48 @@ class RuntimeRegressionTests(unittest.TestCase):
         reflection = agent.evaluate("2026-05-13-day", daily_summary, reflection_context=reflection_context)
         self.assertEqual(str(reflection.controls.get("entry_mode", "")), "capital_preservation_pilot")
         self.assertEqual(str(reflection.controls.get("pilot_candidate_id", "")), "grid_range_reversion_maker_v1")
+
+    def test_strategy_reflection_uses_fallback_summary_when_window_is_low_sample(self) -> None:
+        class FakeLLM:
+            def generate_json(self, prompt: str, trace: dict | None = None) -> dict:
+                return {
+                    "summary": "今日系统总体表现良好，尽管没有接受任何策略建议，但持有的SOL/USDT在日内方向性上涨中表现出色。",
+                    "biases": ["watch SOL/USDT"],
+                    "risk_adjustments": ["stay conservative"],
+                    "focus_symbols": ["SOL/USDT"],
+                    "controls": {"fallback_entry_mode": "base_only"},
+                }
+
+        agent = StrategyReflectionAgent(llm_client=FakeLLM())
+        daily_summary = {
+            "blocked_reason_counts": {},
+            "rejection_reason_counts": {},
+            "selected_symbol_counts": {"SOL/USDT": 8},
+            "financial_snapshot": {
+                "daily_pnl_usdt": 0.14,
+                "realized_pnl_usdt": 0.0,
+                "unrealized_pnl_usdt": 0.0,
+                "daily_fees_usdt": 0.0,
+            },
+            "accepted_source_counts": {"fallback": 0, "base_strategy": 0},
+            "accepted_orders": 0,
+            "blocked": 0,
+            "loss_attribution": {"closed_episode_count": 0},
+            "external_benchmarks": {"top_candidates": [{}]},
+        }
+        reflection = agent.evaluate(
+            "2026-05-21-day",
+            daily_summary,
+            reflection_context={
+                "live_symbols": ["SOL/USDT"],
+                "current_live_symbol": "SOL/USDT",
+                "current_window_accepted_orders": 0,
+                "current_window_closed_episodes": 0,
+                "previous_controls": {"fallback_entry_mode": "base_only"},
+            },
+        )
+        self.assertIn("12h reflection for 2026-05-21-day", reflection.summary)
+        self.assertNotIn("总体表现良好", reflection.summary)
 
     def test_low_sample_guard_does_not_stack_base_only_on_top_of_pilot(self) -> None:
         agent = StrategyReflectionAgent(llm_client=None)
@@ -1211,6 +1253,33 @@ class RuntimeRegressionTests(unittest.TestCase):
         }
         reflection = agent.evaluate("2026-05-20-day", daily_summary, reflection_context=reflection_context)
         self.assertGreaterEqual(float(reflection.controls.get("cooldown_scale", 0.0) or 0.0), 0.75)
+
+    def test_selector_rewrites_watch_only_llm_summary_with_factual_observe_only_text(self) -> None:
+        class FakeLLM:
+            def generate_json(self, prompt: str, trace: dict | None = None) -> dict:
+                return {
+                    "symbol": "SOL/USDT",
+                    "summary": "当前策略对SOL/USDT的持有状态和表现良好，因此继续保持现有持仓。",
+                }
+
+        agent = SelectorAgent(llm_client=FakeLLM())
+        chosen, summary = agent.select(
+            [
+                {
+                    "symbol": "SOL/USDT",
+                    "idea": {"action": "hold", "score": 0.41},
+                    "approval": {"approved": False, "reason": "no trade proposed"},
+                    "backtest": {"expectancy_pct": 0.0, "profit_factor": 0.0, "cumulative_return_pct": 0.0},
+                    "selected_strategy_backtest": {"expectancy_pct": -0.33, "profit_factor": 0.0},
+                    "strategy_research": {"selected_strategy_id": "donchian_adx_perp_v1"},
+                }
+            ],
+            strategy_memory={"focus_symbols": ["SOL/USDT"]},
+        )
+        self.assertEqual(chosen["symbol"], "SOL/USDT")
+        self.assertIn("no executable candidate; keep SOL/USDT on watch", summary)
+        self.assertIn("expectancy=-0.33%", summary)
+        self.assertNotIn("表现良好", summary)
 
     def test_microstructure_features_include_value_profile_fvg_and_po3_hints(self) -> None:
         features = _build_microstructure_features(

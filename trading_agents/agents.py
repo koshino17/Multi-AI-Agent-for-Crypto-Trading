@@ -1945,9 +1945,12 @@ class StrategyReflectionAgent:
             if not isinstance(controls, dict):
                 controls = fallback.controls
             normalized_controls = self._normalize_controls(controls, fallback.controls, reflection_context=reflection_context)
+            summary = str(response.get("summary", fallback.summary)).strip() or fallback.summary
+            if self._prefer_fallback_summary(daily_summary):
+                summary = fallback.summary
             return StrategyReflectionSnapshot(
                 slot=slot,
-                summary=str(response.get("summary", fallback.summary)).strip() or fallback.summary,
+                summary=summary,
                 biases=[str(item).strip() for item in biases if str(item).strip()][:4] or fallback.biases,
                 risk_adjustments=[str(item).strip() for item in adjustments if str(item).strip()][:4] or fallback.risk_adjustments,
                 focus_symbols=[str(item).strip() for item in focus_symbols if str(item).strip()][:4] or fallback.focus_symbols,
@@ -1956,6 +1959,13 @@ class StrategyReflectionAgent:
             )
         except Exception:
             return fallback
+
+    def _prefer_fallback_summary(self, daily_summary: dict) -> bool:
+        accepted_orders = int(daily_summary.get("accepted_orders", 0) or 0)
+        closed_episode_count = int((daily_summary.get("loss_attribution") or {}).get("closed_episode_count", 0) or 0)
+        min_accepted_orders = int(self.settings.strategy_learning_min_accepted_orders or 0)
+        min_closed_episodes = int(self.settings.strategy_learning_min_closed_episodes or 0)
+        return accepted_orders < min_accepted_orders or closed_episode_count < min_closed_episodes
 
     def _fallback(self, slot: str, daily_summary: dict, reflection_context: dict | None = None) -> StrategyReflectionSnapshot:
         reflection_context = reflection_context or {}
@@ -2518,21 +2528,7 @@ class SelectorAgent:
         if llm_choice is not None:
             return llm_choice
         chosen = ranked[0]
-        if chosen["approval"]["approved"]:
-            summary = (
-                f"selected {chosen['symbol']} with {chosen['idea']['action']} "
-                f"score={float(chosen['idea']['score']):.2f}"
-            )
-        elif chosen["idea"]["action"] == "hold":
-            summary = (
-                f"no executable candidate; best observe-only symbol was {chosen['symbol']} "
-                f"(hold, score={float(chosen['idea']['score']):.2f})"
-            )
-        else:
-            summary = (
-                f"no symbol approved; closest candidate was {chosen['symbol']} "
-                f"({chosen['idea']['action']}, {chosen['approval']['reason']})"
-            )
+        summary = self._safe_summary(chosen, fallback_symbol=chosen["symbol"])
         return chosen, summary
 
     def _llm_select(
@@ -2592,6 +2588,46 @@ class SelectorAgent:
         chosen = next((item for item in candidates if item["symbol"] == symbol), None)
         if chosen is None:
             return None
-        if not summary:
-            return None
-        return chosen, summary
+        safe_summary = self._safe_summary(chosen, fallback_symbol=fallback["symbol"], proposed_summary=summary)
+        return chosen, safe_summary
+
+    def _safe_summary(self, chosen: dict, *, fallback_symbol: str, proposed_summary: str = "") -> str:
+        if bool(chosen.get("approval", {}).get("approved")):
+            summary = proposed_summary.strip()
+            if summary:
+                return summary
+            return (
+                f"selected {chosen['symbol']} with {chosen['idea']['action']} "
+                f"score={float(chosen['idea']['score']):.2f}"
+            )
+        if str(chosen.get("idea", {}).get("action", "hold") or "hold").strip().lower() == "hold":
+            return self._observe_only_summary(chosen, fallback_symbol=fallback_symbol)
+        return self._blocked_candidate_summary(chosen, fallback_symbol=fallback_symbol)
+
+    def _observe_only_summary(self, chosen: dict, *, fallback_symbol: str) -> str:
+        selected = chosen.get("selected_strategy_backtest") or chosen.get("backtest", {})
+        expectancy = float(selected.get("expectancy_pct", chosen.get("backtest", {}).get("expectancy_pct", 0.0)) or 0.0)
+        profit_factor = float(selected.get("profit_factor", chosen.get("backtest", {}).get("profit_factor", 0.0)) or 0.0)
+        strategy_id = str((chosen.get("strategy_research") or {}).get("selected_strategy_id", "") or "").strip() or "selected strategy"
+        if chosen.get("symbol") == fallback_symbol:
+            return (
+                f"no executable candidate; keep {chosen['symbol']} on watch "
+                f"(hold, score={float(chosen['idea']['score']):.2f}, strategy={strategy_id}, "
+                f"expectancy={expectancy:+.2f}%, pf={profit_factor:.2f})"
+            )
+        return (
+            f"no executable candidate; fallback stayed on {fallback_symbol} instead of recentering to "
+            f"{chosen['symbol']} (hold, score={float(chosen['idea']['score']):.2f}, "
+            f"strategy={strategy_id}, expectancy={expectancy:+.2f}%, pf={profit_factor:.2f})"
+        )
+
+    def _blocked_candidate_summary(self, chosen: dict, *, fallback_symbol: str) -> str:
+        if chosen.get("symbol") == fallback_symbol:
+            return (
+                f"no symbol approved; keep {chosen['symbol']} as fallback "
+                f"({chosen['idea']['action']}, {chosen['approval']['reason']})"
+            )
+        return (
+            f"no symbol approved; fallback stayed on {fallback_symbol} instead of switching to "
+            f"{chosen['symbol']} ({chosen['idea']['action']}, {chosen['approval']['reason']})"
+        )

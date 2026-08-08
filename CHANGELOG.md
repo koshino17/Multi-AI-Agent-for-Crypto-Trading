@@ -16,6 +16,28 @@
 
 ---
 
+## v1.1.8 - Fail closed on low-sample reflection and watch-only selector narratives
+
+### Why
+
+- The TradePulse daily stewardship run on Saturday, August 8, 2026 found the installed `bybit-demo-perp` runtime healthy and cycling, but the 12-hour strategy memory for the completed `2026-08-08` noon window still wrote an overly positive summary even though there were zero accepted trades and the selected replay edge was negative.
+- That misleading memory then leaked into the selector prompt, which produced watch-only summaries claiming the system was already holding or performing well while the account was flat and the chosen candidate was an observe-only `hold`.
+- This is a learning-loop defect: when TradePulse has low-sample or no-trade evidence, it must preserve factual defensive summaries so future PO3/benchmark decisions do not inherit false confidence.
+
+### What Changed
+
+- `trading_agents/agents.py`
+  - `StrategyReflectionAgent` now prefers its deterministic fallback summary whenever the noon window is still low-sample by the configured accepted-order / closed-episode guard, even if the LLM returns a more confident narrative.
+  - `SelectorAgent` now rewrites non-executable LLM summaries into factual watch-only or blocked-candidate summaries, including selected-strategy expectancy and profit factor, so observe-only cycles cannot claim nonexistent positions or “good performance”.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for low-sample reflection summaries and selector watch-only summary sanitization.
+
+### Result
+
+- TradePulse strategy memory now fails closed into machine-grounded summaries when live evidence is thin.
+- Selector output for flat, no-trade cycles now stays aligned with actual account state and negative/weak replay evidence instead of reinforcing false positives.
+
 ## v1.1.7 - Keep active runner health fresh during live monitor cycles
 
 ### Why
