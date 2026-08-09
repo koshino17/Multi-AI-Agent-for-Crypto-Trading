@@ -112,6 +112,24 @@ class MentorReviewTests(unittest.TestCase):
         self.assertFalse(gate["pass"])
         self.assertTrue(any("validation expectancy" in reason for reason in gate["reasons"]))
 
+    def test_custom_cost_candidate_fails_shadow_gate(self) -> None:
+        settings = self._settings()
+        runs = self._gate_runs(candidate_trade_count=8)
+        for run in runs:
+            for row in run["ranked_results"]:
+                if row.get("candidate_id") == "pilot_v1":
+                    row["uses_custom_cost_model"] = True
+        gate = evaluate_shadow_gate(
+            settings=settings,
+            storage=SimpleNamespace(),
+            candidate_id="pilot_v1",
+            focus_symbol="SOL/USDT",
+            validation_symbols=("BTC/USDT", "ETH/USDT"),
+            benchmark_runs=runs,
+        )
+        self.assertFalse(gate["pass"])
+        self.assertTrue(any("custom cost model" in reason for reason in gate["reasons"]))
+
     def test_autopromote_whitelist_blocks_non_live_controls(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = build_storage_layout(tmpdir)

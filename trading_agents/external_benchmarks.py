@@ -84,6 +84,12 @@ def build_benchmark_cost_model(settings, candidate: ExternalBenchmarkCandidate |
     )
 
 
+def uses_custom_benchmark_cost_model(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    return bool(payload.get("uses_custom_cost_model", False))
+
+
 def load_external_benchmark_library(path: str | Path) -> tuple[str, list[ExternalBenchmarkCandidate]]:
     payload = json.loads(Path(path).read_text())
     baseline = str(payload.get("baseline_strategy_id", "")).strip()

@@ -1491,6 +1491,9 @@ def _build_shadow_benchmark_watch(
                 return item
         return {}
 
+    def _eligible_shadow_row(item: dict[str, Any]) -> bool:
+        return bool(item) and not bool(item.get("uses_custom_cost_model", False))
+
     baseline = _find(baseline_id)
     leader = symbol_rows[0] if symbol_rows and isinstance(symbol_rows[0], dict) else {}
     allowed_shadow_candidates = [
@@ -1531,6 +1534,7 @@ def _build_shadow_benchmark_watch(
         and recommended_verdict in {"shadow_candidate", "promotion_candidate"}
         and leader_id == baseline_id
         and baseline_positive_edge
+        and _eligible_shadow_row(baseline)
     ):
         return {
             "status": "baseline_confirmed",
@@ -1563,6 +1567,7 @@ def _build_shadow_benchmark_watch(
             and recommended_watch_id != baseline_id
             and recommended_watch_id in allowed_shadow_candidates
             and bool(recommended_row)
+            and _eligible_shadow_row(recommended_row)
             and recommended_verdict in {"shadow_candidate", "promotion_candidate"}
             and int(recommended_row.get("trade_count", 0) or 0) >= 8
             and (
@@ -1578,6 +1583,7 @@ def _build_shadow_benchmark_watch(
             leader_id
             and leader_id != baseline_id
             and leader_id in allowed_shadow_candidates
+            and _eligible_shadow_row(leader)
             and int(leader.get("trade_count", 0) or 0) >= 8
         ):
             chosen_watch_id = leader_id
@@ -1587,7 +1593,7 @@ def _build_shadow_benchmark_watch(
                 (
                     candidate_id
                     for candidate_id in allowed_shadow_candidates
-                    if candidate_id != baseline_id and _find(candidate_id)
+                    if candidate_id != baseline_id and _eligible_shadow_row(_find(candidate_id))
                 ),
                 "",
             )

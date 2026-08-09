@@ -315,6 +315,8 @@ def evaluate_shadow_gate(
             reasons.append(f"{focus_symbol} window {window}: missing baseline or candidate")
             continue
         candidate = comparison["candidate"]
+        if bool(candidate.get("uses_custom_cost_model", False)):
+            reasons.append(f"{focus_symbol} window {window}: candidate uses research-only custom cost model")
         if int(candidate.get("trade_count", 0) or 0) < min_trades:
             reasons.append(f"{focus_symbol} window {window}: candidate trade_count below {min_trades}")
         if int(window) == 96:
@@ -342,6 +344,8 @@ def evaluate_shadow_gate(
                 comparisons.append(comparison)
                 continue
             candidate = comparison["candidate"]
+            if bool(candidate.get("uses_custom_cost_model", False)):
+                reasons.append(f"{symbol} window {window}: validation candidate uses research-only custom cost model")
             if _safe_float(candidate.get("expectancy_pct")) <= -0.10:
                 reasons.append(f"{symbol} window {window}: validation expectancy_pct <= -0.10")
             if _safe_float(candidate.get("profit_factor")) <= 0.80:

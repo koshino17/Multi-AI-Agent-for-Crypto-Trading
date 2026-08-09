@@ -16,6 +16,48 @@
 
 ---
 
+## v1.1.8 - Remove research-only maker-cost leakage from live TradePulse strategy selection
+
+### Why
+
+- The completed TradePulse noon window for Saturday, August 8, 2026 to Sunday, August 9, 2026 showed a dangerous cost-model mismatch: the live report said the runner uses a `0.24%` round-trip friction model, while the benchmark leader and live baseline were still the research-only `grid_range_reversion_maker_v1` variant using a `0.05%` custom maker-cost assumption.
+- That leakage let TradePulse treat a strategy with only `+0.06%` benchmark expectancy as a live-aligned winner even though the same edge is not economically valid under the live taker-fee/slippage model.
+- The same custom-cost candidate was also eligible for shadow watch and pilot logic, which risked promoting research-only evidence into live policy changes.
+
+### What Changed
+
+- `config/strategy_library.json`
+  - Added the live-cost `grid_range_reversion_v1` strategy to the TradePulse live library.
+  - Switched the live base strategy from `grid_range_reversion_maker_v1` to `grid_range_reversion_v1`.
+
+- `config/external_benchmark_library.json`
+  - Switched the benchmark baseline strategy to `grid_range_reversion_v1` so baseline comparisons use the live-cost variant instead of the research-only maker variant.
+
+- `trading_agents/external_benchmarks.py`
+  - Added a helper to mark candidate rows that still rely on custom benchmark cost assumptions.
+
+- `trading_agents/strategy_research.py`
+  - Strategy research aggregate ranking now demotes custom-cost candidates behind live-cost-safe candidates.
+  - Research recommendations no longer return `shadow_candidate` or `promotion_candidate` when the top row still depends on research-only cost overrides.
+
+- `trading_agents/reporting.py`
+  - Shadow benchmark watch now refuses to auto-select custom-cost candidates for baseline confirmation or promotion tracking.
+
+- `trading_agents/agents.py`
+  - Reflection and pilot logic now require live-cost-safe benchmark evidence before setting watch candidates or enabling pilot mode.
+
+- `trading_agents/mentor_review.py`
+  - Mentor shadow gate now fails any candidate that still relies on a research-only custom cost model.
+
+- `tests/test_mentor_review.py`
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for the custom-cost promotion guard and updated pilot/control tests to use the live-cost grid candidate where appropriate.
+
+### Result
+
+- TradePulse can still research maker-style range-reversion ideas, but those variants now remain explicitly research-only until they prove positive under live-cost assumptions.
+- Live baseline alignment, shadow watch, and pilot gating now reflect real fee/slippage economics instead of overstated maker-only expectancy.
+
 ## v1.1.7 - Keep active runner health fresh during live monitor cycles
 
 ### Why
