@@ -496,13 +496,13 @@ class RuntimeRegressionTests(unittest.TestCase):
             "stagnation_exit_streak": 0,
             "previous_controls": {
                 "entry_mode": "capital_preservation_pilot",
-                "pilot_candidate_id": "grid_range_reversion_maker_v1",
+                "pilot_candidate_id": "grid_range_reversion_v1",
                 "pilot_max_position_pct": 0.10,
             },
             "current_window_accepted_orders": 0,
             "current_window_closed_episodes": 0,
             "strategy_research_recommendation": {
-                "candidate_id": "grid_range_reversion_maker_v1",
+                "candidate_id": "grid_range_reversion_v1",
                 "verdict": "research_only",
             },
             "live_symbol_benchmark": {
@@ -514,20 +514,20 @@ class RuntimeRegressionTests(unittest.TestCase):
         }
         reflection = agent.evaluate("2026-05-13-day", daily_summary, reflection_context=reflection_context)
         self.assertEqual(str(reflection.controls.get("entry_mode", "")), "capital_preservation_pilot")
-        self.assertEqual(str(reflection.controls.get("pilot_candidate_id", "")), "grid_range_reversion_maker_v1")
+        self.assertEqual(str(reflection.controls.get("pilot_candidate_id", "")), "grid_range_reversion_v1")
 
     def test_low_sample_guard_does_not_stack_base_only_on_top_of_pilot(self) -> None:
         agent = StrategyReflectionAgent(llm_client=None)
         guarded = agent._apply_low_sample_guard(  # type: ignore[attr-defined]
             {
                 "entry_mode": "capital_preservation_pilot",
-                "pilot_candidate_id": "grid_range_reversion_maker_v1",
+                "pilot_candidate_id": "grid_range_reversion_v1",
                 "pilot_max_position_pct": 0.10,
                 "fallback_entry_mode": "base_only",
             },
             {
                 "entry_mode": "capital_preservation_pilot",
-                "pilot_candidate_id": "grid_range_reversion_maker_v1",
+                "pilot_candidate_id": "grid_range_reversion_v1",
                 "pilot_max_position_pct": 0.10,
                 "fallback_entry_mode": "base_only",
             },
@@ -548,7 +548,7 @@ class RuntimeRegressionTests(unittest.TestCase):
             {
                 "entry_mode": "capital_preservation_pilot",
                 "pilot_max_position_pct": 0.10,
-                "benchmark_watch_candidate": "grid_range_reversion_maker_v1",
+                "benchmark_watch_candidate": "grid_range_reversion_v1",
             },
             {},
             reflection_context={
@@ -559,14 +559,14 @@ class RuntimeRegressionTests(unittest.TestCase):
                     "control_deltas": {
                         "pilot_candidate_id": {
                             "previous": None,
-                            "current": "grid_range_reversion_maker_v1",
+                            "current": "grid_range_reversion_v1",
                         }
                     }
                 },
             },
         )
         self.assertEqual(str(normalized.get("entry_mode", "")), "capital_preservation_pilot")
-        self.assertEqual(str(normalized.get("pilot_candidate_id", "")), "grid_range_reversion_maker_v1")
+        self.assertEqual(str(normalized.get("pilot_candidate_id", "")), "grid_range_reversion_v1")
 
     def test_strategy_research_uses_memory_to_bias_candidate_selection(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -586,6 +586,11 @@ class RuntimeRegressionTests(unittest.TestCase):
                                 "id": "grid_range_reversion_maker_v1",
                                 "name": "Grid Maker",
                                 "generator": "grid_range_reversion",
+                                "source": "research_execution_variant",
+                                "params": {
+                                    "assumed_round_trip_fee_pct": 0.04,
+                                    "assumed_round_trip_slippage_pct": 0.01
+                                },
                                 "execution": {"entry_order_type": "limit", "entry_liquidity": "maker"},
                             },
                         ],
@@ -617,12 +622,100 @@ class RuntimeRegressionTests(unittest.TestCase):
                 strategy_memory={
                     "controls": {
                         "benchmark_watch_candidate": "grid_range_reversion_maker_v1",
-                        "pilot_candidate_id": "grid_range_reversion_maker_v1",
+                        "pilot_candidate_id": "grid_range_reversion_v1",
                         "entry_mode": "capital_preservation_pilot",
                     }
                 },
             )
-            self.assertEqual(result.selected_strategy_id, "grid_range_reversion_maker_v1")
+            self.assertEqual(result.selected_strategy_id, "donchian_adx_perp_v1")
+
+    def test_strategy_research_cycle_does_not_promote_custom_cost_candidate(self) -> None:
+        runs = [
+            {
+                "symbol": "SOL/USDT",
+                "limit": 320,
+                "json_path": "focus.json",
+                "md_path": "focus.md",
+                "top_candidate": {"candidate_id": "grid_range_reversion_maker_v1"},
+                "ranked_results": [
+                    {"candidate_id": "grid_range_reversion_maker_v1", "expectancy_pct": 0.08, "profit_factor": 1.8, "uses_custom_cost_model": True},
+                    {"candidate_id": "grid_range_reversion_v1", "expectancy_pct": 0.04, "profit_factor": 1.3, "uses_custom_cost_model": False},
+                ],
+            },
+            {
+                "symbol": "BTC/USDT",
+                "limit": 320,
+                "json_path": "val1.json",
+                "md_path": "val1.md",
+                "top_candidate": {"candidate_id": "grid_range_reversion_maker_v1"},
+                "ranked_results": [
+                    {"candidate_id": "grid_range_reversion_maker_v1", "expectancy_pct": 0.03, "profit_factor": 1.2, "uses_custom_cost_model": True},
+                    {"candidate_id": "grid_range_reversion_v1", "expectancy_pct": 0.01, "profit_factor": 1.05, "uses_custom_cost_model": False},
+                ],
+            },
+            {
+                "symbol": "ETH/USDT",
+                "limit": 320,
+                "json_path": "val2.json",
+                "md_path": "val2.md",
+                "top_candidate": {"candidate_id": "grid_range_reversion_maker_v1"},
+                "ranked_results": [
+                    {"candidate_id": "grid_range_reversion_maker_v1", "expectancy_pct": 0.02, "profit_factor": 1.1, "uses_custom_cost_model": True},
+                    {"candidate_id": "grid_range_reversion_v1", "expectancy_pct": 0.01, "profit_factor": 1.02, "uses_custom_cost_model": False},
+                ],
+            },
+        ]
+        from trading_agents.strategy_research import _aggregate_candidate_rows
+
+        ranking = _aggregate_candidate_rows(
+            research_runs=runs,
+            focus_symbol="SOL/USDT",
+            validation_symbols=("BTC/USDT", "ETH/USDT"),
+        )
+        self.assertEqual(ranking[0]["candidate_id"], "grid_range_reversion_v1")
+        self.assertFalse(bool(ranking[0]["uses_custom_cost_model"]))
+
+    def test_external_benchmarks_prefer_live_cost_safe_top_rows(self) -> None:
+        from trading_agents.external_benchmarks import ExternalBenchmarkResult, _prefer_live_cost_safe_results
+
+        rows = [
+            ExternalBenchmarkResult(
+                candidate_id="grid_range_reversion_maker_v1",
+                candidate_name="Grid Maker",
+                source="research_execution_variant",
+                symbol="SOL/USDT",
+                timeframe="15m",
+                signal_count=8,
+                trade_count=8,
+                win_rate=0.75,
+                avg_return_pct=0.24,
+                cumulative_return_pct=1.92,
+                avg_win_pct=0.32,
+                avg_loss_pct=-0.12,
+                expectancy_pct=0.24,
+                profit_factor=4.1,
+                uses_custom_cost_model=True,
+            ),
+            ExternalBenchmarkResult(
+                candidate_id="grid_range_reversion_v1",
+                candidate_name="Grid",
+                source="public_grid_derived",
+                symbol="SOL/USDT",
+                timeframe="15m",
+                signal_count=8,
+                trade_count=8,
+                win_rate=0.62,
+                avg_return_pct=0.05,
+                cumulative_return_pct=0.40,
+                avg_win_pct=0.20,
+                avg_loss_pct=-0.10,
+                expectancy_pct=0.05,
+                profit_factor=1.3,
+                uses_custom_cost_model=False,
+            ),
+        ]
+        preferred = _prefer_live_cost_safe_results(rows)
+        self.assertEqual(preferred[0].candidate_id, "grid_range_reversion_v1")
 
     def test_fee_hurdle_multiplier_applies_in_bybit_demo_perp(self) -> None:
         agent = RiskSupervisorAgent(llm_client=None)

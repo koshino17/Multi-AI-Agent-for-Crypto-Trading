@@ -2012,6 +2012,7 @@ class StrategyReflectionAgent:
         pilot_expectancy_pct = float(live_symbol_benchmark.get("expectancy_pct", 0.0) or 0.0)
         pilot_profit_factor = float(live_symbol_benchmark.get("profit_factor", 0.0) or 0.0)
         pilot_uses_custom_cost_model = bool(live_symbol_benchmark.get("uses_custom_cost_model"))
+        pilot_is_live_cost_safe = not pilot_uses_custom_cost_model
         research_recommendation = reflection_context.get("strategy_research_recommendation") or {}
         research_candidate_id = str(research_recommendation.get("candidate_id", "") or "").strip()
         research_verdict = str(research_recommendation.get("verdict", "") or "").strip().lower()
@@ -2100,7 +2101,7 @@ class StrategyReflectionAgent:
             and benchmark_leader_streak >= int(self.settings.strategy_learning_pilot_benchmark_streak or 0)
             and pilot_expectancy_pct >= float(self.settings.strategy_learning_pilot_min_expectancy_pct or 0.0)
             and pilot_profit_factor >= float(self.settings.strategy_learning_pilot_min_profit_factor or 0.0)
-            and pilot_uses_custom_cost_model
+            and pilot_is_live_cost_safe
         )
         low_participation_pilot_ready = bool(
             pilot_candidate_id
@@ -2108,7 +2109,7 @@ class StrategyReflectionAgent:
             and research_verdict in {"shadow_candidate", "promotion_candidate"}
             and pilot_expectancy_pct >= float(self.settings.strategy_learning_pilot_min_expectancy_pct or 0.0)
             and pilot_profit_factor >= float(self.settings.strategy_learning_pilot_min_profit_factor or 0.0)
-            and pilot_uses_custom_cost_model
+            and pilot_is_live_cost_safe
             and low_participation_streak >= low_participation_threshold
             and positive_streak >= 1
         )
@@ -2165,9 +2166,10 @@ class StrategyReflectionAgent:
             and live_symbol_benchmark.get("candidate_id")
             and float(live_symbol_benchmark.get("expectancy_pct", 0.0) or 0.0) > 0.0
             and float(live_symbol_benchmark.get("profit_factor", 0.0) or 0.0) > 1.0
+            and not bool(live_symbol_benchmark.get("uses_custom_cost_model"))
         ):
             benchmark_candidate = live_symbol_benchmark
-        elif top_benchmark.get("candidate_id"):
+        elif top_benchmark.get("candidate_id") and not bool(top_benchmark.get("uses_custom_cost_model")):
             benchmark_candidate = top_benchmark
         if benchmark_candidate.get("candidate_id"):
             biases.append(
@@ -2343,6 +2345,7 @@ class StrategyReflectionAgent:
             isinstance(live_symbol_benchmark, dict)
             and float(live_symbol_benchmark.get("expectancy_pct", 0.0) or 0.0) > 0.0
             and float(live_symbol_benchmark.get("profit_factor", 0.0) or 0.0) > 1.0
+            and not bool(live_symbol_benchmark.get("uses_custom_cost_model"))
         )
         if research_candidate_id and research_verdict in {"shadow_candidate", "promotion_candidate"}:
             normalized["benchmark_watch_candidate"] = research_candidate_id

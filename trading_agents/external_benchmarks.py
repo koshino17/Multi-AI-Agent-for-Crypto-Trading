@@ -84,6 +84,17 @@ def build_benchmark_cost_model(settings, candidate: ExternalBenchmarkCandidate |
     )
 
 
+def uses_custom_benchmark_cost_model(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    return bool(payload.get("uses_custom_cost_model", False))
+
+
+def _prefer_live_cost_safe_results(items: list[ExternalBenchmarkResult]) -> list[ExternalBenchmarkResult]:
+    safe_items = [item for item in items if not bool(item.uses_custom_cost_model)]
+    return safe_items or list(items)
+
+
 def load_external_benchmark_library(path: str | Path) -> tuple[str, list[ExternalBenchmarkCandidate]]:
     payload = json.loads(Path(path).read_text())
     baseline = str(payload.get("baseline_strategy_id", "")).strip()
@@ -258,10 +269,10 @@ def refresh_external_benchmark_suite(
         all_results.extend(results_for_symbol)
         symbol_results[symbol] = [asdict(item) for item in results_for_symbol]
 
-    top_candidates = sorted(all_results, key=_benchmark_sort_key, reverse=True)[:8]
+    top_candidates = sorted(_prefer_live_cost_safe_results(all_results), key=_benchmark_sort_key, reverse=True)[:8]
     top_alpha = [item for item in top_candidates if item.candidate_id.startswith("alpha_arena::")]
     top_by_symbol = {
-        symbol: results[0]
+        symbol: _prefer_live_cost_safe_results(results)[0]
         for symbol, results in (
             (key, [ExternalBenchmarkResult(**item) for item in value])
             for key, value in symbol_results.items()

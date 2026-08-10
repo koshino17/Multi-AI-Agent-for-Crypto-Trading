@@ -13,6 +13,7 @@ from trading_agents.external_benchmarks import (
     benchmark_signal_groups,
     build_benchmark_cost_model,
     load_external_benchmark_library,
+    uses_custom_benchmark_cost_model,
 )
 
 
@@ -22,6 +23,11 @@ def _candidate_sort_key(item: dict[str, Any]) -> tuple[float, float, float]:
         float(item.get("profit_factor", 0.0) or 0.0),
         float(item.get("cumulative_return_pct", 0.0) or 0.0),
     )
+
+
+def _preferred_live_cost_safe_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    safe_rows = [row for row in rows if not uses_custom_benchmark_cost_model(row)]
+    return (safe_rows or rows or [{}])[0]
 
 
 def _tournament_markdown(payload: dict[str, Any]) -> str:
@@ -196,7 +202,7 @@ def run_strategy_tournament(
         "payload": payload,
         "json_path": str(json_path),
         "md_path": str(md_path),
-        "top_candidate": ranked_rows[0] if ranked_rows else {},
+        "top_candidate": _preferred_live_cost_safe_row(ranked_rows),
     }
 
 
@@ -226,8 +232,10 @@ def _aggregate_candidate_rows(
                     "validation_expectancies": [],
                     "validation_profit_factors": [],
                     "validation_window_count": 0,
+                    "uses_custom_cost_model": False,
                 },
             )
+            bucket["uses_custom_cost_model"] = bool(bucket["uses_custom_cost_model"]) or uses_custom_benchmark_cost_model(row)
             expectancy = float(row.get("expectancy_pct", 0.0) or 0.0)
             pf = float(row.get("profit_factor", 0.0) or 0.0)
             if symbol == focus_symbol.upper():
@@ -269,10 +277,12 @@ def _aggregate_candidate_rows(
                 "avg_validation_profit_factor": avg_validation_pf,
                 "validation_window_count": item["validation_window_count"],
                 "validation_guard_pass": validation_guard_pass,
+                "uses_custom_cost_model": bool(item["uses_custom_cost_model"]),
             }
         )
     aggregated.sort(
         key=lambda row: (
+            0 if bool(row["uses_custom_cost_model"]) else 1,
             int(row["focus_positive_windows"]),
             float(row["avg_focus_expectancy_pct"]),
             float(row["avg_focus_profit_factor"]),
@@ -380,7 +390,10 @@ def run_strategy_research_cycle(
         avg_focus_expectancy = float(top_candidate.get("avg_focus_expectancy_pct", 0.0))
         avg_focus_pf = float(top_candidate.get("avg_focus_profit_factor", 0.0))
         validation_ok = bool(top_candidate.get("validation_guard_pass", False))
-        if focus_windows > 0 and focus_positive == focus_windows and avg_focus_expectancy > 0.0 and avg_focus_pf > 1.0 and validation_ok:
+        uses_custom_cost_model = bool(top_candidate.get("uses_custom_cost_model", False))
+        if uses_custom_cost_model:
+            rationale = "Top candidate still relies on a research-only custom cost model, so keep it out of shadow/live promotion."
+        elif focus_windows > 0 and focus_positive == focus_windows and avg_focus_expectancy > 0.0 and avg_focus_pf > 1.0 and validation_ok:
             verdict = "promotion_candidate"
             rationale = "Candidate stayed positive across all focus windows and cleared the validation guard."
         elif focus_positive > 0 and avg_focus_expectancy > 0.0:

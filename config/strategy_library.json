@@ -1,6 +1,35 @@
 {
-  "base_strategy": "grid_range_reversion_maker_v1",
+  "base_strategy": "grid_range_reversion_v1",
   "strategies": [
+    {
+      "id": "grid_range_reversion_v1",
+      "name": "Grid Range Reversion",
+      "kind": "rule_strategy",
+      "generator": "grid_range_reversion",
+      "source": "public_grid_derived",
+      "credibility": "live_cost_validated",
+      "description": "Range-reversion rules for SOL/USDT using the standard taker-fee/slippage assumptions that match the live benchmark cost model.",
+      "hold_bars": 5,
+      "take_profit_pct": 0.60,
+      "stop_loss_pct": 0.55,
+      "params": {
+        "bb_period": 20,
+        "bb_stddev": 2.0,
+        "adx_period": 14,
+        "adx_max": 18.0,
+        "bb_width_min_pct": 0.60,
+        "bb_width_max_pct": 4.50,
+        "entry_band_buffer_pct": 0.15,
+        "rsi_period": 14,
+        "rsi_buy_max": 43.0,
+        "rsi_sell_min": 57.0,
+        "signal_cooldown_bars": 2
+      },
+      "execution": {
+        "entry_order_type": "market",
+        "entry_liquidity": "taker"
+      }
+    },
     {
       "id": "grid_range_reversion_maker_v1",
       "name": "Grid Range Reversion (Maker Assumption)",

@@ -16,6 +16,48 @@
 
 ---
 
+## v1.1.8 - Fail closed on custom-cost benchmark leakage in live TradePulse review loops
+
+### Why
+
+- The completed window from Sunday, August 9, 2026 to Monday, August 10, 2026 still showed `grid_range_reversion_maker_v1` leaking into the installed runner's live strategy-research stage, selector prompts, external benchmark summaries, and hindsight artifacts.
+- That variant is explicitly research-only because it depends on a `0.05%` custom maker-cost model, while live TradePulse benchmark economics use `0.24%` round-trip friction.
+- The detached `origin/main` worktree had also drifted behind the installed runtime baseline, so repo config no longer matched what the live service was actually using.
+
+### What Changed
+
+- `config/strategy_library.json`
+  - Restored the live TradePulse base strategy to `grid_range_reversion_v1`.
+  - Re-added the live-cost grid strategy definition alongside the research-only maker variant.
+
+- `config/external_benchmark_library.json`
+  - Restored the benchmark baseline strategy to `grid_range_reversion_v1`.
+
+- `trading_agents/external_benchmarks.py`
+  - Live-facing top benchmark rows now prefer cost-compatible candidates and only fall back to custom-cost rows when no live-cost-safe result exists.
+
+- `trading_agents/strategy_research.py`
+  - Aggregate research ranking demotes custom-cost candidates.
+  - Per-window leaders used by reports now prefer live-cost-safe rows.
+  - Research recommendations keep custom-cost winners in `research_only`.
+
+- `trading_agents/research.py`
+  - The live strategy-researcher now excludes research-execution-variant candidates from memory-ranked live selection when any live-cost-safe candidate exists.
+
+- `trading_agents/agents.py`
+  - Reflection, benchmark-watch, and pilot logic now require live-cost-safe benchmark evidence.
+
+- `trading_agents/reporting.py`
+  - Shadow benchmark watch refuses to auto-select custom-cost rows as promotion candidates.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for live-cost-safe benchmark preference and custom-cost selection blocking.
+
+### Result
+
+- TradePulse can still benchmark and study maker-only variants, but live cycle selection, benchmark-watch state, and hindsight narratives now stay anchored to economically valid live-cost evidence.
+- Repo config and the next runtime sync will match the installed runtime baseline again instead of drifting back to the research-only maker variant.
+
 ## v1.1.7 - Keep active runner health fresh during live monitor cycles
 
 ### Why

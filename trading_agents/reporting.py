@@ -1491,6 +1491,9 @@ def _build_shadow_benchmark_watch(
                 return item
         return {}
 
+    def _eligible_shadow_row(item: dict[str, Any]) -> bool:
+        return bool(item) and not bool(item.get("uses_custom_cost_model", False))
+
     baseline = _find(baseline_id)
     leader = symbol_rows[0] if symbol_rows and isinstance(symbol_rows[0], dict) else {}
     allowed_shadow_candidates = [
@@ -1531,6 +1534,7 @@ def _build_shadow_benchmark_watch(
         and recommended_verdict in {"shadow_candidate", "promotion_candidate"}
         and leader_id == baseline_id
         and baseline_positive_edge
+        and _eligible_shadow_row(baseline)
     ):
         return {
             "status": "baseline_confirmed",
@@ -1563,6 +1567,7 @@ def _build_shadow_benchmark_watch(
             and recommended_watch_id != baseline_id
             and recommended_watch_id in allowed_shadow_candidates
             and bool(recommended_row)
+            and _eligible_shadow_row(recommended_row)
             and recommended_verdict in {"shadow_candidate", "promotion_candidate"}
             and int(recommended_row.get("trade_count", 0) or 0) >= 8
             and (
@@ -1578,6 +1583,7 @@ def _build_shadow_benchmark_watch(
             leader_id
             and leader_id != baseline_id
             and leader_id in allowed_shadow_candidates
+            and _eligible_shadow_row(leader)
             and int(leader.get("trade_count", 0) or 0) >= 8
         ):
             chosen_watch_id = leader_id
@@ -1587,7 +1593,7 @@ def _build_shadow_benchmark_watch(
                 (
                     candidate_id
                     for candidate_id in allowed_shadow_candidates
-                    if candidate_id != baseline_id and _find(candidate_id)
+                    if candidate_id != baseline_id and _eligible_shadow_row(_find(candidate_id))
                 ),
                 "",
             )
@@ -2007,6 +2013,37 @@ def _load_external_benchmark_summary_for_window(
 ) -> dict[str, Any]:
     from trading_agents.external_benchmarks import load_external_benchmark_summary
 
+    def _sanitize(payload: dict[str, Any]) -> dict[str, Any]:
+        results = payload.get("results") or {}
+        if not isinstance(results, dict):
+            return payload
+        top_by_symbol: dict[str, dict[str, Any]] = {}
+        all_rows: list[dict[str, Any]] = []
+        for symbol, rows in results.items():
+            if not isinstance(rows, list):
+                continue
+            dict_rows = [row for row in rows if isinstance(row, dict)]
+            if not dict_rows:
+                continue
+            safe_rows = [row for row in dict_rows if not bool(row.get("uses_custom_cost_model", False))]
+            preferred_rows = safe_rows or dict_rows
+            top_by_symbol[str(symbol)] = preferred_rows[0]
+            all_rows.extend(preferred_rows)
+        if all_rows:
+            all_rows.sort(
+                key=lambda row: (
+                    float(row.get("expectancy_pct", 0.0) or 0.0),
+                    float(row.get("profit_factor", 0.0) or 0.0),
+                    float(row.get("cumulative_return_pct", 0.0) or 0.0),
+                    int(row.get("trade_count", 0) or 0),
+                ),
+                reverse=True,
+            )
+            payload = dict(payload)
+            payload["top_candidates"] = all_rows[:8]
+            payload["top_by_symbol"] = top_by_symbol
+        return payload
+
     if window_end is not None:
         files = _sorted_benchmark_report_files(benchmark_reports_dir, cutoff=window_end)
         for path in files[:1]:
@@ -2015,8 +2052,9 @@ def _load_external_benchmark_summary_for_window(
             except Exception:
                 continue
             if isinstance(payload, dict):
-                return payload
-    return load_external_benchmark_summary(state_path)
+                return _sanitize(payload)
+    payload = load_external_benchmark_summary(state_path)
+    return _sanitize(payload) if isinstance(payload, dict) else payload
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:

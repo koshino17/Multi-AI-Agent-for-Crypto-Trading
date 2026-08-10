@@ -248,6 +248,20 @@ class StrategyResearchAgent:
         entry_mode = str(controls.get("entry_mode", "") or "").strip().lower()
         carry_in_mode = str(controls.get("carry_in_mode", "") or "").strip().lower()
 
+        def _is_live_cost_safe(candidate: StrategyCandidate) -> bool:
+            strategy_item = candidate_items.get(candidate.strategy_id, {})
+            source = str(strategy_item.get("source", "") or "").strip().lower()
+            if source == "research_execution_variant":
+                return False
+            params = strategy_item.get("params", {})
+            if isinstance(params, dict) and (
+                "assumed_round_trip_fee_pct" in params
+                or "assumed_round_trip_slippage_pct" in params
+                or "assumed_funding_fee_pct" in params
+            ):
+                return False
+            return True
+
         def _score(candidate: StrategyCandidate) -> float:
             score = float(candidate.backtest.expectancy_pct or 0.0) * 8.0
             score += float(candidate.backtest.profit_factor or 0.0) * 0.2
@@ -268,7 +282,9 @@ class StrategyResearchAgent:
                     score += max(0.0, (8.0 - hold_bars)) * 0.02
             return score
 
-        ranked = sorted(candidates, key=_score, reverse=True)
+        live_cost_safe_candidates = [candidate for candidate in candidates if _is_live_cost_safe(candidate)]
+        candidate_pool = live_cost_safe_candidates or candidates
+        ranked = sorted(candidate_pool, key=_score, reverse=True)
         selected = ranked[0]
         selection_mode = "memory_ranked"
         if pilot_candidate_id and selected.strategy_id == pilot_candidate_id:
