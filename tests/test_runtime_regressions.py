@@ -13,6 +13,7 @@ from trading_agents.agents import RiskSupervisorAgent, StrategistAgent, Strategy
 from trading_agents.exchange import _build_fvg_features, _build_microstructure_features, _infer_po3_phase_hint
 from trading_agents.llm import _trace_date_label
 from trading_agents.main import (
+    _finalize_reporting,
     _refresh_daily_artifacts,
     _guard_market_structure_false_breakout,
     _prefilter_untradeable_candidate,
@@ -82,6 +83,63 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertIn('env_payload="$(', launcher)
         self.assertIn(')" || exit $?', launcher)
         self.assertNotIn('exec >> "$RUNNER_LOG"', launcher)
+
+    def test_finalize_reporting_keeps_completed_window_as_canonical_daily_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = build_storage_layout(tmpdir)
+            report = {"selected_symbol": "SOL/USDT", "cycle_mode": "full"}
+            settings = SimpleNamespace(
+                external_benchmark_enabled=False,
+                notion_api_token="",
+                notion_status_page_id="",
+                notion_status_page_title="",
+                notion_daily_review_hour=12,
+                external_mentor_enabled=False,
+            )
+
+            with mock.patch("trading_agents.main.build_human_report", return_value="# Human\n"), mock.patch(
+                "trading_agents.main.write_human_report",
+                return_value=storage.reports / "SOL-USDT-summary.md",
+            ), mock.patch(
+                "trading_agents.main.active_report_date_label", return_value="2026-08-12"
+            ), mock.patch(
+                "trading_agents.main.completed_report_date_label", return_value="2026-08-11"
+            ), mock.patch(
+                "trading_agents.main.build_daily_summary",
+                side_effect=lambda *_args, **_kwargs: f"# Daily Summary: {_args[1]}\n",
+            ), mock.patch(
+                "trading_agents.main.load_daily_summary_data",
+                side_effect=lambda *_args, **_kwargs: {"financial_snapshot": {}, "date_label": _args[1]},
+            ), mock.patch(
+                "trading_agents.main._refresh_daily_artifacts", return_value={}
+            ), mock.patch(
+                "trading_agents.main._load_recent_daily_review_history", return_value=[]
+            ), mock.patch(
+                "trading_agents.main.update_equity_curve", return_value={}
+            ), mock.patch(
+                "trading_agents.main.load_external_benchmark_summary", return_value={}
+            ), mock.patch(
+                "trading_agents.main.current_strategy_slot", return_value="night"
+            ), mock.patch(
+                "trading_agents.main.load_strategy_memory",
+                return_value={"slot": "night", "controls": {"fallback_entry_mode": "base_only"}, "experiment": {"id": "exp"}},
+            ):
+                result = _finalize_reporting(
+                    report=report,
+                    storage=storage,
+                    mode="bybit-demo-perp",
+                    progress=lambda *_args, **_kwargs: None,
+                    settings=settings,
+                    report_label="decision saved",
+                    daily_reviewer=mock.Mock(),
+                    strategy_reflector=mock.Mock(),
+                )
+
+            self.assertEqual(Path(result["daily_report"]).name, "2026-08-11.md")
+            self.assertEqual(Path(result["active_daily_report"]).name, "2026-08-12.md")
+            self.assertTrue((storage.daily_reports / "2026-08-11.md").exists())
+            self.assertFalse((storage.daily_reports / "2026-08-12.md").exists())
+            self.assertTrue((storage.daily_reports / "_active" / "2026-08-12.md").exists())
 
     def test_start_runner_service_survives_launchctl_kickstart_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

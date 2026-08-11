@@ -16,6 +16,29 @@
 
 ---
 
+## v1.1.8 - Keep canonical daily reports pinned to completed noon windows
+
+### Why
+
+- The TradePulse daily stewardship run on Tuesday, August 11, 2026 found that the installed `bybit-demo-perp` runtime was already writing `/reports/daily/2026-08-12.md` at 12:16 PM Asia/Taipei on August 11, 2026.
+- That file represented the still-open window from `2026-08-11T12:00:00+08:00` to `2026-08-12T12:00:00+08:00`, but it lived in the same canonical daily-report folder as completed reviews.
+- The result was false operational drift: the newest "daily" report looked stale by definition, Notion freshness appeared one window behind, and autonomous review could grab an in-progress evidence bundle instead of the latest completed noon window.
+
+### What Changed
+
+- `trading_agents/main.py`
+  - Canonical `daily_report` output now always writes the latest completed noon-window summary to `reports/daily/<completed-date>.md`.
+  - Active next-window summaries now write to `reports/daily/_active/<active-date>.md` so intraday monitoring remains available without polluting completed-review artifacts.
+  - Reporting refresh paths now preserve that split when daily review or strategy-memory updates trigger a summary rebuild.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage that a post-noon cycle keeps `2026-08-11.md` as the canonical report while sending the still-open `2026-08-12` draft into `_active/`.
+
+### Result
+
+- TradePulse completed-window reviews, Notion freshness checks, and downstream automation now point at the correct noon-to-noon artifact instead of a future-dated draft.
+- Intraday monitoring still has an active-window summary, but it no longer masquerades as a finished daily review.
+
 ## v1.1.7 - Keep active runner health fresh during live monitor cycles
 
 ### Why

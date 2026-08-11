@@ -58,11 +58,11 @@ from trading_agents.notion_sync import sync_notion_daily_review, sync_notion_sta
 from trading_agents.reporting import (
     LOCAL_TZ,
     REPORT_WINDOW_ANCHOR_HOUR_LOCAL,
+    active_report_date_label,
     build_human_report,
     build_daily_summary,
     completed_report_date_label,
     load_daily_summary_data,
-    local_date_label,
     update_equity_curve,
     write_human_report,
     write_json_log,
@@ -132,6 +132,14 @@ def _daily_artifact_paths(storage, date_label: str) -> dict[str, dict[str, str]]
             "md_path": str(storage.oracle_postmortems / f"{date_label}.md"),
         },
     }
+
+
+def _write_active_daily_summary(storage, date_label: str, content: str) -> Path:
+    active_dir = storage.daily_reports / "_active"
+    active_dir.mkdir(parents=True, exist_ok=True)
+    target = active_dir / f"{date_label}.md"
+    target.write_text(content)
+    return target
 
 
 def _refresh_daily_artifacts(
@@ -1818,8 +1826,21 @@ def _finalize_reporting(
         human_content,
     )
     report["human_report"] = str(human_report_path)
-    active_date_label = local_date_label()
+    active_date_label = active_report_date_label()
     completed_date_label = completed_report_date_label()
+    completed_daily_content = build_daily_summary(
+        storage.trade_logs,
+        completed_date_label,
+        storage.runner_log,
+        trading_mode=mode,
+        storage_root=storage.root,
+    )
+    completed_daily_report_path = write_daily_summary(
+        storage.daily_reports,
+        completed_date_label,
+        completed_daily_content,
+    )
+    report["daily_report"] = str(completed_daily_report_path)
     daily_content = build_daily_summary(
         storage.trade_logs,
         active_date_label,
@@ -1827,8 +1848,8 @@ def _finalize_reporting(
         trading_mode=mode,
         storage_root=storage.root,
     )
-    daily_report_path = write_daily_summary(storage.daily_reports, active_date_label, daily_content)
-    report["daily_report"] = str(daily_report_path)
+    active_daily_report_path = _write_active_daily_summary(storage, active_date_label, daily_content)
+    report["active_daily_report"] = str(active_daily_report_path)
     daily_summary = load_daily_summary_data(
         storage.trade_logs,
         active_date_label,
@@ -1990,14 +2011,15 @@ def _finalize_reporting(
             trading_mode=mode,
             storage_root=storage.root,
         )
-        daily_report_path = write_daily_summary(storage.daily_reports, active_date_label, daily_content)
+        active_daily_report_path = _write_active_daily_summary(storage, active_date_label, daily_content)
         report["active_daily_artifacts"] = _refresh_daily_artifacts(
             storage,
             active_date_label,
             mode,
             persist=False,
         )
-        report["daily_report"] = str(daily_report_path)
+        report["daily_report"] = str(storage.daily_reports / f"{completed_date_label}.md")
+        report["active_daily_report"] = str(active_daily_report_path)
         daily_summary = load_daily_summary_data(
             storage.trade_logs,
             active_date_label,
@@ -2084,14 +2106,15 @@ def _finalize_reporting(
                 trading_mode=mode,
                 storage_root=storage.root,
             )
-            daily_report_path = write_daily_summary(storage.daily_reports, active_date_label, daily_content)
+            active_daily_report_path = _write_active_daily_summary(storage, active_date_label, daily_content)
             report["active_daily_artifacts"] = _refresh_daily_artifacts(
                 storage,
                 active_date_label,
                 mode,
                 persist=False,
             )
-            report["daily_report"] = str(daily_report_path)
+            report["daily_report"] = str(storage.daily_reports / f"{completed_date_label}.md")
+            report["active_daily_report"] = str(active_daily_report_path)
         except Exception as exc:
             report["strategy_memory_rebuild"] = {"status": "error", "reason": str(exc)}
 
