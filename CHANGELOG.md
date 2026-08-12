@@ -16,6 +16,24 @@
 
 ---
 
+## v1.1.8 - Align live perp exits with selected strategy research
+
+### Why
+
+- The Wednesday, August 12, 2026 TradePulse stewardship review found a concrete live/research mismatch: the active `grid_range_reversion_maker_v1` strategy library defines tighter `take_profit_pct=0.60` and `stop_loss_pct=0.55`, but live perp protection orders were still being built from the broader global perp defaults.
+- That mismatch undermines TradePulse profitability research because the daily review can keep recommending tighter TP / early profit-lock behavior while the installed runtime never actually inherits the selected strategy's exit geometry.
+- The effect is especially harmful for maker-style range strategies whose edge is thin after costs and depends on tighter intraday harvesting than the generic perp baseline.
+
+### What Changed
+
+- `trading_agents/research.py`
+  - Extended `selected_execution_profile` so the chosen strategy now carries `take_profit_pct`, `stop_loss_pct`, and `hold_bars` alongside entry-style fields.
+- `trading_agents/main.py`
+  - `_build_perp_protection_targets()` now prefers strategy-specific TP/SL percentages from the selected strategy research snapshot when they are available, while preserving the existing global fallback for strategies that do not define them.
+  - `_apply_perp_protection()` and both live protection call sites now pass the selected strategy research snapshot through the protection-sync path, so the live runtime can actually apply those tighter exits.
+- `tests/test_runtime_regressions.py`
+  - Added a regression test proving that a selected `grid_range_reversion_maker_v1` position now gets the strategy-specific `0.60%` take-profit and `0.55%` stop-loss envelope instead of the global default.
+
 ## v1.1.7 - Keep active runner health fresh during live monitor cycles
 
 ### Why

@@ -1449,7 +1449,12 @@ def _protection_targets_match(account, targets: dict[str, float], tolerance: flo
     )
 
 
-def _build_perp_protection_targets(account, settings, snapshot=None) -> tuple[dict[str, float], dict[str, float | str]]:
+def _build_perp_protection_targets(
+    account,
+    settings,
+    snapshot=None,
+    strategy_research: StrategyResearchSnapshot | None = None,
+) -> tuple[dict[str, float], dict[str, float | str]]:
     if getattr(account, "market_type", "spot") != "perp":
         return {"take_profit": 0.0, "stop_loss": 0.0, "trailing_stop": 0.0}, _resolve_intraday_protection_profile(snapshot)
     position_side = str(getattr(account, "position_side", "flat"))
@@ -1459,9 +1464,16 @@ def _build_perp_protection_targets(account, settings, snapshot=None) -> tuple[di
         return {"take_profit": 0.0, "stop_loss": 0.0, "trailing_stop": 0.0}, _resolve_intraday_protection_profile(snapshot)
 
     profile = _resolve_intraday_protection_profile(snapshot)
+    selected_execution_profile = getattr(strategy_research, "selected_execution_profile", {}) or {}
+    if not isinstance(selected_execution_profile, dict):
+        selected_execution_profile = {}
+    strategy_stop_loss_pct = max(float(selected_execution_profile.get("stop_loss_pct", 0.0) or 0.0), 0.0)
+    strategy_take_profit_pct = max(float(selected_execution_profile.get("take_profit_pct", 0.0) or 0.0), 0.0)
 
-    stop_pct = (max(float(settings.perp_hard_stop_loss_pct), 0.0) * float(profile["stop_mult"])) / 100.0
-    take_pct = (max(float(settings.perp_take_profit_pct), 0.0) * float(profile["take_mult"])) / 100.0
+    stop_pct_base = strategy_stop_loss_pct if strategy_stop_loss_pct > 0 else max(float(settings.perp_hard_stop_loss_pct), 0.0)
+    take_pct_base = strategy_take_profit_pct if strategy_take_profit_pct > 0 else max(float(settings.perp_take_profit_pct), 0.0)
+    stop_pct = (stop_pct_base * float(profile["stop_mult"])) / 100.0
+    take_pct = (take_pct_base * float(profile["take_mult"])) / 100.0
     trail_pct = max(float(settings.perp_trailing_stop_pct), 0.0) / 100.0
     profit_pct = _perp_position_return_pct(account)
     current_take_profit = float(getattr(account, "take_profit_price", 0.0) or 0.0)
@@ -1505,7 +1517,15 @@ def _build_perp_protection_targets(account, settings, snapshot=None) -> tuple[di
     }, profile
 
 
-def _apply_perp_protection(exchange, symbol: str, settings, snapshot=None, *, force: bool = False) -> tuple[dict[str, float], dict, dict[str, float | str]]:
+def _apply_perp_protection(
+    exchange,
+    symbol: str,
+    settings,
+    snapshot=None,
+    strategy_research: StrategyResearchSnapshot | None = None,
+    *,
+    force: bool = False,
+) -> tuple[dict[str, float], dict, dict[str, float | str]]:
     if not settings.perp_enable_protection_orders:
         profile = _resolve_intraday_protection_profile(snapshot)
         return {"take_profit": 0.0, "stop_loss": 0.0, "trailing_stop": 0.0}, {"status": "disabled"}, profile
@@ -1520,7 +1540,12 @@ def _apply_perp_protection(exchange, symbol: str, settings, snapshot=None, *, fo
             snapshot = exchange.fetch_snapshot(symbol, settings.timeframe)
         except Exception:
             snapshot = None
-    protection_targets, profile = _build_perp_protection_targets(account, settings, snapshot=snapshot) if account is not None else ({
+    protection_targets, profile = _build_perp_protection_targets(
+        account,
+        settings,
+        snapshot=snapshot,
+        strategy_research=strategy_research,
+    ) if account is not None else ({
         "take_profit": 0.0,
         "stop_loss": 0.0,
         "trailing_stop": 0.0,
@@ -2278,13 +2303,19 @@ def execute_cycle(
                 candidate_symbol,
                 settings,
                 snapshot,
+                strategy_research=strategy_research,
                 force=False,
             )
             _record_stage_metric(stage_metrics, "protection_sync", perf_counter() - protection_started_at)
             if str(position_protection.get("status", "")).lower() == "ok":
                 account = exchange.fetch_account_state(candidate_symbol)
             else:
-                protection_targets, protection_profile = _build_perp_protection_targets(account, settings, snapshot=snapshot)
+                protection_targets, protection_profile = _build_perp_protection_targets(
+                    account,
+                    settings,
+                    snapshot=snapshot,
+                    strategy_research=strategy_research,
+                )
         available_usdt = account.free_usdt
         actual_base_asset = account.base_asset
         position_side = getattr(account, "position_side", "flat")
@@ -2884,6 +2915,7 @@ def execute_cycle(
                 report["selected_symbol"],
                 settings,
                 candidate_snapshots.get(report["selected_symbol"]),
+                strategy_research=selected_strategy_research,
             )
             report["protection_targets"] = protection_targets
             report["protection_profile"] = protection_profile

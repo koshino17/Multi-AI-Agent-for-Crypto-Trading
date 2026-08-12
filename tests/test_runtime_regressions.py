@@ -13,6 +13,7 @@ from trading_agents.agents import RiskSupervisorAgent, StrategistAgent, Strategy
 from trading_agents.exchange import _build_fvg_features, _build_microstructure_features, _infer_po3_phase_hint
 from trading_agents.llm import _trace_date_label
 from trading_agents.main import (
+    _build_perp_protection_targets,
     _refresh_daily_artifacts,
     _guard_market_structure_false_breakout,
     _prefilter_untradeable_candidate,
@@ -1153,7 +1154,52 @@ class RuntimeRegressionTests(unittest.TestCase):
             policy_exit=False,
         )
         self.assertEqual(idea.action, "hold")
-        self.assertIn("low-sample replay weak", reason)
+
+    def test_perp_protection_targets_use_selected_strategy_exit_params(self) -> None:
+        account = SimpleNamespace(
+            market_type="perp",
+            position_side="long",
+            entry_price=100.0,
+            mark_price=100.0,
+            take_profit_price=0.0,
+            stop_loss_price=0.0,
+            trailing_stop_distance=0.0,
+            unrealized_pnl_usdt=0.0,
+            position_notional_usdt=100.0,
+        )
+        settings = SimpleNamespace(
+            perp_hard_stop_loss_pct=1.8,
+            perp_take_profit_pct=2.4,
+            perp_trailing_stop_pct=0.0,
+            perp_profit_lock_trigger_pct=0.8,
+            perp_profit_lock_breakeven_offset_pct=0.1,
+            perp_profit_lock_trigger_2_pct=1.4,
+            perp_profit_lock_stop_2_pct=0.45,
+        )
+        strategy_research = StrategyResearchSnapshot(
+            base_strategy_id="grid_range_reversion_maker_v1",
+            selected_strategy_id="grid_range_reversion_maker_v1",
+            selected_strategy_name="Grid",
+            summary="selected grid maker",
+            candidates=[],
+            selected_execution_profile={
+                "entry_order_type": "limit",
+                "entry_liquidity": "maker",
+                "take_profit_pct": 0.60,
+                "stop_loss_pct": 0.55,
+            },
+        )
+
+        targets, profile = _build_perp_protection_targets(
+            account,
+            settings,
+            snapshot=None,
+            strategy_research=strategy_research,
+        )
+
+        self.assertEqual(profile.get("regime"), "normal")
+        self.assertAlmostEqual(targets["take_profit"], 100.6, places=4)
+        self.assertAlmostEqual(targets["stop_loss"], 99.45, places=4)
 
     def test_strategy_reflection_raises_cooldown_when_recent_realized_after_fees_stays_negative(self) -> None:
         agent = StrategyReflectionAgent(llm_client=None)

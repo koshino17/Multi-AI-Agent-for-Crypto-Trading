@@ -203,6 +203,9 @@ class StrategyResearchAgent:
             "post_only": post_only,
             "passive_offset_bps": passive_offset_bps,
             "entry_ttl_seconds": max(entry_ttl_seconds, 1),
+            "take_profit_pct": max(float(strategy_item.get("take_profit_pct", 0.0) or 0.0), 0.0),
+            "stop_loss_pct": max(float(strategy_item.get("stop_loss_pct", 0.0) or 0.0), 0.0),
+            "hold_bars": max(float(strategy_item.get("hold_bars", 0.0) or 0.0), 0.0),
         }
 
     def _fallback_rationale(
