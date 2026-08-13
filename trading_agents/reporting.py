@@ -2316,6 +2316,15 @@ def completed_report_date_label(now: datetime | None = None, anchor_hour: int = 
     return (anchor_today - timedelta(days=1)).strftime("%Y-%m-%d")
 
 
+def report_window_is_complete(
+    date_label: str,
+    *,
+    now: datetime | None = None,
+    anchor_hour: int = REPORT_WINDOW_ANCHOR_HOUR_LOCAL,
+) -> bool:
+    return date_label <= completed_report_date_label(now=now, anchor_hour=anchor_hour)
+
+
 def _stamp() -> str:
     return _utc_now().strftime("%Y%m%dT%H%M%S%fZ")
 
@@ -3654,6 +3663,7 @@ def build_daily_summary(
         storage_root=storage_root,
     )
     window_start, window_end = _window_label_to_bounds(date_label)
+    window_complete = report_window_is_complete(date_label)
     summary_mode = str(summary.get("mode", ""))
     total = summary["total"]
     proposals = summary["proposals"]
@@ -3712,10 +3722,18 @@ def build_daily_summary(
     runner_health = summary.get("runner_health") or {}
     notion_review_status = summary.get("notion_review_status") or {}
 
-    lines = [f"# Daily Summary: {date_label}", ""]
+    title = "Daily Summary" if window_complete else "Active Daily Window"
+    lines = [f"# {title}: {date_label}", ""]
     if summary_mode:
         lines.extend([f"- Mode: {summary_mode}", ""])
     lines.extend([f"- Window: {window_start.isoformat()} -> {window_end.isoformat()}", ""])
+    if not window_complete:
+        lines.extend(
+            [
+                "- Window Status: active_incomplete | this noon-to-noon window is still open; treat conclusions as provisional",
+                "",
+            ]
+        )
     freshness_status = str(financial.get("data_freshness_status", "")).strip()
     if freshness_status:
         lines.extend(
@@ -3749,7 +3767,7 @@ def build_daily_summary(
                 "",
             ]
         )
-    if notion_review_status:
+    if notion_review_status and window_complete:
         lines.extend(
             [
                 (
@@ -4568,6 +4586,17 @@ def build_daily_summary(
 def write_daily_summary(path: Path, date_label: str, content: str) -> Path:
     target = path / f"{date_label}.md"
     target.write_text(content)
+    return target
+
+
+def write_active_daily_summary(path: Path, date_label: str, content: str) -> Path:
+    active_dir = path / "_active"
+    active_dir.mkdir(parents=True, exist_ok=True)
+    target = active_dir / f"{date_label}.md"
+    target.write_text(content)
+    legacy_target = path / f"{date_label}.md"
+    if legacy_target.exists():
+        legacy_target.unlink()
     return target
 
 

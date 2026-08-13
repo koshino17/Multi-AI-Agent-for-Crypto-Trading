@@ -16,6 +16,31 @@
 
 ---
 
+## v1.1.8 - Keep open noon windows out of completed daily evidence
+
+### Why
+
+- The TradePulse daily stewardship run on Thursday, August 13, 2026 found that the live `bybit-demo-perp` runner was healthy, but the runtime was still writing a top-level [`2026-08-14.md`](/Users/koshino/Library/Application%20Support/TradePulse/state/reports/daily/2026-08-14.md) daily report before the `2026-08-13T12:00:00+08:00 -> 2026-08-14T12:00:00+08:00` window had completed.
+- That future-dated report showed stale Notion lag, only 1% market-path coverage, and completed-window framing even though the noon-to-noon evidence bundle was still open.
+- This is a profitability issue because TradePulse daily research should not pollute the learning loop with partial-window evidence that looks final.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Added a `report_window_is_complete()` helper so reporting can distinguish a completed noon window from the still-open active window.
+  - Active-window markdown now renders as `Active Daily Window` and includes an explicit `active_incomplete` status instead of presenting the file as a completed daily summary.
+  - Added `write_active_daily_summary()` to route open-window summaries into `reports/daily/_active/` and remove any legacy top-level future-window file for the same label.
+
+- `trading_agents/main.py`
+  - Updated reporting finalization so incomplete windows write to `reports/daily/_active/YYYY-MM-DD.md`, while only completed noon windows continue to write to `reports/daily/YYYY-MM-DD.md`.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for provisional active-window rendering and `_active/` report path behavior.
+
+### Result
+
+- TradePulse keeps completed noon-to-noon evidence and still-open active-window monitoring separate, so the daily profit-research loop is less likely to draw stale or partial conclusions from a future-dated report.
+
 ## v1.1.7 - Keep active runner health fresh during live monitor cycles
 
 ### Why

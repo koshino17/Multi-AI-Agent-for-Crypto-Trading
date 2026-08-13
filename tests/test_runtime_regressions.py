@@ -28,6 +28,8 @@ from trading_agents.reporting import (
     _resolve_daily_focus_symbol,
     build_daily_summary,
     load_daily_summary_data,
+    report_window_is_complete,
+    write_active_daily_summary,
     write_ground_truth_artifacts,
     write_oracle_postmortem_artifacts,
 )
@@ -934,6 +936,43 @@ class RuntimeRegressionTests(unittest.TestCase):
             self.assertEqual(artifacts["status"], "deferred")
             self.assertFalse((storage.ground_truth_reports / "2026-08-02.json").exists())
             self.assertFalse((storage.oracle_postmortems / "2026-08-02.json").exists())
+
+    def test_active_window_summary_is_marked_provisional(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = build_storage_layout(tmpdir)
+            settings = SimpleNamespace(
+                trading_mode="bybit-demo-perp",
+                data_root=tmpdir,
+                initial_balance_usdt=500.0,
+                taker_fee_pct=0.001,
+                observation_pool=["SOL/USDT"],
+                external_ai_review_enabled=False,
+            )
+            with mock.patch("trading_agents.config.load_settings", return_value=settings):
+                content = build_daily_summary(
+                    storage.trade_logs,
+                    "2026-08-14",
+                    storage.runner_log,
+                    trading_mode="bybit-demo-perp",
+                    storage_root=tmpdir,
+                )
+
+            self.assertIn("# Active Daily Window: 2026-08-14", content)
+            self.assertIn("- Window Status: active_incomplete", content)
+            self.assertNotIn("- Notion Daily Review:", content)
+
+    def test_write_active_daily_summary_uses_active_subdirectory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = build_storage_layout(tmpdir)
+            legacy_path = storage.daily_reports / "2026-08-14.md"
+            legacy_path.write_text("legacy")
+
+            target = write_active_daily_summary(storage.daily_reports, "2026-08-14", "active report")
+
+            self.assertEqual(target, storage.daily_reports / "_active" / "2026-08-14.md")
+            self.assertEqual(target.read_text(), "active report")
+            self.assertFalse(legacy_path.exists())
+            self.assertFalse(report_window_is_complete("2026-08-14"))
 
     def test_multi_symbol_daily_focus_prefers_research_focus_for_market_path(self) -> None:
         settings = SimpleNamespace(

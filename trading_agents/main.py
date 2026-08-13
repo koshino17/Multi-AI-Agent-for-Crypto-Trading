@@ -63,7 +63,9 @@ from trading_agents.reporting import (
     completed_report_date_label,
     load_daily_summary_data,
     local_date_label,
+    report_window_is_complete,
     update_equity_curve,
+    write_active_daily_summary,
     write_human_report,
     write_json_log,
     write_daily_summary,
@@ -1827,7 +1829,10 @@ def _finalize_reporting(
         trading_mode=mode,
         storage_root=storage.root,
     )
-    daily_report_path = write_daily_summary(storage.daily_reports, active_date_label, daily_content)
+    if report_window_is_complete(active_date_label):
+        daily_report_path = write_daily_summary(storage.daily_reports, active_date_label, daily_content)
+    else:
+        daily_report_path = write_active_daily_summary(storage.daily_reports, active_date_label, daily_content)
     report["daily_report"] = str(daily_report_path)
     daily_summary = load_daily_summary_data(
         storage.trade_logs,
@@ -1990,7 +1995,10 @@ def _finalize_reporting(
             trading_mode=mode,
             storage_root=storage.root,
         )
-        daily_report_path = write_daily_summary(storage.daily_reports, active_date_label, daily_content)
+        if report_window_is_complete(active_date_label):
+            daily_report_path = write_daily_summary(storage.daily_reports, active_date_label, daily_content)
+        else:
+            daily_report_path = write_active_daily_summary(storage.daily_reports, active_date_label, daily_content)
         report["active_daily_artifacts"] = _refresh_daily_artifacts(
             storage,
             active_date_label,
@@ -2084,7 +2092,10 @@ def _finalize_reporting(
                 trading_mode=mode,
                 storage_root=storage.root,
             )
-            daily_report_path = write_daily_summary(storage.daily_reports, active_date_label, daily_content)
+            if report_window_is_complete(active_date_label):
+                daily_report_path = write_daily_summary(storage.daily_reports, active_date_label, daily_content)
+            else:
+                daily_report_path = write_active_daily_summary(storage.daily_reports, active_date_label, daily_content)
             report["active_daily_artifacts"] = _refresh_daily_artifacts(
                 storage,
                 active_date_label,
