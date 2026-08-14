@@ -3574,9 +3574,10 @@ def build_daily_summary(
         [
             "## Financial Snapshot",
             "",
+            f"- Total Portfolio Value: {float(financial.get('total_portfolio_value_usdt', 0.0)):.2f} USDT",
             (
-                f"- Total Portfolio Value: {float(financial.get('total_portfolio_value_usdt', 0.0)):.2f} USDT "
-                f"(Configured Initial: {float(financial.get('initial_capital_usdt', 0.0)):.2f} USDT)"
+                f"- PnL Baseline: {float(financial.get('initial_capital_usdt', 0.0)):.2f} USDT "
+                "(configured reference, not current balance)"
             ),
             (
                 f"- Daily PnL: {float(financial.get('daily_pnl_usdt', 0.0)):+.2f} USDT "

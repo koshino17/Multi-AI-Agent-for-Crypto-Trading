@@ -22,6 +22,7 @@ from trading_agents.reporting import (
     _load_all_records,
     _load_daily_records,
     _load_runner_event_counts,
+    build_daily_summary,
     write_ground_truth_artifacts,
     write_oracle_postmortem_artifacts,
 )
@@ -134,6 +135,43 @@ class RuntimeRegressionTests(unittest.TestCase):
 
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["selected_symbol"], "SOL/USDT")
+
+    def test_daily_summary_does_not_conflate_current_equity_with_initial_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            trade_logs = root / "logs" / "trades"
+            trade_logs.mkdir(parents=True)
+            runner_log = root / "service" / "runner.log"
+            runner_log.parent.mkdir(parents=True)
+            runner_log.write_text("")
+            decision = {
+                "mode": "bybit-demo-perp",
+                "selected_symbol": "SOL/USDT",
+                "last_price": 75.4,
+                "idea": {"action": "hold", "score": 0.45},
+                "approval": {"approved": False, "reason": "no trade proposed"},
+                "account": {
+                    "free_usdt": 436.21,
+                    "total_equity_usdt": 436.22,
+                    "available_balance_usdt": 436.21,
+                    "base_symbol": "SOL",
+                    "market_type": "perp",
+                    "position_side": "flat",
+                },
+            }
+            (trade_logs / "decision-20260814T124517000000Z.json").write_text(json.dumps(decision))
+
+            report = build_daily_summary(
+                trade_logs,
+                "2026-08-15",
+                runner_log,
+                trading_mode="bybit-demo-perp",
+                storage_root=root,
+            )
+
+        self.assertIn("- Total Portfolio Value: 436.22 USDT", report)
+        self.assertIn("- PnL Baseline: 500.00 USDT (configured reference, not current balance)", report)
+        self.assertNotIn("Total Portfolio Value: 436.22 USDT (Configured Initial: 500.00 USDT)", report)
 
     def test_cycle_report_summary_omits_large_payloads(self) -> None:
         summary = _cycle_report_summary(

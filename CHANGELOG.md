@@ -16,6 +16,27 @@
 
 ---
 
+## v1.1.4 - Clarify account balance versus PnL baseline
+
+### Why
+
+- Daily reports and Notion daily review pages placed `Configured Initial: 500.00 USDT` on the same line as `Total Portfolio Value`, making the PnL baseline look like current account funds.
+- The live `bybit-demo-perp` account snapshot showed actual equity around `436 USDT`, so the confusing label could make it look like TradePulse had reset funds back to `500 USDT`.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Split `Total Portfolio Value` and the configured baseline into separate financial snapshot lines.
+  - Renamed the baseline line to `PnL Baseline` and explicitly marks it as a configured reference, not current balance.
+
+- `trading_agents/notion_sync.py`
+  - Applies the same wording to Notion daily review financial snapshots.
+
+### Result
+
+- Current account equity and configured PnL baseline are no longer visually conflated.
+- TradePulse still preserves the `500 USDT` baseline for cumulative PnL math without presenting it as live funds.
+
 ## v1.1.3 - Require live health gate before autonomous reviews
 
 ### Why

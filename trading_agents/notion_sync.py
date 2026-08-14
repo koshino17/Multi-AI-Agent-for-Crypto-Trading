@@ -710,9 +710,10 @@ def _build_daily_review_blocks(
         _heading_1(title),
         _paragraph(f"Published at: {datetime.now(LOCAL_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')}"),
         _heading_2("Financial Snapshot"),
+        _bullet(f"Total Portfolio Value: {float(financial.get('total_portfolio_value_usdt', 0.0)):.2f} USDT"),
         _bullet(
-            f"Total Portfolio Value: {float(financial.get('total_portfolio_value_usdt', 0.0)):.2f} USDT "
-            f"(Configured Initial: {float(financial.get('initial_capital_usdt', 0.0)):.2f} USDT)"
+            f"PnL Baseline: {float(financial.get('initial_capital_usdt', 0.0)):.2f} USDT "
+            "(configured reference, not current balance)"
         ),
         _bullet(
             f"Daily PnL: {float(financial.get('daily_pnl_usdt', 0.0)):+.2f} USDT "
