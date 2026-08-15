@@ -370,8 +370,9 @@ def _aggregate_returns(*, signal_count: int, returns: list[float]) -> AlphaArena
     )
 
 
-def _benchmark_sort_key(item: ExternalBenchmarkResult) -> tuple[float, float, float, int]:
+def _benchmark_sort_key(item: ExternalBenchmarkResult) -> tuple[int, float, float, float, int]:
     return (
+        1 if int(item.trade_count) > 0 else 0,
         float(item.expectancy_pct),
         float(item.profit_factor),
         float(item.cumulative_return_pct),

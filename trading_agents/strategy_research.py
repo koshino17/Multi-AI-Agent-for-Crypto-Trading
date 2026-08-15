@@ -16,8 +16,10 @@ from trading_agents.external_benchmarks import (
 )
 
 
-def _candidate_sort_key(item: dict[str, Any]) -> tuple[float, float, float]:
+def _candidate_sort_key(item: dict[str, Any]) -> tuple[int, float, float, float]:
+    trade_count = int(item.get("trade_count", 0) or 0)
     return (
+        1 if trade_count > 0 else 0,
         float(item.get("expectancy_pct", 0.0) or 0.0),
         float(item.get("profit_factor", 0.0) or 0.0),
         float(item.get("cumulative_return_pct", 0.0) or 0.0),

@@ -18,6 +18,7 @@ from trading_agents.main import (
     _prefilter_untradeable_candidate,
     _resolve_daily_review,
 )
+from trading_agents.external_benchmarks import ExternalBenchmarkResult, _benchmark_sort_key
 from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyCandidate, StrategyResearchSnapshot, TradeIdea
 from trading_agents.reporting import (
     _build_financial_snapshot,
@@ -34,6 +35,7 @@ from trading_agents.reporting import (
     write_oracle_postmortem_artifacts,
 )
 from trading_agents.research import StrategyResearchAgent
+from trading_agents.strategy_research import _candidate_sort_key
 from trading_agents.runner import (
     _acquire_runner_lock,
     _credential_blocker,
@@ -940,6 +942,7 @@ class RuntimeRegressionTests(unittest.TestCase):
     def test_active_window_summary_is_marked_provisional(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = build_storage_layout(tmpdir)
+            future_label = "2099-08-14"
             settings = SimpleNamespace(
                 trading_mode="bybit-demo-perp",
                 data_root=tmpdir,
@@ -951,28 +954,87 @@ class RuntimeRegressionTests(unittest.TestCase):
             with mock.patch("trading_agents.config.load_settings", return_value=settings):
                 content = build_daily_summary(
                     storage.trade_logs,
-                    "2026-08-14",
+                    future_label,
                     storage.runner_log,
                     trading_mode="bybit-demo-perp",
                     storage_root=tmpdir,
                 )
 
-            self.assertIn("# Active Daily Window: 2026-08-14", content)
+            self.assertIn(f"# Active Daily Window: {future_label}", content)
             self.assertIn("- Window Status: active_incomplete", content)
             self.assertNotIn("- Notion Daily Review:", content)
 
     def test_write_active_daily_summary_uses_active_subdirectory(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = build_storage_layout(tmpdir)
-            legacy_path = storage.daily_reports / "2026-08-14.md"
+            future_label = "2099-08-14"
+            legacy_path = storage.daily_reports / f"{future_label}.md"
             legacy_path.write_text("legacy")
 
-            target = write_active_daily_summary(storage.daily_reports, "2026-08-14", "active report")
+            target = write_active_daily_summary(storage.daily_reports, future_label, "active report")
 
-            self.assertEqual(target, storage.daily_reports / "_active" / "2026-08-14.md")
+            self.assertEqual(target, storage.daily_reports / "_active" / f"{future_label}.md")
             self.assertEqual(target.read_text(), "active report")
             self.assertFalse(legacy_path.exists())
-            self.assertFalse(report_window_is_complete("2026-08-14"))
+            self.assertFalse(report_window_is_complete(future_label))
+
+    def test_strategy_tournament_sort_demotes_zero_trade_rows(self) -> None:
+        zero_trade = {
+            "candidate_id": "bollinger_keltner_extreme_reversion_v1",
+            "trade_count": 0,
+            "expectancy_pct": 0.0,
+            "profit_factor": 0.0,
+            "cumulative_return_pct": 0.0,
+        }
+        traded = {
+            "candidate_id": "grid_range_reversion_maker_v1",
+            "trade_count": 12,
+            "expectancy_pct": -0.02,
+            "profit_factor": 0.86,
+            "cumulative_return_pct": -0.27,
+        }
+
+        ranked = sorted([zero_trade, traded], key=_candidate_sort_key, reverse=True)
+
+        self.assertEqual(ranked[0]["candidate_id"], "grid_range_reversion_maker_v1")
+
+    def test_external_benchmark_sort_demotes_zero_trade_rows(self) -> None:
+        zero_trade = ExternalBenchmarkResult(
+            candidate_id="bollinger_keltner_extreme_reversion_v1",
+            candidate_name="Bollinger + Keltner Extreme Reversion",
+            source="public_extreme_mean_reversion",
+            symbol="SOL/USDT",
+            timeframe="15m",
+            signal_count=0,
+            trade_count=0,
+            win_rate=0.0,
+            avg_return_pct=0.0,
+            cumulative_return_pct=0.0,
+            avg_win_pct=0.0,
+            avg_loss_pct=0.0,
+            expectancy_pct=0.0,
+            profit_factor=0.0,
+        )
+        traded = ExternalBenchmarkResult(
+            candidate_id="grid_range_reversion_maker_v1",
+            candidate_name="Grid Range Reversion (Maker Assumption)",
+            source="research_execution_variant",
+            symbol="SOL/USDT",
+            timeframe="15m",
+            signal_count=12,
+            trade_count=12,
+            win_rate=0.4167,
+            avg_return_pct=-0.0227,
+            cumulative_return_pct=-0.2726,
+            avg_win_pct=0.3274,
+            avg_loss_pct=-0.2728,
+            expectancy_pct=-0.0227,
+            profit_factor=0.8572,
+        )
+
+        ranked = sorted([zero_trade, traded], key=_benchmark_sort_key, reverse=True)
+
+        self.assertEqual(ranked[0].candidate_id, "grid_range_reversion_maker_v1")
 
     def test_multi_symbol_daily_focus_prefers_research_focus_for_market_path(self) -> None:
         settings = SimpleNamespace(

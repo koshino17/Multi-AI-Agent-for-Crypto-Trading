@@ -16,6 +16,30 @@
 
 ---
 
+## v1.1.9 - Keep zero-trade benchmarks out of the leader slot
+
+### Why
+
+- The TradePulse daily stewardship run on Saturday, August 15, 2026 found that the live `bybit-demo-perp` runner was healthy and cycling, but the latest research/benchmark artifacts could still name `bollinger_keltner_extreme_reversion_v1` as the "top" SOL/USDT benchmark even when it produced `0` trades.
+- That happened because both the strategy-tournament and external-benchmark rankers treated `0.00%` expectancy / `0.00` PF as better than small negative, real-sample results, which let a no-evidence row outrank strategies that actually traded.
+- This is a profitability issue because TradePulse's noon-window learning loop should not let "did nothing" contaminate benchmark leadership, PO3 review, or promotion/watch decisions.
+
+### What Changed
+
+- `trading_agents/strategy_research.py`
+  - Updated the tournament sort key to prioritize candidates with at least one realized trade before comparing expectancy, PF, and cumulative return.
+
+- `trading_agents/external_benchmarks.py`
+  - Updated the external benchmark ranker with the same sample-first ordering so zero-trade rows only lead when every candidate is zero-trade.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for both ranking paths to ensure no-trade candidates are demoted below actual sampled results.
+
+### Result
+
+- TradePulse benchmark leadership now reflects actual executed sample evidence instead of letting empty strategies win on a technical tie.
+- Daily reviews and benchmark-watch decisions are less likely to chase a false "top candidate" that never traded.
+
 ## v1.1.8 - Keep open noon windows out of completed daily evidence
 
 ### Why
