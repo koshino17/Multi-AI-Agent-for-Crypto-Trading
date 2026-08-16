@@ -16,6 +16,33 @@
 
 ---
 
+## v1.1.9 - Expire stale strategy-memory experiments by slot
+
+### Why
+
+- The TradePulse daily stewardship run on Sunday, August 16, 2026 found that the completed `2026-08-16` noon-window review was still showing `2026-08-12-night:benchmark_watch_candidate` as an active experiment even though it declared `ttl_windows=2`.
+- That happened because TradePulse reused the previous strategy-memory experiment whenever controls stopped changing, but it never aged the experiment out by 12-hour slot.
+- This is a profitability and review-quality issue because stale benchmark-watch experiments can keep the learning loop anchored to outdated controls and make the daily evidence bundle overstate what is still being tested.
+
+### What Changed
+
+- `trading_agents/strategy_memory.py`
+  - Added slot indexing plus experiment activity checks so strategy-memory experiments expire when their configured window TTL has passed.
+  - Normalized loaded strategy-memory payloads to clear expired experiments while preserving the current control state.
+
+- `trading_agents/agents.py`
+  - Stopped carrying a previous experiment forward when the prior experiment has already expired for the current strategy slot.
+
+- `trading_agents/reporting.py`
+  - Daily summary loading now normalizes `strategy_memory_current`, so completed reports no longer present expired experiments as active control-impact work.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for slot-based experiment expiry in payload normalization, persisted strategy-memory loads, and reflection carry-forward behavior.
+
+### Result
+
+- TradePulse noon-window reviews now distinguish between still-active control experiments and stale leftovers, keeping the RL-style learning loop tighter and reducing false confidence in outdated benchmark-watch guidance.
+
 ## v1.1.8 - Keep open noon windows out of completed daily evidence
 
 ### Why

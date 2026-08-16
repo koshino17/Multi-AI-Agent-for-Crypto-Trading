@@ -10,6 +10,8 @@ from statistics import fmean
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from trading_agents.strategy_memory import normalize_strategy_memory_payload
+
 
 LOCAL_TZ = ZoneInfo("Asia/Taipei")
 REPORT_WINDOW_ANCHOR_HOUR_LOCAL = 12
@@ -3580,7 +3582,7 @@ def load_daily_summary_data(
         external_benchmarks=summary["external_benchmarks"],
         focus_symbol=focus_symbol,
     )
-    summary["strategy_memory_current"] = _read_json_file(storage.strategy_memory_state)
+    summary["strategy_memory_current"] = normalize_strategy_memory_payload(_read_json_file(storage.strategy_memory_state))
     summary["runner_health"] = _build_runner_health_summary(
         _read_json_file(storage.runner_status),
         window_end=window_end,

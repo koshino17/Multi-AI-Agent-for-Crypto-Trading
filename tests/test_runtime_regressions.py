@@ -45,6 +45,7 @@ from trading_agents.runner import (
 )
 from trading_agents.service_manager import _read_runner_status, _runner_launch_agent_plist, start_runner_service, sync_runner_runtime
 from trading_agents.storage import build_storage_layout, mode_storage_root
+from trading_agents.strategy_memory import load_strategy_memory, normalize_strategy_memory_payload
 from trading_agents_web import _runtime_settings
 
 
@@ -569,6 +570,62 @@ class RuntimeRegressionTests(unittest.TestCase):
         )
         self.assertEqual(str(normalized.get("entry_mode", "")), "capital_preservation_pilot")
         self.assertEqual(str(normalized.get("pilot_candidate_id", "")), "grid_range_reversion_maker_v1")
+
+    def test_strategy_memory_expires_old_experiment_by_slot(self) -> None:
+        normalized = normalize_strategy_memory_payload(
+            {
+                "slot": "2026-08-16-day",
+                "controls": {"benchmark_watch_candidate": "grid_range_reversion_maker_v1"},
+                "experiment": {
+                    "experiment_id": "2026-08-12-night:benchmark_watch_candidate",
+                    "slot": "2026-08-12-night",
+                    "trigger": "benchmark_watch_candidate",
+                    "ttl_windows": 2,
+                    "status": "active",
+                },
+            },
+            current_slot="2026-08-16-day",
+        )
+        self.assertEqual(normalized.get("experiment"), {})
+
+    def test_load_strategy_memory_clears_expired_experiment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "strategy-memory.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "slot": "2026-08-16-day",
+                        "controls": {"benchmark_watch_candidate": "grid_range_reversion_maker_v1"},
+                        "experiment": {
+                            "experiment_id": "2026-08-12-night:benchmark_watch_candidate",
+                            "slot": "2026-08-12-night",
+                            "trigger": "benchmark_watch_candidate",
+                            "ttl_windows": 2,
+                            "status": "active",
+                        },
+                    }
+                )
+            )
+            loaded = load_strategy_memory(path)
+        self.assertEqual(loaded.get("experiment"), {})
+
+    def test_build_experiment_drops_expired_previous_experiment_when_controls_hold(self) -> None:
+        agent = StrategyReflectionAgent(llm_client=None)
+        experiment = agent._build_experiment(  # type: ignore[attr-defined]
+            "2026-08-16-day",
+            {"benchmark_watch_candidate": "grid_range_reversion_maker_v1"},
+            reflection_context={
+                "previous_controls": {"benchmark_watch_candidate": "grid_range_reversion_maker_v1"},
+                "previous_experiment": {
+                    "experiment_id": "2026-08-12-night:benchmark_watch_candidate",
+                    "slot": "2026-08-12-night",
+                    "trigger": "benchmark_watch_candidate",
+                    "ttl_windows": 2,
+                    "status": "active",
+                },
+            },
+        )
+        self.assertEqual(experiment, {})
 
     def test_strategy_research_uses_memory_to_bias_candidate_selection(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

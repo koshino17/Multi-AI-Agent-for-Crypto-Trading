@@ -18,6 +18,7 @@ from trading_agents.models import (
     TradeIdea,
 )
 from trading_agents.sentiment import SentimentDataProvider
+from trading_agents.strategy_memory import experiment_is_active
 
 
 def _order_flow_bias(snapshot: MarketSnapshot) -> float:
@@ -2458,7 +2459,15 @@ class StrategyReflectionAgent:
             if previous_controls.get(key) != value:
                 deltas[key] = {"previous": previous_controls.get(key), "current": value}
         if not deltas:
-            return dict((reflection_context.get("previous_experiment") or {})) if isinstance(reflection_context.get("previous_experiment"), dict) else {}
+            previous_experiment = (
+                dict((reflection_context.get("previous_experiment") or {}))
+                if isinstance(reflection_context.get("previous_experiment"), dict)
+                else {}
+            )
+            current_slot = str(slot or "").strip()
+            if previous_experiment and experiment_is_active(previous_experiment, current_slot=current_slot):
+                return previous_experiment
+            return {}
 
         primary_key = next(iter(deltas.keys()))
         success_metrics = ["live_trade_expectancy_pct", "live_profit_factor", "cost_impact_ratio"]
