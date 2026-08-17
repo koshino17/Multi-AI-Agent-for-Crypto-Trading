@@ -20,6 +20,7 @@ from trading_agents.main import (
 )
 from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyCandidate, StrategyResearchSnapshot, TradeIdea
 from trading_agents.reporting import (
+    _build_shadow_benchmark_watch,
     _build_financial_snapshot,
     _build_market_path_review,
     _build_symbol_postmortem,
@@ -1030,6 +1031,154 @@ class RuntimeRegressionTests(unittest.TestCase):
             self.assertEqual(target.read_text(), "active report")
             self.assertFalse(legacy_path.exists())
             self.assertFalse(report_window_is_complete("2026-08-14"))
+
+    def test_shadow_benchmark_watch_flags_cost_model_mismatch(self) -> None:
+        shadow = _build_shadow_benchmark_watch(
+            {
+                "baseline_strategy_id": "grid_range_reversion_maker_v1",
+                "results": {
+                    "SOL/USDT": [
+                        {
+                            "candidate_id": "grid_range_reversion_maker_v1",
+                            "expectancy_pct": -0.10,
+                            "profit_factor": 0.45,
+                            "trade_count": 20,
+                            "cumulative_return_pct": -2.0,
+                            "total_round_trip_cost_pct": 0.05,
+                            "uses_custom_cost_model": True,
+                        },
+                        {
+                            "candidate_id": "grid_range_reversion_v1",
+                            "expectancy_pct": -0.29,
+                            "profit_factor": 0.10,
+                            "trade_count": 20,
+                            "cumulative_return_pct": -5.8,
+                            "total_round_trip_cost_pct": 0.24,
+                            "uses_custom_cost_model": False,
+                        },
+                    ]
+                },
+            },
+            focus_symbol="SOL/USDT",
+        )
+
+        self.assertEqual(shadow["status"], "ready")
+        self.assertEqual(shadow["verdict"], "cost_model_mismatch")
+        self.assertFalse(shadow["cost_model_comparable"])
+        self.assertIn("不能直接當成 live promotion 依據", shadow["summary"])
+
+    def test_daily_summary_prefers_live_cost_benchmark_section(self) -> None:
+        summary = {
+            "mode": "bybit-demo-perp",
+            "total": 0,
+            "proposals": 0,
+            "approved": 0,
+            "executed": 0,
+            "submitted_orders": 0,
+            "rejected_orders": 0,
+            "holds": 0,
+            "blocked": 0,
+            "monitor_heartbeats": 0,
+            "avg_decision_latency_seconds": 0.0,
+            "exchange_minimum_blocked": 0,
+            "latest": {},
+            "blocked_reason_counts": {},
+            "financial_snapshot": {},
+            "equity_curve": {},
+            "avg_scores": {},
+            "action_counts": {},
+            "decision_source_counts": {},
+            "accepted_source_counts": {},
+            "selected_symbol_counts": {},
+            "result_status_counts": {},
+            "long_proposals": 0,
+            "short_proposals": 0,
+            "long_accepted": 0,
+            "short_accepted": 0,
+            "stage_latency_seconds": {},
+            "stage_latency_p95_seconds": {},
+            "llm_wake_enabled_count": 0,
+            "llm_wake_candidate_count": 0,
+            "llm_backend_ok_count": 0,
+            "llm_backend_unavailable_count": 0,
+            "llm_enabled_cycles": 0,
+            "top_traded_symbol": ("n/a", 0),
+            "executed_trade_timeline": [],
+            "external_benchmarks": {
+                "generated_at": "2026-08-17T02:28:43+00:00",
+                "baseline_strategy_id": "grid_range_reversion_maker_v1",
+                "cost_model": {
+                    "round_trip_fee_pct": 0.20,
+                    "round_trip_slippage_pct": 0.04,
+                    "funding_integrated": False,
+                },
+                "top_candidates": [
+                    {
+                        "candidate_id": "grid_range_reversion_maker_v1",
+                        "symbol": "SOL/USDT",
+                        "expectancy_pct": -0.10,
+                        "profit_factor": 0.45,
+                        "trade_count": 20,
+                        "total_round_trip_cost_pct": 0.05,
+                        "round_trip_fee_pct": 0.04,
+                        "round_trip_slippage_pct": 0.01,
+                        "uses_custom_cost_model": True,
+                    }
+                ],
+                "top_candidates_live_cost": [
+                    {
+                        "candidate_id": "donchian_adx_perp_v1",
+                        "symbol": "SOL/USDT",
+                        "expectancy_pct": -0.19,
+                        "profit_factor": 0.09,
+                        "trade_count": 15,
+                        "total_round_trip_cost_pct": 0.24,
+                        "round_trip_fee_pct": 0.20,
+                        "round_trip_slippage_pct": 0.04,
+                        "uses_custom_cost_model": False,
+                    }
+                ],
+                "top_by_symbol_live_cost": {
+                    "SOL/USDT": {
+                        "candidate_id": "donchian_adx_perp_v1",
+                        "expectancy_pct": -0.19,
+                        "profit_factor": 0.09,
+                        "trade_count": 15,
+                    }
+                },
+            },
+            "symbol_postmortem": {},
+            "market_path_review": {},
+            "loss_attribution": {},
+            "shadow_benchmark_watch": {},
+            "strategy_research_latest": {},
+            "daily_strategy_review": {},
+            "external_ai_review": {},
+            "mentor_review": {},
+            "control_impact": {},
+            "agent_trace_archive": {},
+            "ground_truth_artifact": {},
+            "oracle_postmortem_artifact": {},
+            "runner_health": {},
+            "notion_review_status": {},
+            "rejection_reason_counts": {},
+            "trade_review": {},
+        }
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch(
+            "trading_agents.reporting.load_daily_summary_data",
+            return_value=summary,
+        ):
+            content = build_daily_summary(
+                Path(tmpdir),
+                "2026-08-16",
+                Path(tmpdir) / "runner.log",
+                trading_mode="bybit-demo-perp",
+                storage_root=tmpdir,
+            )
+
+        self.assertIn("Top benchmark under live cost model: donchian_adx_perp_v1", content)
+        self.assertIn("Research-only custom-cost leader: grid_range_reversion_maker_v1", content)
+        self.assertIn("do not compare this custom-cost leader directly", content)
 
     def test_multi_symbol_daily_focus_prefers_research_focus_for_market_path(self) -> None:
         settings = SimpleNamespace(

@@ -1526,6 +1526,7 @@ def _build_shadow_benchmark_watch(
         float(baseline.get("expectancy_pct", 0.0) or 0.0) > 0.0
         and float(baseline.get("profit_factor", 0.0) or 0.0) > 1.0
     )
+    baseline_cost = float(baseline.get("total_round_trip_cost_pct", 0.0) or 0.0)
     if (
         not requested_watch
         and recommended_watch_id
@@ -1533,6 +1534,7 @@ def _build_shadow_benchmark_watch(
         and recommended_verdict in {"shadow_candidate", "promotion_candidate"}
         and leader_id == baseline_id
         and baseline_positive_edge
+        and not bool(baseline.get("uses_custom_cost_model", False))
     ):
         return {
             "status": "baseline_confirmed",
@@ -1543,6 +1545,7 @@ def _build_shadow_benchmark_watch(
             "baseline": baseline,
             "watch": baseline,
             "leader": leader,
+            "cost_model_comparable": True,
             "expectancy_delta_pct": 0.0,
             "profit_factor_delta": 0.0,
             "cumulative_return_delta_pct": 0.0,
@@ -1611,6 +1614,8 @@ def _build_shadow_benchmark_watch(
     profit_factor_delta = float(watch.get("profit_factor", 0.0)) - float(baseline.get("profit_factor", 0.0))
     cumulative_delta = float(watch.get("cumulative_return_pct", 0.0)) - float(baseline.get("cumulative_return_pct", 0.0))
     trade_count_delta = int(watch.get("trade_count", 0) or 0) - int(baseline.get("trade_count", 0) or 0)
+    watch_cost = float(watch.get("total_round_trip_cost_pct", 0.0) or 0.0)
+    cost_model_comparable = abs(watch_cost - baseline_cost) <= 1e-9
     is_watch_leader = str(leader.get("candidate_id", "")).strip() == chosen_watch_id
     streak = _shadow_promotion_streak(
         benchmark_reports_dir,
@@ -1627,14 +1632,16 @@ def _build_shadow_benchmark_watch(
         trade_count=int(watch.get("trade_count", 0) or 0),
         watch_expectancy_pct=float(watch.get("expectancy_pct", 0.0) or 0.0),
         watch_profit_factor=float(watch.get("profit_factor", 0.0) or 0.0),
-    )
+    ) if cost_model_comparable else False
     promotion_ready = current_snapshot_qualified and streak >= 3
     watch_positive_edge = (
         float(watch.get("expectancy_pct", 0.0) or 0.0) > 0.0
         and float(watch.get("profit_factor", 0.0) or 0.0) > 1.0
     )
     verdict = (
-        "promotion_candidate"
+        "cost_model_mismatch"
+        if not cost_model_comparable
+        else "promotion_candidate"
         if promotion_ready
         else "watch_streak_building"
         if current_snapshot_qualified
@@ -1645,7 +1652,9 @@ def _build_shadow_benchmark_watch(
         else "no_upgrade_signal"
     )
     next_step = (
-        f"將 `{chosen_watch_id}` 納入更正式的 shadow-vs-live 追蹤，並觀察是否連續多次 benchmark 快照維持領先。"
+        "先不要把這個 shadow delta 當成 promotion 證據；請改用相同 round-trip 成本假設的 baseline/candidate 比較，或直接查看 live-cost leaderboard。"
+        if verdict == "cost_model_mismatch"
+        else f"將 `{chosen_watch_id}` 納入更正式的 shadow-vs-live 追蹤，並觀察是否連續多次 benchmark 快照維持領先。"
         if verdict == "keep_shadow_watch"
         else f"`{chosen_watch_id}` 已連續 {streak} 次達到升級門檻，下一步應定義 live promotion gate。"
         if verdict == "promotion_candidate"
@@ -1656,9 +1665,15 @@ def _build_shadow_benchmark_watch(
         else "目前仍以 live baseline 為主，繼續觀察其他候選是否出現更穩定優勢。"
     )
     summary = (
-        f"{focus_symbol} 上，shadow 候選 `{chosen_watch_id}` 對 live baseline `{baseline_id}` "
+        f"{focus_symbol} 上，shadow 候選 `{chosen_watch_id}` 對 baseline `{baseline_id}` "
         f"的 expectancy 差值為 {expectancy_delta:+.2f}% 、profit factor 差值為 {profit_factor_delta:+.2f}，"
         f"trade count 差值 {trade_count_delta:+d}。"
+        + (
+            f" 但兩者 round-trip cost 假設不同（baseline {baseline_cost:.2f}% vs watch {watch_cost:.2f}%），"
+            "這個差值只能作研究參考，不能直接當成 live promotion 依據。"
+            if not cost_model_comparable
+            else ""
+        )
     )
     return {
         "status": "ready",
@@ -1669,6 +1684,7 @@ def _build_shadow_benchmark_watch(
         "baseline": baseline,
         "watch": watch,
         "leader": leader,
+        "cost_model_comparable": cost_model_comparable,
         "expectancy_delta_pct": round(expectancy_delta, 4),
         "profit_factor_delta": round(profit_factor_delta, 4),
         "cumulative_return_delta_pct": round(cumulative_delta, 4),
@@ -1959,6 +1975,26 @@ def _benchmark_cost_note(payload: dict[str, Any]) -> str:
             parts.append(f"funding {funding:.2f}%")
     suffix = " | custom cost assumption" if bool(payload.get("uses_custom_cost_model", False)) else ""
     return " | ".join(parts) + suffix
+
+
+def _benchmark_top_candidate(payload: dict[str, Any], *, live_cost_only: bool = False) -> dict[str, Any]:
+    key = "top_candidates_live_cost" if live_cost_only else "top_candidates"
+    rows = payload.get(key) or []
+    if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+        return rows[0]
+    if live_cost_only:
+        fallback_rows = payload.get("top_candidates") or []
+        if isinstance(fallback_rows, list):
+            for item in fallback_rows:
+                if isinstance(item, dict) and not bool(item.get("uses_custom_cost_model", False)):
+                    return item
+    return {}
+
+
+def _benchmark_top_by_symbol(payload: dict[str, Any], *, live_cost_only: bool = False) -> dict[str, Any]:
+    key = "top_by_symbol_live_cost" if live_cost_only else "top_by_symbol"
+    rows = payload.get(key) or {}
+    return rows if isinstance(rows, dict) else {}
 
 
 def _benchmark_generated_at(payload: dict[str, Any]) -> datetime | None:
@@ -3601,6 +3637,9 @@ def load_daily_summary_data(
     if isinstance(summary.get("shadow_benchmark_watch"), dict):
         shadow_payload = summary["shadow_benchmark_watch"]
         summary["benchmark_watch_candidate_current"] = (
+            {}
+            if not bool(shadow_payload.get("cost_model_comparable", True))
+            else
             shadow_payload.get("watch")
             if isinstance(shadow_payload.get("watch"), dict) and str(shadow_payload.get("watch", {}).get("candidate_id", "")).strip()
             else shadow_payload.get("baseline")
@@ -3707,8 +3746,11 @@ def build_daily_summary(
     long_accepted = int(summary.get("long_accepted", 0))
     short_accepted = int(summary.get("short_accepted", 0))
     external_benchmarks = summary.get("external_benchmarks", {})
-    top_benchmark = (external_benchmarks.get("top_candidates") or [{}])[0]
-    top_alpha_benchmark = (external_benchmarks.get("top_alpha_arena_candidates") or [{}])[0]
+    top_benchmark = _benchmark_top_candidate(external_benchmarks, live_cost_only=False)
+    top_benchmark_live_cost = _benchmark_top_candidate(external_benchmarks, live_cost_only=True)
+    top_alpha_benchmark = (external_benchmarks.get("top_alpha_arena_candidates_live_cost") or [{}])[0]
+    if not isinstance(top_alpha_benchmark, dict) or not top_alpha_benchmark:
+        top_alpha_benchmark = (external_benchmarks.get("top_alpha_arena_candidates") or [{}])[0]
     symbol_postmortem = summary.get("symbol_postmortem") or {}
     market_path_review = summary.get("market_path_review") or {}
     loss_attribution = summary.get("loss_attribution") or {}
@@ -4027,7 +4069,8 @@ def build_daily_summary(
     else:
         lines.append("- No accepted trades today.")
 
-    if top_benchmark.get("candidate_id"):
+    benchmark_section_top = top_benchmark_live_cost if top_benchmark_live_cost.get("candidate_id") else top_benchmark
+    if benchmark_section_top.get("candidate_id"):
         lines.extend(["", "## External Benchmarks", ""])
         lines.append(f"- Refreshed at: {external_benchmarks.get('generated_at', 'n/a')}")
         lines.append(f"- Live baseline strategy: {external_benchmarks.get('baseline_strategy_id', 'n/a')}")
@@ -4039,23 +4082,36 @@ def build_daily_summary(
                 f"funding integrated={'yes' if bool(cost_model.get('funding_integrated', False)) else 'no'}"
             )
         lines.append(
-            f"- Top benchmark overall: {top_benchmark.get('candidate_id')} on {top_benchmark.get('symbol', 'n/a')} "
-            f"(expectancy={float(top_benchmark.get('expectancy_pct', 0.0)):+.2f}% | "
-            f"profit_factor={float(top_benchmark.get('profit_factor', 0.0)):.2f} | "
-            f"trades={int(top_benchmark.get('trade_count', 0))})"
+            f"- Top benchmark under live cost model: {benchmark_section_top.get('candidate_id')} on {benchmark_section_top.get('symbol', 'n/a')} "
+            f"(expectancy={float(benchmark_section_top.get('expectancy_pct', 0.0)):+.2f}% | "
+            f"profit_factor={float(benchmark_section_top.get('profit_factor', 0.0)):.2f} | "
+            f"trades={int(benchmark_section_top.get('trade_count', 0))})"
         )
-        if int(top_benchmark.get("trade_count", 0) or 0) < 8:
+        if int(benchmark_section_top.get("trade_count", 0) or 0) < 8:
             lines.append("- Benchmark Guard: top benchmark remains low-sample (<8 trades); keep it research-only and do not use it as a promotion basis yet.")
-        top_cost_note = _benchmark_cost_note(top_benchmark)
+        top_cost_note = _benchmark_cost_note(benchmark_section_top)
         if top_cost_note:
             lines.append(f"  cost={top_cost_note}")
+        if top_benchmark.get("candidate_id") and top_benchmark != benchmark_section_top:
+            lines.append(
+                f"- Research-only custom-cost leader: {top_benchmark.get('candidate_id')} on {top_benchmark.get('symbol', 'n/a')} "
+                f"(expectancy={float(top_benchmark.get('expectancy_pct', 0.0)):+.2f}% | "
+                f"profit_factor={float(top_benchmark.get('profit_factor', 0.0)):.2f} | "
+                f"trades={int(top_benchmark.get('trade_count', 0))})"
+            )
+            research_cost_note = _benchmark_cost_note(top_benchmark)
+            if research_cost_note:
+                lines.append(f"  cost={research_cost_note}")
+            lines.append("  note=do not compare this custom-cost leader directly against live-cost candidates for promotion decisions.")
         if top_alpha_benchmark.get("candidate_id"):
             lines.append(
                 f"- Top Alpha Arena model: {top_alpha_benchmark.get('candidate_id')} on {top_alpha_benchmark.get('symbol', 'n/a')} "
                 f"(expectancy={float(top_alpha_benchmark.get('expectancy_pct', 0.0)):+.2f}% | "
                 f"profit_factor={float(top_alpha_benchmark.get('profit_factor', 0.0)):.2f})"
             )
-        top_by_symbol = external_benchmarks.get("top_by_symbol", {})
+        top_by_symbol = _benchmark_top_by_symbol(external_benchmarks, live_cost_only=True)
+        if not top_by_symbol:
+            top_by_symbol = _benchmark_top_by_symbol(external_benchmarks, live_cost_only=False)
         if isinstance(top_by_symbol, dict):
             for symbol_key, payload in top_by_symbol.items():
                 if not isinstance(payload, dict):
@@ -4083,6 +4139,9 @@ def build_daily_summary(
         baseline_cost_note = _benchmark_cost_note(baseline)
         if baseline_cost_note:
             lines.append(f"  cost={baseline_cost_note}")
+        lines.append(
+            f"- Cost Comparable: {'yes' if bool(shadow_benchmark_watch.get('cost_model_comparable', True)) else 'no'}"
+        )
         if shadow_benchmark_watch.get("status") == "ready":
             lines.append(
                 f"- Shadow Candidate: {watch.get('candidate_id', 'n/a')} "

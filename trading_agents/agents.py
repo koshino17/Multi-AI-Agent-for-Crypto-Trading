@@ -162,7 +162,12 @@ def _daily_summary_llm_context(daily_summary: dict) -> dict[str, object]:
     market_path = daily_summary.get("market_path_review") or {}
     loss = daily_summary.get("loss_attribution") or {}
     external_benchmarks = daily_summary.get("external_benchmarks") or {}
-    top_benchmark = (external_benchmarks.get("top_candidates") or [{}])[0]
+    top_benchmark = (
+        (external_benchmarks.get("top_candidates_live_cost") or [{}])[0]
+        if isinstance(external_benchmarks.get("top_candidates_live_cost"), list)
+        and external_benchmarks.get("top_candidates_live_cost")
+        else (external_benchmarks.get("top_candidates") or [{}])[0]
+    )
     focus_benchmark = loss.get("focus_symbol_benchmark") or {}
     if not isinstance(top_benchmark, dict):
         top_benchmark = {}
@@ -1647,10 +1652,21 @@ class DailyReviewAgent:
         projected_balance_blocked_while_exposed = int(daily_summary.get("projected_balance_blocked_while_exposed", 0) or 0)
         projected_balance_blocked_while_flat = int(daily_summary.get("projected_balance_blocked_while_flat", 0) or 0)
         top_reject = next(iter(rejection_reason_counts.items()), ("none", 0))
-        top_benchmark = (external_benchmarks.get("top_candidates") or [{}])[0]
+        top_benchmark = (
+            (external_benchmarks.get("top_candidates_live_cost") or [{}])[0]
+            if isinstance(external_benchmarks.get("top_candidates_live_cost"), list)
+            and external_benchmarks.get("top_candidates_live_cost")
+            else (external_benchmarks.get("top_candidates") or [{}])[0]
+        )
         top_alpha = (external_benchmarks.get("top_alpha_arena_candidates") or [{}])[0]
         focus_symbol = str(symbol_postmortem.get("symbol", "") or "").strip()
-        benchmark_by_symbol = ((external_benchmarks.get("top_by_symbol") or {}) if isinstance(external_benchmarks.get("top_by_symbol"), dict) else {})
+        benchmark_by_symbol = (
+            (external_benchmarks.get("top_by_symbol_live_cost") or {})
+            if isinstance(external_benchmarks.get("top_by_symbol_live_cost"), dict)
+            else {}
+        )
+        if not benchmark_by_symbol:
+            benchmark_by_symbol = ((external_benchmarks.get("top_by_symbol") or {}) if isinstance(external_benchmarks.get("top_by_symbol"), dict) else {})
         focus_benchmark = benchmark_by_symbol.get(focus_symbol) if focus_symbol else {}
         if not isinstance(focus_benchmark, dict):
             focus_benchmark = {}
@@ -1968,7 +1984,12 @@ class StrategyReflectionAgent:
         top_block = next(iter(blocked.items()), ("none", 0))
         top_reject = next(iter(rejected.items()), ("none", 0))
         external_benchmarks = daily_summary.get("external_benchmarks", {})
-        top_benchmark = (external_benchmarks.get("top_candidates") or [{}])[0]
+        top_benchmark = (
+            (external_benchmarks.get("top_candidates_live_cost") or [{}])[0]
+            if isinstance(external_benchmarks.get("top_candidates_live_cost"), list)
+            and external_benchmarks.get("top_candidates_live_cost")
+            else (external_benchmarks.get("top_candidates") or [{}])[0]
+        )
         live_symbols = [str(item).strip() for item in reflection_context.get("live_symbols", []) if str(item).strip()]
         focus_symbols = live_symbols or [key for key, _ in list(selected.items())[:3]]
         biases: list[str] = []

@@ -118,6 +118,10 @@ def load_external_benchmark_summary(state_path: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {"status": "error", "reason": "invalid benchmark state"}
 
 
+def _live_cost_only(results: list[ExternalBenchmarkResult]) -> list[ExternalBenchmarkResult]:
+    return [item for item in results if not bool(item.uses_custom_cost_model)]
+
+
 def refresh_external_benchmark_suite(
     *,
     storage,
@@ -258,12 +262,23 @@ def refresh_external_benchmark_suite(
         all_results.extend(results_for_symbol)
         symbol_results[symbol] = [asdict(item) for item in results_for_symbol]
 
+    comparable_results = _live_cost_only(all_results)
     top_candidates = sorted(all_results, key=_benchmark_sort_key, reverse=True)[:8]
+    top_candidates_live_cost = sorted(comparable_results, key=_benchmark_sort_key, reverse=True)[:8]
     top_alpha = [item for item in top_candidates if item.candidate_id.startswith("alpha_arena::")]
+    top_alpha_live_cost = [item for item in top_candidates_live_cost if item.candidate_id.startswith("alpha_arena::")]
     top_by_symbol = {
         symbol: results[0]
         for symbol, results in (
             (key, [ExternalBenchmarkResult(**item) for item in value])
+            for key, value in symbol_results.items()
+        )
+        if results
+    }
+    top_by_symbol_live_cost = {
+        symbol: results[0]
+        for symbol, results in (
+            (key, _live_cost_only([ExternalBenchmarkResult(**item) for item in value]))
             for key, value in symbol_results.items()
         )
         if results
@@ -285,8 +300,11 @@ def refresh_external_benchmark_suite(
         "report_path": "",
         "results": symbol_results,
         "top_candidates": [asdict(item) for item in top_candidates],
+        "top_candidates_live_cost": [asdict(item) for item in top_candidates_live_cost],
         "top_alpha_arena_candidates": [asdict(item) for item in top_alpha],
+        "top_alpha_arena_candidates_live_cost": [asdict(item) for item in top_alpha_live_cost],
         "top_by_symbol": {key: asdict(value) for key, value in top_by_symbol.items()},
+        "top_by_symbol_live_cost": {key: asdict(value) for key, value in top_by_symbol_live_cost.items()},
     }
     report_path = storage.benchmark_reports / f"external-benchmark-{stamp}.json"
     report_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2))

@@ -16,6 +16,36 @@
 
 ---
 
+## v1.1.10 - Separate live-cost benchmark evidence from custom-cost research leaders
+
+### Why
+
+- The TradePulse daily stewardship run on Monday, August 17, 2026 found that the completed `2026-08-17` noon-window review was treating `grid_range_reversion_maker_v1` as both the live benchmark baseline and the top benchmark leader even though that variant uses a custom maker-style cost model (`0.05%` round trip) while the live `bybit-demo-perp` runtime is configured closer to `0.24%` round trip.
+- That mixed-cost ranking polluted the evidence bundle: the report compared live-cost candidates against a cheaper research-only baseline, and downstream reflection logic could inherit that distorted benchmark context when deciding what deserved watch or pilot attention.
+- This is a profitability and capital-preservation issue because TradePulse should only use cost-comparable benchmark evidence for live promotion, while still preserving custom-cost variants as research artifacts.
+
+### What Changed
+
+- `trading_agents/external_benchmarks.py`
+  - Added live-cost-only benchmark views alongside the existing mixed-cost snapshot so reports and downstream logic can read a comparable leaderboard without discarding research-only custom-cost runs.
+
+- `trading_agents/reporting.py`
+  - Shadow benchmark watch now flags `cost_model_mismatch` when baseline and candidate use different round-trip cost assumptions and blocks that comparison from becoming the active benchmark candidate.
+  - Daily reports now render the live-cost benchmark leader as the main benchmark line and demote custom-cost leaders into an explicit research-only note instead of presenting them as directly comparable live evidence.
+
+- `trading_agents/main.py`
+  - Reflection context fallbacks now prefer `top_by_symbol_live_cost` before falling back to the broader mixed-cost snapshot, keeping pilot/watch decisions aligned with the real runtime friction model.
+
+- `trading_agents/agents.py`
+  - LLM review and reflection prompts now prefer live-cost benchmark leaders by default so mentor-style reasoning does not overfit to cheaper custom-cost assumptions.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for cost-mismatch shadow-watch verdicts and for daily summary rendering that separates live-cost leaders from research-only custom-cost winners.
+
+### Result
+
+- TradePulse still tracks maker-assumption research variants, but the noon-window learning loop now distinguishes research-only cost advantages from benchmark evidence that is actually comparable to the live `bybit-demo-perp` runtime.
+
 ## v1.1.9 - Expire stale strategy-memory experiments by slot
 
 ### Why

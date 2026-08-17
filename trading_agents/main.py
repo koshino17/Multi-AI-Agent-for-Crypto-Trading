@@ -300,7 +300,11 @@ def _build_strategy_reflection_context(
         live_symbol_benchmark = summary.get("benchmark_watch_candidate_current") or {}
         if not isinstance(live_symbol_benchmark, dict) or not str(live_symbol_benchmark.get("candidate_id", "") or "").strip():
             external_benchmarks = summary.get("external_benchmarks") or {}
-            top_by_symbol = external_benchmarks.get("top_by_symbol") or {}
+            top_by_symbol = (
+                external_benchmarks.get("top_by_symbol_live_cost")
+                or external_benchmarks.get("top_by_symbol")
+                or {}
+            )
             if not isinstance(top_by_symbol, dict):
                 top_by_symbol = {}
             live_symbol_benchmark = top_by_symbol.get(current_live_symbol, {}) if current_live_symbol else {}
@@ -482,7 +486,11 @@ def _build_strategy_reflection_context(
 
     live_symbol_benchmark = daily_summary.get("benchmark_watch_candidate_current") or {}
     if not isinstance(live_symbol_benchmark, dict) or not str(live_symbol_benchmark.get("candidate_id", "") or "").strip():
-        top_by_symbol = (daily_summary.get("external_benchmarks") or {}).get("top_by_symbol") or {}
+        top_by_symbol = (
+            (daily_summary.get("external_benchmarks") or {}).get("top_by_symbol_live_cost")
+            or (daily_summary.get("external_benchmarks") or {}).get("top_by_symbol")
+            or {}
+        )
         live_symbol_benchmark = top_by_symbol.get(current_live_symbol, {}) if current_live_symbol else {}
     strategy_research_latest = daily_summary.get("strategy_research_latest") or {}
     current_loss_attribution = daily_summary.get("loss_attribution") or {}
