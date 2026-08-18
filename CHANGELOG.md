@@ -16,6 +16,27 @@
 
 ---
 
+## v1.1.11 - Let low-participation pilots use the research-backed candidate
+
+### Why
+
+- The TradePulse daily stewardship run on Tuesday, August 18, 2026 found a structural mismatch in the completed `2026-08-18` noon-window evidence bundle: the live-cost leaderboard pointed to `grid_range_reversion_v1`, while the research loop and local strategy library were aligned on `grid_range_reversion_maker_v1`.
+- TradePulse had spent five consecutive low-participation windows in capital-preservation mode with zero accepted orders, yet the low-participation pilot path still required the live benchmark candidate ID to exactly match the research recommendation before enabling a tiny bounded pilot.
+- That made the learning loop too inert: TradePulse could keep identifying a research-backed maker strategy it knows how to execute, but fail to promote it into a demo pilot because the watch-only live-cost leader used a different strategy ID.
+
+### What Changed
+
+- `trading_agents/agents.py`
+  - Updated the low-participation pilot gate to prefer the research-backed candidate ID when TradePulse is stuck in repeated observe-only windows.
+  - Kept the stricter live-cost benchmark gate unchanged for normal capital-preservation pilot promotion, so this only affects the tiny research-to-live bridge path.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for the exact mismatch case where the live-cost leader differs from the research-backed maker candidate, ensuring TradePulse still promotes the executable research candidate into pilot mode.
+
+### Result
+
+- TradePulse can now turn repeated low-participation, high-hold windows into a bounded maker-only demo pilot for the research-backed range strategy it already knows how to run, instead of remaining stuck in observe-only mode because of a candidate-ID mismatch.
+
 ## v1.1.10 - Separate live-cost benchmark evidence from custom-cost research leaders
 
 ### Why

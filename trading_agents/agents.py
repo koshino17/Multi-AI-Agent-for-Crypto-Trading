@@ -2037,6 +2037,7 @@ class StrategyReflectionAgent:
         research_recommendation = reflection_context.get("strategy_research_recommendation") or {}
         research_candidate_id = str(research_recommendation.get("candidate_id", "") or "").strip()
         research_verdict = str(research_recommendation.get("verdict", "") or "").strip().lower()
+        low_participation_pilot_candidate_id = research_candidate_id or pilot_candidate_id
         low_participation_threshold = int(self.settings.strategy_learning_pilot_low_participation_windows or 0)
         recent_windows = reflection_context.get("recent_windows") or []
         if not isinstance(recent_windows, list):
@@ -2125,12 +2126,9 @@ class StrategyReflectionAgent:
             and pilot_uses_custom_cost_model
         )
         low_participation_pilot_ready = bool(
-            pilot_candidate_id
-            and pilot_candidate_id == research_candidate_id
+            low_participation_pilot_candidate_id
             and research_verdict in {"shadow_candidate", "promotion_candidate"}
-            and pilot_expectancy_pct >= float(self.settings.strategy_learning_pilot_min_expectancy_pct or 0.0)
-            and pilot_profit_factor >= float(self.settings.strategy_learning_pilot_min_profit_factor or 0.0)
-            and pilot_uses_custom_cost_model
+            and research_candidate_id
             and low_participation_streak >= low_participation_threshold
             and positive_streak >= 1
         )
@@ -2160,7 +2158,7 @@ class StrategyReflectionAgent:
                 "allow a strictly bounded maker-only pilot for the research-aligned candidate after repeated high-hold / low-trade windows"
             )
             controls["entry_mode"] = "capital_preservation_pilot"
-            controls["pilot_candidate_id"] = pilot_candidate_id
+            controls["pilot_candidate_id"] = low_participation_pilot_candidate_id
             controls["pilot_max_position_pct"] = float(self.settings.strategy_learning_pilot_max_position_pct or 0.10)
         previous_carry_in_mode = str(previous_controls.get("carry_in_mode", "") or "").strip().lower()
         if previous_carry_in_mode == "de_risk" and not bool(reflection_context.get("restore_ready")) and negative_streak > 0:
