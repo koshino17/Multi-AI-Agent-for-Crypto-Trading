@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from trading_agents.agents import RiskSupervisorAgent, StrategistAgent, StrategyReflectionAgent
+from trading_agents.agents import DailyReviewAgent, RiskSupervisorAgent, StrategistAgent, StrategyReflectionAgent
 from trading_agents.exchange import _build_fvg_features, _build_microstructure_features, _infer_po3_phase_hint
 from trading_agents.llm import _trace_date_label
 from trading_agents.main import (
@@ -1179,6 +1179,139 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertIn("Top benchmark under live cost model: donchian_adx_perp_v1", content)
         self.assertIn("Research-only custom-cost leader: grid_range_reversion_maker_v1", content)
         self.assertIn("do not compare this custom-cost leader directly", content)
+
+    def test_daily_summary_renders_control_evidence_lines(self) -> None:
+        summary = {
+            "mode": "bybit-demo-perp",
+            "total": 20,
+            "proposals": 0,
+            "approved": 0,
+            "executed": 0,
+            "submitted_orders": 0,
+            "accepted_orders": 0,
+            "rejected_orders": 0,
+            "holds": 20,
+            "blocked": 4,
+            "monitor_heartbeats": 0,
+            "avg_decision_latency_seconds": 0.0,
+            "exchange_minimum_blocked": 0,
+            "latest": {},
+            "blocked_reason_counts": {"symbol cooldown active": 4},
+            "financial_snapshot": {},
+            "equity_curve": {},
+            "avg_scores": {},
+            "action_counts": {},
+            "decision_source_counts": {},
+            "accepted_source_counts": {},
+            "selected_symbol_counts": {},
+            "result_status_counts": {},
+            "long_proposals": 0,
+            "short_proposals": 0,
+            "long_accepted": 0,
+            "short_accepted": 0,
+            "external_benchmarks": {},
+            "symbol_postmortem": {},
+            "market_path_review": {},
+            "loss_attribution": {},
+            "shadow_benchmark_watch": {},
+            "strategy_research_latest": {},
+            "daily_strategy_review": {},
+            "external_ai_review": {},
+            "mentor_review": {},
+            "control_impact": {
+                "changed_controls": {"cooldown_scale": {"previous": 1.0, "current": 0.65}},
+                "experiment": {},
+                "accepted_rate_pct": 0.0,
+                "accepted_rate_delta_pct": 0.0,
+                "hold_ratio_pct": 100.0,
+                "hold_ratio_delta_pct": 5.0,
+                "blocked_rate_pct": 20.0,
+                "blocked_rate_delta_pct": 10.0,
+                "daily_pnl_usdt": 0.0464,
+                "daily_pnl_delta_usdt": 0.01,
+                "realized_after_fees_usdt": 0.0,
+                "realized_after_fees_delta_usdt": 0.0,
+                "top_blocked_reason": "symbol cooldown active",
+                "top_blocked_count": 4,
+                "accepted_policy_exit_count": 0,
+                "accepted_policy_exit_delta": 0,
+                "avg_hold_bars": 0.0,
+                "avg_hold_bars_delta": 0.0,
+                "effect_observations": [
+                    "`cooldown_scale=0.65` coincided with 4 cooldown blocks and reduced participation."
+                ],
+            },
+            "agent_trace_archive": {},
+            "ground_truth_artifact": {},
+            "oracle_postmortem_artifact": {},
+            "runner_health": {},
+            "notion_review_status": {},
+            "rejection_reason_counts": {},
+            "trade_review": {},
+        }
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch(
+            "trading_agents.reporting.load_daily_summary_data",
+            return_value=summary,
+        ):
+            content = build_daily_summary(
+                Path(tmpdir),
+                "2026-08-16",
+                Path(tmpdir) / "runner.log",
+                trading_mode="bybit-demo-perp",
+                storage_root=tmpdir,
+            )
+
+        self.assertIn("- Blocked Rate: 20.00% (delta +10.00pp)", content)
+        self.assertIn("- Daily PnL: +0.05 USDT (delta +0.01)", content)
+        self.assertIn("- Top Blocked Reason: symbol cooldown active (4)", content)
+        self.assertIn("- Control Evidence: `cooldown_scale=0.65` coincided with 4 cooldown blocks", content)
+
+    def test_daily_review_uses_control_impact_evidence_before_generic_control_check(self) -> None:
+        agent = DailyReviewAgent(llm_client=None)
+        snapshot = agent.evaluate(
+            "2026-08-19",
+            {
+                "action_counts": {"hold": 12},
+                "selected_symbol_counts": {"SOL/USDT": 12},
+                "blocked_reason_counts": {},
+                "rejection_reason_counts": {},
+                "financial_snapshot": {
+                    "total_portfolio_value_usdt": 436.2,
+                    "daily_pnl_usdt": 0.0464,
+                    "daily_pnl_pct": 0.01,
+                    "capital_utilization_pct": 0.0,
+                    "realized_pnl_usdt": 0.0,
+                    "unrealized_pnl_usdt": 0.0,
+                    "daily_fees_usdt": 0.0,
+                },
+                "latest": {"selected_symbol": "SOL/USDT", "idea": {"action": "hold", "score": 0.4}},
+                "external_benchmarks": {},
+                "symbol_postmortem": {},
+                "loss_attribution": {"primary_driver": "no-trade day; no validated edge passed entry filters"},
+                "policy_exit_diagnostics": {"summary": "policy decisions=0"},
+                "strategy_memory_current": {
+                    "controls": {
+                        "entry_mode": "capital_preservation",
+                    }
+                },
+                "control_impact": {
+                    "effect_observations": [
+                        "`entry_mode=capital_preservation` coincided with 0 accepted orders and a 100.0% hold ratio."
+                    ]
+                },
+                "total": 12,
+                "submitted_orders": 0,
+                "accepted_orders": 0,
+                "rejected_orders": 0,
+                "blocked": 0,
+                "review_history": [],
+            },
+        )
+
+        self.assertTrue(
+            any(item.startswith("根據 control impact 先驗證：`entry_mode=capital_preservation`") for item in snapshot.action_items)
+        )
+        self.assertFalse(any("確認 learning controls 是否真的落地" in item for item in snapshot.action_items))
 
     def test_multi_symbol_daily_focus_prefers_research_focus_for_market_path(self) -> None:
         settings = SimpleNamespace(

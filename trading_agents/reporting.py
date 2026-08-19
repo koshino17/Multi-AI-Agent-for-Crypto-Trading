@@ -488,7 +488,7 @@ def _build_control_impact_summary(
         for key, value in controls.items()
         if previous_controls.get(key) != value
     }
-    if not changed_controls and not experiment:
+    if not controls and not experiment:
         return {}
 
     previous_summary = previous_summary or {}
@@ -502,14 +502,33 @@ def _build_control_impact_summary(
     previous_accepted_rate = (previous_accepted / previous_total) if previous_total > 0 else 0.0
     current_hold_ratio = (current_hold / current_total) if current_total > 0 else 0.0
     previous_hold_ratio = (previous_hold / previous_total) if previous_total > 0 else 0.0
+    current_blocked = int(current_summary.get("blocked", 0) or 0)
+    previous_blocked = int(previous_summary.get("blocked", 0) or 0)
+    current_blocked_rate = (current_blocked / current_total) if current_total > 0 else 0.0
+    previous_blocked_rate = (previous_blocked / previous_total) if previous_total > 0 else 0.0
     current_loss = current_summary.get("loss_attribution") or {}
     previous_loss = previous_summary.get("loss_attribution") or {}
     current_policy = current_summary.get("policy_exit_diagnostics") or {}
     previous_policy = previous_summary.get("policy_exit_diagnostics") or {}
     current_trade_review = current_summary.get("trade_review") or {}
     previous_trade_review = previous_summary.get("trade_review") or {}
+    current_financial = current_summary.get("financial_snapshot") or {}
+    previous_financial = previous_summary.get("financial_snapshot") or {}
     current_closed_episodes = [item for item in (current_trade_review.get("episodes") or []) if str(item.get("status", "")).lower() in {"win", "loss", "flat"}]
     previous_closed_episodes = [item for item in (previous_trade_review.get("episodes") or []) if str(item.get("status", "")).lower() in {"win", "loss", "flat"}]
+    current_blocked_reasons = current_summary.get("blocked_reason_counts") or {}
+    if not isinstance(current_blocked_reasons, dict):
+        current_blocked_reasons = {}
+    top_blocked_reason, top_blocked_count = next(iter(current_blocked_reasons.items()), ("none", 0))
+    effect_observations = _build_control_effect_observations(
+        controls,
+        current_summary=current_summary,
+        current_loss=current_loss,
+        current_financial=current_financial,
+        current_hold_ratio=current_hold_ratio,
+        top_blocked_reason=str(top_blocked_reason or "none"),
+        top_blocked_count=int(top_blocked_count or 0),
+    )
 
     return {
         "changed_controls": changed_controls,
@@ -518,25 +537,116 @@ def _build_control_impact_summary(
         "accepted_rate_delta_pct": round((current_accepted_rate - previous_accepted_rate) * 100.0, 2),
         "hold_ratio_pct": round(current_hold_ratio * 100.0, 2),
         "hold_ratio_delta_pct": round((current_hold_ratio - previous_hold_ratio) * 100.0, 2),
+        "blocked_rate_pct": round(current_blocked_rate * 100.0, 2),
+        "blocked_rate_delta_pct": round((current_blocked_rate - previous_blocked_rate) * 100.0, 2),
         "cost_impact_ratio": current_loss.get("cost_impact_ratio"),
         "cost_impact_ratio_delta": (
             round(float(current_loss.get("cost_impact_ratio", 0.0)) - float(previous_loss.get("cost_impact_ratio", 0.0)), 2)
             if current_loss.get("cost_impact_ratio") is not None and previous_loss.get("cost_impact_ratio") is not None
             else None
         ),
+        "daily_pnl_usdt": round(float(current_financial.get("daily_pnl_usdt", 0.0) or 0.0), 4),
+        "daily_pnl_delta_usdt": round(
+            float(current_financial.get("daily_pnl_usdt", 0.0) or 0.0)
+            - float(previous_financial.get("daily_pnl_usdt", 0.0) or 0.0),
+            4,
+        ),
+        "realized_after_fees_usdt": round(float(current_loss.get("realized_after_fees_usdt", 0.0) or 0.0), 4),
+        "realized_after_fees_delta_usdt": round(
+            float(current_loss.get("realized_after_fees_usdt", 0.0) or 0.0)
+            - float(previous_loss.get("realized_after_fees_usdt", 0.0) or 0.0),
+            4,
+        ),
+        "top_blocked_reason": str(top_blocked_reason or "none"),
+        "top_blocked_count": int(top_blocked_count or 0),
         "accepted_policy_exit_count": int(current_policy.get("accepted_policy_exit_count", 0) or 0),
         "accepted_policy_exit_delta": int(current_policy.get("accepted_policy_exit_count", 0) or 0) - int(previous_policy.get("accepted_policy_exit_count", 0) or 0),
         "avg_hold_bars": round(_estimate_avg_hold_bars(current_closed_episodes, timeframe_minutes) or 0.0, 2),
         "avg_hold_bars_delta": (
             round(
                 (float(_estimate_avg_hold_bars(current_closed_episodes, timeframe_minutes) or 0.0) -
-                 float(_estimate_avg_hold_bars(previous_closed_episodes, timeframe_minutes) or 0.0)),
+                float(_estimate_avg_hold_bars(previous_closed_episodes, timeframe_minutes) or 0.0)),
                 2,
             )
             if current_closed_episodes or previous_closed_episodes
             else None
         ),
+        "effect_observations": effect_observations,
     }
+
+
+def _build_control_effect_observations(
+    controls: dict[str, Any],
+    *,
+    current_summary: dict[str, Any],
+    current_loss: dict[str, Any],
+    current_financial: dict[str, Any],
+    current_hold_ratio: float,
+    top_blocked_reason: str,
+    top_blocked_count: int,
+) -> list[str]:
+    observations: list[str] = []
+    accepted_orders = int(current_summary.get("accepted_orders", 0) or 0)
+    blocked_total = int(current_summary.get("blocked", 0) or 0)
+    fallback_mode = str(controls.get("fallback_entry_mode", "") or "").strip().lower()
+    entry_mode = str(controls.get("entry_mode", "") or "").strip().lower()
+    carry_in_mode = str(controls.get("carry_in_mode", "") or "").strip().lower()
+    decision_source_counts = current_summary.get("decision_source_counts") or {}
+    if not isinstance(decision_source_counts, dict):
+        decision_source_counts = {}
+    accepted_source_counts = current_summary.get("accepted_source_counts") or {}
+    if not isinstance(accepted_source_counts, dict):
+        accepted_source_counts = {}
+    daily_pnl_usdt = float(current_financial.get("daily_pnl_usdt", 0.0) or 0.0)
+    realized_after_fees = float(current_loss.get("realized_after_fees_usdt", 0.0) or 0.0)
+
+    try:
+        cooldown_scale = float(controls.get("cooldown_scale", 1.0) or 1.0)
+    except (TypeError, ValueError):
+        cooldown_scale = 1.0
+    cooldown_blocks = int((current_summary.get("blocked_reason_counts") or {}).get("symbol cooldown active", 0) or 0)
+    if cooldown_scale < 1.0 and cooldown_blocks > 0:
+        observations.append(
+            f"`cooldown_scale={cooldown_scale:.2f}` coincided with {cooldown_blocks} cooldown blocks "
+            f"({blocked_total} blocked total, top reason `{top_blocked_reason}`), so cooldown pressure is materially affecting participation."
+        )
+
+    fallback_decisions = int(decision_source_counts.get("fallback", 0) or 0)
+    fallback_accepted = int(accepted_source_counts.get("fallback", 0) or 0)
+    if fallback_mode == "base_only":
+        observations.append(
+            f"`fallback_entry_mode=base_only` kept fallback acceptance at {fallback_accepted} while the window finished with "
+            f"{accepted_orders} accepted orders and a {current_hold_ratio * 100.0:.1f}% hold ratio."
+        )
+    elif fallback_decisions > 0:
+        observations.append(
+            f"fallback logic still produced {fallback_decisions} decisions, so fallback suppression is not the main participation bottleneck in this window."
+        )
+
+    if entry_mode.startswith("capital_preservation"):
+        observations.append(
+            f"`entry_mode={entry_mode}` coincided with {accepted_orders} accepted orders, "
+            f"{realized_after_fees:+.2f} USDT realized-after-fees, and {daily_pnl_usdt:+.2f} USDT daily PnL."
+        )
+
+    if carry_in_mode == "de_risk":
+        carry_in_closed = int(current_loss.get("carry_in_closed_count", 0) or 0)
+        observations.append(
+            f"`carry_in_mode=de_risk` saw {carry_in_closed} carry-in closes this window; "
+            "verify next whether earlier exits reduce carry-in drag rather than only reducing exposure time."
+        )
+
+    benchmark_watch_candidate = str(controls.get("benchmark_watch_candidate", "") or "").strip()
+    shadow_watch = current_summary.get("shadow_benchmark_watch") or {}
+    if benchmark_watch_candidate and isinstance(shadow_watch, dict):
+        verdict = str(shadow_watch.get("verdict", "") or "").strip()
+        if verdict == "cost_model_mismatch":
+            observations.append(
+                f"`benchmark_watch_candidate={benchmark_watch_candidate}` is still research-only because the current shadow comparison is `{verdict}`; "
+                "promotion evidence must come from the live-cost leaderboard instead."
+            )
+
+    return observations[:4]
 
 
 def _build_market_path_review(records: list[dict[str, Any]], *, focus_symbol: str = "") -> dict[str, Any]:
@@ -4384,6 +4494,23 @@ def build_daily_summary(
             f"- Hold Ratio: {float(control_impact.get('hold_ratio_pct', 0.0)):.2f}% "
             f"(delta {float(control_impact.get('hold_ratio_delta_pct', 0.0)):+.2f}pp)"
         )
+        lines.append(
+            f"- Blocked Rate: {float(control_impact.get('blocked_rate_pct', 0.0)):.2f}% "
+            f"(delta {float(control_impact.get('blocked_rate_delta_pct', 0.0)):+.2f}pp)"
+        )
+        lines.append(
+            f"- Daily PnL: {float(control_impact.get('daily_pnl_usdt', 0.0)):+.2f} USDT "
+            f"(delta {float(control_impact.get('daily_pnl_delta_usdt', 0.0)):+.2f})"
+        )
+        lines.append(
+            f"- Realized After Fees: {float(control_impact.get('realized_after_fees_usdt', 0.0)):+.2f} USDT "
+            f"(delta {float(control_impact.get('realized_after_fees_delta_usdt', 0.0)):+.2f})"
+        )
+        if str(control_impact.get("top_blocked_reason", "") or "").strip() and str(control_impact.get("top_blocked_reason")) != "none":
+            lines.append(
+                f"- Top Blocked Reason: {control_impact.get('top_blocked_reason')} "
+                f"({int(control_impact.get('top_blocked_count', 0) or 0)})"
+            )
         if control_impact.get("cost_impact_ratio") is not None:
             lines.append(
                 f"- Cost Impact Ratio: {float(control_impact.get('cost_impact_ratio', 0.0)):.2f} "
@@ -4399,6 +4526,8 @@ def build_daily_summary(
                 f"- Avg Hold Bars (closed episodes): {float(avg_hold_bars):.2f} "
                 f"(delta {float(control_impact.get('avg_hold_bars_delta', 0.0) or 0.0):+.2f})"
             )
+        for observation in control_impact.get("effect_observations", [])[:4]:
+            lines.append(f"- Control Evidence: {observation}")
 
     if agent_trace_archive or ground_truth_artifact or oracle_postmortem_artifact:
         lines.extend(["", "## Research Artifacts", ""])

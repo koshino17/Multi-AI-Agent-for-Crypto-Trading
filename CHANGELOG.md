@@ -16,6 +16,30 @@
 
 ---
 
+## v1.1.11 - Show which learning controls actually suppressed participation
+
+### Why
+
+- The TradePulse daily stewardship run on Wednesday, August 19, 2026 found that the completed `2026-08-19` noon-window review still escalated the same vague learning-controls action item even though the report already had enough telemetry to explain what those controls were doing.
+- TradePulse spent another full SOL up-day in `bybit-demo-perp` with 107 hold decisions, zero accepted orders, and repeated cost-mismatch benchmark reminders, but the daily evidence bundle still did not tie active controls directly to blocked rate, hold ratio, or PnL outcomes.
+- That is a profitability research issue because the noon-to-noon learning loop should tell us whether preservation controls are intentionally suppressing participation or whether the runtime is missing valid opportunities for another reason.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Expanded `Control Impact` to include blocked-rate deltas, daily PnL deltas, realized-after-fees deltas, and the top blocked reason for the current window.
+  - Added control-evidence observations that explicitly connect active controls such as `cooldown_scale`, `fallback_entry_mode`, `entry_mode`, `carry_in_mode`, and `benchmark_watch_candidate` to participation, blocked flow, and promotion evidence quality.
+
+- `trading_agents/agents.py`
+  - Fallback daily reviews now consume the new control-evidence observations and use them as action items before falling back to the older generic “confirm learning controls” reminder.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage that completed daily reports render the new control-evidence lines and that fallback daily reviews prefer concrete control-impact evidence over the generic reminder.
+
+### Result
+
+- TradePulse noon-window reviews now say which live controls actually coincided with low participation, blocked proposals, and flat realized PnL, making the next experiment decision tighter and less repetitive.
+
 ## v1.1.10 - Separate live-cost benchmark evidence from custom-cost research leaders
 
 ### Why

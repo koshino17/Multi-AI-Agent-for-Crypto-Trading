@@ -1644,6 +1644,7 @@ class DailyReviewAgent:
         symbol_postmortem = daily_summary.get("symbol_postmortem") or {}
         loss_attribution = daily_summary.get("loss_attribution") or {}
         policy_exit_diagnostics = daily_summary.get("policy_exit_diagnostics") or {}
+        control_impact = daily_summary.get("control_impact") or {}
         strategy_memory = daily_summary.get("strategy_memory_current") or daily_summary.get("latest", {}).get("strategy_memory") or {}
         learning_controls = strategy_memory.get("controls") or {}
         action_line = ", ".join(f"{key}={value}" for key, value in action_counts.items()) or "no actions"
@@ -1799,6 +1800,13 @@ class DailyReviewAgent:
                 f"profit factor 差值為 {float(shadow_watch.get('profit_factor_delta', 0.0)):+.2f}，"
                 f"目前判定為 `{shadow_watch.get('verdict', 'n/a')}`。"
             )
+        control_evidence = [
+            str(item).strip()
+            for item in (control_impact.get("effect_observations") or [])
+            if str(item).strip()
+        ]
+        if control_evidence:
+            risk_review += f" Control impact 證據：{control_evidence[0]}"
 
         execution_review = (
             f"執行面共有 {daily_summary.get('submitted_orders', 0)} 次送單、"
@@ -1818,7 +1826,9 @@ class DailyReviewAgent:
             )
         if shadow_watch.get("status") == "ready":
             action_items.append(str(shadow_watch.get("next_step", "")).strip())
-        if learning_controls:
+        if control_evidence:
+            action_items.append(f"根據 control impact 先驗證：{control_evidence[0]}")
+        elif learning_controls:
             action_items.append(f"確認 learning controls 是否真的落地：{json.dumps(learning_controls, ensure_ascii=False)}")
             if str(learning_controls.get("carry_in_mode", "") or "").strip().lower() == "de_risk":
                 action_items.append("目前已啟用 carry-in de-risk；明天優先驗證提早退場是否有減少 carry-in 對損益的拖累。")
