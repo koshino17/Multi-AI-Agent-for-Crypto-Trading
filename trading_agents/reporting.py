@@ -4647,6 +4647,9 @@ def build_daily_summary(
 def write_daily_summary(path: Path, date_label: str, content: str) -> Path:
     target = path / f"{date_label}.md"
     target.write_text(content)
+    active_target = path / "_active" / f"{date_label}.md"
+    if active_target.exists():
+        active_target.unlink()
     return target
 
 

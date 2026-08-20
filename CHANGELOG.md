@@ -16,6 +16,26 @@
 
 ---
 
+## v1.1.11 - Remove stale active-window drafts after noon-window completion
+
+### Why
+
+- The TradePulse daily stewardship run on Thursday, August 20, 2026 found both the finalized [`2026-08-20.md`](/Users/koshino/Library/Application%20Support/TradePulse/state/reports/daily/2026-08-20.md) report and a stale [`_active/2026-08-20.md`](/Users/koshino/Library/Application%20Support/TradePulse/state/reports/daily/_active/2026-08-20.md) draft still present in the installed runtime.
+- That stale `_active` copy preserved provisional pre-noon control-impact state, including older benchmark-watch context, even after the completed noon-window review had already written the canonical summary.
+- This is a profitability and review-quality issue because autonomous TradePulse stewardship can accidentally read the draft instead of the finalized evidence bundle and chase the wrong follow-up experiment.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - `write_daily_summary()` now deletes any same-date file under `reports/daily/_active/` when the completed noon-window summary is written.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage that a completed daily summary removes the stale `_active/YYYY-MM-DD.md` draft for the same date.
+
+### Result
+
+- TradePulse now keeps one canonical report per completed noon window, reducing the chance that later automation reads stale provisional control data after the final review is available.
+
 ## v1.1.10 - Separate live-cost benchmark evidence from custom-cost research leaders
 
 ### Why

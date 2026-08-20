@@ -31,6 +31,7 @@ from trading_agents.reporting import (
     load_daily_summary_data,
     report_window_is_complete,
     write_active_daily_summary,
+    write_daily_summary,
     write_ground_truth_artifacts,
     write_oracle_postmortem_artifacts,
 )
@@ -998,6 +999,7 @@ class RuntimeRegressionTests(unittest.TestCase):
     def test_active_window_summary_is_marked_provisional(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = build_storage_layout(tmpdir)
+            active_label = "2099-08-14"
             settings = SimpleNamespace(
                 trading_mode="bybit-demo-perp",
                 data_root=tmpdir,
@@ -1009,28 +1011,43 @@ class RuntimeRegressionTests(unittest.TestCase):
             with mock.patch("trading_agents.config.load_settings", return_value=settings):
                 content = build_daily_summary(
                     storage.trade_logs,
-                    "2026-08-14",
+                    active_label,
                     storage.runner_log,
                     trading_mode="bybit-demo-perp",
                     storage_root=tmpdir,
                 )
 
-            self.assertIn("# Active Daily Window: 2026-08-14", content)
+            self.assertIn(f"# Active Daily Window: {active_label}", content)
             self.assertIn("- Window Status: active_incomplete", content)
             self.assertNotIn("- Notion Daily Review:", content)
 
     def test_write_active_daily_summary_uses_active_subdirectory(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = build_storage_layout(tmpdir)
-            legacy_path = storage.daily_reports / "2026-08-14.md"
+            active_label = "2099-08-14"
+            legacy_path = storage.daily_reports / f"{active_label}.md"
             legacy_path.write_text("legacy")
 
-            target = write_active_daily_summary(storage.daily_reports, "2026-08-14", "active report")
+            target = write_active_daily_summary(storage.daily_reports, active_label, "active report")
 
-            self.assertEqual(target, storage.daily_reports / "_active" / "2026-08-14.md")
+            self.assertEqual(target, storage.daily_reports / "_active" / f"{active_label}.md")
             self.assertEqual(target.read_text(), "active report")
             self.assertFalse(legacy_path.exists())
-            self.assertFalse(report_window_is_complete("2026-08-14"))
+            self.assertFalse(report_window_is_complete(active_label))
+
+    def test_write_daily_summary_removes_stale_active_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = build_storage_layout(tmpdir)
+            active_dir = storage.daily_reports / "_active"
+            active_dir.mkdir(parents=True, exist_ok=True)
+            stale_active = active_dir / "2026-08-20.md"
+            stale_active.write_text("stale active report")
+
+            target = write_daily_summary(storage.daily_reports, "2026-08-20", "completed report")
+
+            self.assertEqual(target, storage.daily_reports / "2026-08-20.md")
+            self.assertEqual(target.read_text(), "completed report")
+            self.assertFalse(stale_active.exists())
 
     def test_shadow_benchmark_watch_flags_cost_model_mismatch(self) -> None:
         shadow = _build_shadow_benchmark_watch(
