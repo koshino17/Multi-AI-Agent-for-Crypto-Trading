@@ -423,6 +423,71 @@ def _daily_summary_llm_brief(daily_summary: dict) -> str:
     )
 
 
+def _daily_summary_llm_compact_brief(daily_summary: dict) -> str:
+    operations = daily_summary.get("operations") or {}
+    financial = daily_summary.get("financial") or {}
+    latest = daily_summary.get("latest_decision") or {}
+    market_path = daily_summary.get("market_path_review") or {}
+    loss = daily_summary.get("loss_attribution") or {}
+    benchmark = daily_summary.get("benchmark_context") or {}
+    focus_benchmark = benchmark.get("focus_symbol_benchmark") or {}
+    recommendation = benchmark.get("strategy_research_recommendation") or {}
+    shadow_watch = benchmark.get("shadow_benchmark_watch") or {}
+    controls = daily_summary.get("learning_controls") or {}
+    compact_controls = {
+        "entry_mode": controls.get("entry_mode", ""),
+        "fallback_entry_mode": controls.get("fallback_entry_mode", ""),
+        "benchmark_watch_candidate": controls.get("benchmark_watch_candidate", ""),
+        "pilot_candidate_id": controls.get("pilot_candidate_id", ""),
+    }
+    return "\n".join(
+        [
+            f"window={daily_summary.get('window_start', '')} -> {daily_summary.get('window_end', '')}",
+            (
+                "ops: "
+                f"decisions={int(operations.get('total_decisions', 0) or 0)}, "
+                f"accepted={int(operations.get('accepted_orders', 0) or 0)}, "
+                f"holds={int(operations.get('holds', 0) or 0)}, "
+                f"wake_rate={float(operations.get('llm_wake_rate_pct', 0.0) or 0.0):.1f}%"
+            ),
+            (
+                "pnl: "
+                f"{float(financial.get('daily_pnl_usdt', 0.0) or 0.0):+.2f}usdt "
+                f"({float(financial.get('daily_pnl_pct', 0.0) or 0.0):+.2f}%), "
+                f"fees={float(financial.get('daily_fees_usdt', 0.0) or 0.0):.2f}, "
+                f"utilization={float(financial.get('capital_utilization_pct', 0.0) or 0.0):.1f}%"
+            ),
+            (
+                "latest: "
+                f"symbol={latest.get('symbol', '')}, action={latest.get('action', '')}, "
+                f"source={latest.get('decision_source', '')}, strategy={latest.get('selected_strategy_id', '')}, "
+                f"signal={latest.get('current_signal', '')}"
+            ),
+            (
+                "path: "
+                f"symbol={market_path.get('symbol', '')}, "
+                f"drawdown={float(market_path.get('max_drawdown_pct', 0.0) or 0.0):+.2f}%, "
+                f"rebound={float(market_path.get('max_rebound_pct', 0.0) or 0.0):+.2f}%"
+            ),
+            (
+                "loss: "
+                f"driver={loss.get('primary_driver', '')}, "
+                f"expectancy={float(loss.get('live_trade_expectancy_pct', 0.0) or 0.0):+.2f}%, "
+                f"pf={float(loss.get('live_profit_factor', 0.0) or 0.0):.2f}"
+            ),
+            (
+                "benchmark: "
+                f"focus={focus_benchmark.get('candidate_id', '')} "
+                f"exp={float(focus_benchmark.get('expectancy_pct', 0.0) or 0.0):+.2f}% "
+                f"pf={float(focus_benchmark.get('profit_factor', 0.0) or 0.0):.2f}; "
+                f"research={recommendation.get('candidate_id', '')}/{recommendation.get('verdict', '')}; "
+                f"shadow={shadow_watch.get('watch_candidate_id', '')}/{shadow_watch.get('verdict', '')}"
+            ),
+            f"controls: {json.dumps(compact_controls, ensure_ascii=False)}",
+        ]
+    )
+
+
 def _reflection_context_llm_brief(reflection_context: dict) -> str:
     recent = []
     for item in reflection_context.get("recent_windows") or []:
@@ -1581,6 +1646,13 @@ class DailyReviewAgent:
             return fallback, {"review_status": "fallback_no_llm", "review_error": "", "used_fallback": True}
         llm_summary = _daily_summary_llm_context(daily_summary)
         llm_brief = _daily_summary_llm_brief(llm_summary)
+        compact_brief = _daily_summary_llm_compact_brief(llm_summary)
+        trace = {
+            "agent": self.name,
+            "stage": "evaluate",
+            "date_label": date_label,
+            "window": date_label,
+        }
         try:
             response = self.llm_client.generate_json(
                 (
@@ -1592,13 +1664,33 @@ class DailyReviewAgent:
                     f"date_label={date_label}; "
                     f"daily_summary_brief=\n{llm_brief}"
                 ),
-                trace={
-                    "agent": self.name,
-                    "stage": "evaluate",
-                    "date_label": date_label,
-                    "window": date_label,
-                },
+                trace=trace,
             )
+            review_status = "ok"
+            review_error = ""
+        except Exception as exc:
+            review_error = str(exc)
+            try:
+                response = self.llm_client.generate_json(
+                    (
+                        "You are the daily reviewer agent for a crypto trading system. "
+                        "The first attempt timed out or failed, so use the compact evidence below and still return JSON "
+                        "with keys title, operations_summary, decision_summary, strategist_review, risk_review, "
+                        "benchmark_review, execution_review, consensus_summary, improvement_directions, action_items. "
+                        "Keep each field concise and concrete. "
+                        f"date_label={date_label}; "
+                        f"daily_summary_brief=\n{compact_brief}"
+                    ),
+                    trace={**trace, "stage": "evaluate_compact_retry"},
+                )
+                review_status = "ok_compact_retry"
+            except Exception as retry_exc:
+                return fallback, {
+                    "review_status": "fallback_error",
+                    "review_error": f"{review_error}; compact_retry={retry_exc}",
+                    "used_fallback": True,
+                }
+        try:
             directions = response.get("improvement_directions", fallback.improvement_directions)
             if not isinstance(directions, list):
                 directions = fallback.improvement_directions
@@ -1625,7 +1717,7 @@ class DailyReviewAgent:
                 consensus_summary=str(response.get("consensus_summary", fallback.consensus_summary)).strip() or fallback.consensus_summary,
                 action_items=normalized_actions[:5],
             )
-            return snapshot, {"review_status": "ok", "review_error": "", "used_fallback": False}
+            return snapshot, {"review_status": review_status, "review_error": review_error, "used_fallback": False}
         except Exception as exc:
             return fallback, {
                 "review_status": "fallback_error",

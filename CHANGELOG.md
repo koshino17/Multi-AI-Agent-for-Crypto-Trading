@@ -16,6 +16,27 @@
 
 ---
 
+## v1.1.11 - Retry daily reviewer with compact evidence after timeout
+
+### Why
+
+- The TradePulse daily stewardship run on Friday, August 21, 2026 found that the completed `2026-08-21` noon-window report was fresh and structurally correct, but the live `daily-reviewer` agent still timed out twice on the heavier review prompt.
+- That left the reinforcement-learning layer dependent on generic fallback prose exactly when the noon-window review should be producing the most structured learning output.
+- This is a profitability and review-quality issue because stale or missing reviewer structure weakens the daily policy-update loop even when the underlying market-path and benchmark evidence are available.
+
+### What Changed
+
+- `trading_agents/agents.py`
+  - Added a compact daily-summary LLM brief that preserves the most decision-relevant fields while trimming verbose postmortem context.
+  - Updated `DailyReviewAgent` to retry once with that compact brief when the primary review prompt times out or fails, and to label successful retries as `ok_compact_retry` instead of silently falling back.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage that a timed-out first review attempt retries with the compact prompt and still returns a structured review snapshot without using fallback output.
+
+### Result
+
+- TradePulse noon-window reviews keep a better chance of producing structured reviewer output under LLM load without changing live trading behavior or promoting weak strategy evidence.
+
 ## v1.1.10 - Separate live-cost benchmark evidence from custom-cost research leaders
 
 ### Why

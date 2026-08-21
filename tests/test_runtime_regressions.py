@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from trading_agents.agents import RiskSupervisorAgent, StrategistAgent, StrategyReflectionAgent
+from trading_agents.agents import DailyReviewAgent, RiskSupervisorAgent, StrategistAgent, StrategyReflectionAgent
 from trading_agents.exchange import _build_fvg_features, _build_microstructure_features, _infer_po3_phase_hint
 from trading_agents.llm import _trace_date_label
 from trading_agents.main import (
@@ -1321,6 +1321,55 @@ class RuntimeRegressionTests(unittest.TestCase):
             self.assertEqual(reviewer.calls, 1)
             self.assertEqual(first.get("review_status"), "fallback_error")
             self.assertEqual(second.get("review_status"), "fallback_error")
+
+    def test_daily_reviewer_retries_with_compact_prompt_after_timeout(self) -> None:
+        class StubLlm:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict | None]] = []
+
+            def generate_json(self, prompt: str, trace: dict | None = None) -> dict:
+                self.calls.append((prompt, trace))
+                if len(self.calls) == 1:
+                    raise TimeoutError("timed out")
+                return {
+                    "title": "Compact retry review",
+                    "operations_summary": "ops ok",
+                    "decision_summary": "decision ok",
+                    "strategist_review": "strat ok",
+                    "risk_review": "risk ok",
+                    "benchmark_review": "benchmark ok",
+                    "execution_review": "execution ok",
+                    "consensus_summary": "consensus ok",
+                    "improvement_directions": ["one"],
+                    "action_items": ["two"],
+                }
+
+        reviewer = DailyReviewAgent(llm_client=StubLlm())
+        snapshot, metadata = reviewer.evaluate_with_metadata(
+            "2026-08-21",
+            {
+                "financial_snapshot": {"daily_pnl_usdt": 0.12, "daily_pnl_pct": 0.03, "daily_fees_usdt": 0.0, "capital_utilization_pct": 0.0},
+                "loss_attribution": {"primary_driver": "under_participation", "live_trade_expectancy_pct": 0.0, "live_profit_factor": 0.0},
+                "symbol_postmortem": {"symbol": "SOL/USDT", "summary": "held all day"},
+                "external_benchmarks": {},
+                "strategy_memory_current": {"controls": {"entry_mode": "capital_preservation"}},
+                "latest": {
+                    "selected_symbol": "SOL/USDT",
+                    "idea": {"action": "hold", "score": 0.45},
+                    "decision_source": "memory_guard",
+                    "selected_strategy_id": "donchian_adx_perp_v1",
+                    "current_signal": "hold",
+                },
+                "market_path_review": {"symbol": "SOL/USDT", "max_drawdown_pct": -1.83, "max_rebound_pct": 6.49},
+                "action_counts": {"hold": 123},
+                "selected_symbol_counts": {"SOL/USDT": 123},
+            },
+        )
+
+        self.assertEqual(snapshot.title, "Compact retry review")
+        self.assertEqual(metadata.get("review_status"), "ok_compact_retry")
+        self.assertEqual(metadata.get("review_error"), "timed out")
+        self.assertFalse(bool(metadata.get("used_fallback")))
 
     def test_prefilter_blocks_negative_edge_candidate_before_risk(self) -> None:
         strategy_research = StrategyResearchSnapshot(
