@@ -1146,8 +1146,10 @@ class RiskSupervisorAgent:
             pilot_entry_mode == "capital_preservation_pilot"
             and pilot_candidate_id
             and strategy_research.selected_strategy_id == pilot_candidate_id
-            and selected_entry_order_type == "limit"
-            and selected_entry_liquidity == "maker"
+            and (
+                (selected_entry_order_type == "limit" and selected_entry_liquidity == "maker")
+                or (selected_entry_order_type == "market" and selected_entry_liquidity == "taker")
+            )
             and (opening_long or opening_short)
         )
         if pilot_mode_applies:
@@ -1155,10 +1157,22 @@ class RiskSupervisorAgent:
                 pilot_max_position_pct = float(memory_controls.get("pilot_max_position_pct", 0.10) or 0.10)
             except (TypeError, ValueError):
                 pilot_max_position_pct = 0.10
-            effective_max_position_pct = min(effective_max_position_pct, max(0.02, min(pilot_max_position_pct, 0.20)))
-            warnings.append(
-                f"capital-preservation pilot active: capped new exposure at {effective_max_position_pct:.2f} of buffered available balance"
-            )
+            if selected_entry_order_type == "market" and selected_entry_liquidity == "taker":
+                effective_max_position_pct = min(
+                    effective_max_position_pct,
+                    max(0.02, min(pilot_max_position_pct, 0.05)),
+                )
+                warnings.append(
+                    f"capital-preservation taker pilot active: capped new exposure at {effective_max_position_pct:.2f} of buffered available balance"
+                )
+            else:
+                effective_max_position_pct = min(
+                    effective_max_position_pct,
+                    max(0.02, min(pilot_max_position_pct, 0.20)),
+                )
+                warnings.append(
+                    f"capital-preservation maker pilot active: capped new exposure at {effective_max_position_pct:.2f} of buffered available balance"
+                )
         max_notional = buffered_available_usdt * effective_max_position_pct
         if (
             aggressive_mode
@@ -2012,7 +2026,19 @@ class StrategyReflectionAgent:
         pilot_candidate_id = str(live_symbol_benchmark.get("candidate_id", "") or "").strip()
         pilot_expectancy_pct = float(live_symbol_benchmark.get("expectancy_pct", 0.0) or 0.0)
         pilot_profit_factor = float(live_symbol_benchmark.get("profit_factor", 0.0) or 0.0)
-        pilot_uses_custom_cost_model = bool(live_symbol_benchmark.get("uses_custom_cost_model"))
+        pilot_total_round_trip_cost_pct = float(live_symbol_benchmark.get("total_round_trip_cost_pct", 0.0) or 0.0)
+        default_live_round_trip_cost_pct = float(
+            (float(self.settings.taker_fee_pct or 0.0) * 2.0 + float(self.settings.external_benchmark_slippage_pct or 0.0) * 2.0)
+            * 100.0
+        )
+        pilot_cost_comparable = bool(
+            pilot_candidate_id
+            and (
+                not bool(live_symbol_benchmark.get("uses_custom_cost_model"))
+                or pilot_total_round_trip_cost_pct >= max(default_live_round_trip_cost_pct - 0.01, 0.0)
+            )
+        )
+        pilot_positive_edge = bool(pilot_expectancy_pct > 0.0 and pilot_profit_factor > 1.0)
         research_recommendation = reflection_context.get("strategy_research_recommendation") or {}
         research_candidate_id = str(research_recommendation.get("candidate_id", "") or "").strip()
         research_verdict = str(research_recommendation.get("verdict", "") or "").strip().lower()
@@ -2101,15 +2127,14 @@ class StrategyReflectionAgent:
             and benchmark_leader_streak >= int(self.settings.strategy_learning_pilot_benchmark_streak or 0)
             and pilot_expectancy_pct >= float(self.settings.strategy_learning_pilot_min_expectancy_pct or 0.0)
             and pilot_profit_factor >= float(self.settings.strategy_learning_pilot_min_profit_factor or 0.0)
-            and pilot_uses_custom_cost_model
+            and pilot_cost_comparable
         )
         low_participation_pilot_ready = bool(
+            capital_preservation_mode
+            and
             pilot_candidate_id
-            and pilot_candidate_id == research_candidate_id
-            and research_verdict in {"shadow_candidate", "promotion_candidate"}
-            and pilot_expectancy_pct >= float(self.settings.strategy_learning_pilot_min_expectancy_pct or 0.0)
-            and pilot_profit_factor >= float(self.settings.strategy_learning_pilot_min_profit_factor or 0.0)
-            and pilot_uses_custom_cost_model
+            and pilot_positive_edge
+            and pilot_cost_comparable
             and low_participation_streak >= low_participation_threshold
             and positive_streak >= 1
         )
@@ -2133,10 +2158,10 @@ class StrategyReflectionAgent:
             controls["pilot_max_position_pct"] = float(self.settings.strategy_learning_pilot_max_position_pct or 0.10)
         elif low_participation_pilot_ready:
             biases.append(
-                "recent windows were overwhelmingly observe-only; start a tiny maker-only pilot so research can become live evidence instead of remaining paper-only"
+                "recent windows were overwhelmingly observe-only; start a tiny live-cost pilot so repeated benchmark edge can become live evidence instead of remaining paper-only"
             )
             risk_adjustments.append(
-                "allow a strictly bounded maker-only pilot for the research-aligned candidate after repeated high-hold / low-trade windows"
+                "allow a strictly bounded pilot for the positive live-cost benchmark candidate after repeated high-hold / low-trade windows"
             )
             controls["entry_mode"] = "capital_preservation_pilot"
             controls["pilot_candidate_id"] = pilot_candidate_id
@@ -2235,7 +2260,7 @@ class StrategyReflectionAgent:
             )
         elif low_participation_pilot_ready:
             summary_parts.append(
-                f"tiny_pilot={pilot_candidate_id} low_participation_streak={low_participation_streak} expectancy={pilot_expectancy_pct:+.2f}% pf={pilot_profit_factor:.2f} max_position={float(self.settings.strategy_learning_pilot_max_position_pct or 0.10):.2f}"
+                f"tiny_pilot={pilot_candidate_id} low_participation_streak={low_participation_streak} expectancy={pilot_expectancy_pct:+.2f}% pf={pilot_profit_factor:.2f} cost={pilot_total_round_trip_cost_pct:.2f}% max_position={float(self.settings.strategy_learning_pilot_max_position_pct or 0.10):.2f}"
             )
         elif capital_preservation_mode:
             summary_parts.append(

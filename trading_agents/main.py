@@ -239,6 +239,32 @@ def _recent_local_date_labels(count: int, *, end: datetime | None = None) -> lis
     ]
 
 
+def _select_live_symbol_benchmark(summary: dict, current_live_symbol: str) -> dict[str, object]:
+    watch_candidate = summary.get("benchmark_watch_candidate_current") or {}
+    top_by_symbol = (summary.get("external_benchmarks") or {}).get("top_by_symbol") or {}
+    if not isinstance(top_by_symbol, dict):
+        top_by_symbol = {}
+    external_candidate = top_by_symbol.get(current_live_symbol, {}) if current_live_symbol else {}
+
+    def _positive_edge(candidate: dict | None) -> bool:
+        if not isinstance(candidate, dict):
+            return False
+        candidate_id = str(candidate.get("candidate_id", "") or "").strip()
+        return bool(
+            candidate_id
+            and float(candidate.get("expectancy_pct", 0.0) or 0.0) > 0.0
+            and float(candidate.get("profit_factor", 0.0) or 0.0) > 1.0
+        )
+
+    if _positive_edge(external_candidate):
+        return external_candidate
+    if isinstance(watch_candidate, dict) and str(watch_candidate.get("candidate_id", "") or "").strip():
+        return watch_candidate
+    if isinstance(external_candidate, dict):
+        return external_candidate
+    return {}
+
+
 def _build_strategy_reflection_context(
     settings,
     storage,
@@ -267,15 +293,7 @@ def _build_strategy_reflection_context(
         financial = summary.get("financial_snapshot") or {}
         loss_attribution = summary.get("loss_attribution") or {}
         policy_exit_diagnostics = summary.get("policy_exit_diagnostics") or {}
-        live_symbol_benchmark = summary.get("benchmark_watch_candidate_current") or {}
-        if not isinstance(live_symbol_benchmark, dict) or not str(live_symbol_benchmark.get("candidate_id", "") or "").strip():
-            external_benchmarks = summary.get("external_benchmarks") or {}
-            top_by_symbol = external_benchmarks.get("top_by_symbol") or {}
-            if not isinstance(top_by_symbol, dict):
-                top_by_symbol = {}
-            live_symbol_benchmark = top_by_symbol.get(current_live_symbol, {}) if current_live_symbol else {}
-        if not isinstance(live_symbol_benchmark, dict):
-            live_symbol_benchmark = {}
+        live_symbol_benchmark = _select_live_symbol_benchmark(summary, current_live_symbol)
         recent_windows.append(
             {
                 "date": label,
@@ -450,10 +468,7 @@ def _build_strategy_reflection_context(
     if previous_cooldown_scale is not None and previous_cooldown_scale < 1.0 and not restore_ready:
         preserve_cooldown_scale = previous_cooldown_scale
 
-    live_symbol_benchmark = daily_summary.get("benchmark_watch_candidate_current") or {}
-    if not isinstance(live_symbol_benchmark, dict) or not str(live_symbol_benchmark.get("candidate_id", "") or "").strip():
-        top_by_symbol = (daily_summary.get("external_benchmarks") or {}).get("top_by_symbol") or {}
-        live_symbol_benchmark = top_by_symbol.get(current_live_symbol, {}) if current_live_symbol else {}
+    live_symbol_benchmark = _select_live_symbol_benchmark(daily_summary, current_live_symbol)
     strategy_research_latest = daily_summary.get("strategy_research_latest") or {}
     current_loss_attribution = daily_summary.get("loss_attribution") or {}
 
@@ -651,10 +666,11 @@ def _apply_strategy_memory_entry_policy(
                 score=idea.score,
                 rationale=(
                     f"{idea.rationale}; allowed under capital-preservation pilot mode because "
-                    f"`{str(controls.get('pilot_candidate_id', '') or '').strip()}` has sustained post-cost benchmark support"
+                    f"`{str(controls.get('pilot_candidate_id', '') or '').strip()}` has positive post-cost benchmark support "
+                    "during a prolonged observe-only regime"
                 ),
                 invalidation=(
-                    "cancel the pilot if maker-style fills degrade, benchmark expectancy turns negative, "
+                    "cancel the pilot if fills degrade, benchmark expectancy turns negative, "
                     "or the next reflection window disables pilot mode"
                 ),
                 holding_horizon=idea.holding_horizon,
@@ -665,12 +681,12 @@ def _apply_strategy_memory_entry_policy(
             score=min(float(getattr(idea, "score", 0.40) or 0.40), 0.45),
             rationale=(
                 f"{idea.rationale}; converted to hold because capital-preservation pilot mode only allows "
-                "maker-style entries for the approved pilot candidate"
+                "entries for the approved pilot candidate"
             ),
             invalidation="wait for pilot candidate alignment or the next reflection window",
             holding_horizon="none",
         )
-        return guarded, "strategy-memory guard: capital-preservation pilot only allows bounded maker entries for the approved candidate"
+        return guarded, "strategy-memory guard: capital-preservation pilot only allows bounded entries for the approved pilot candidate"
     if entry_mode != "capital_preservation":
         return idea, ""
     guarded = TradeIdea(
@@ -699,8 +715,10 @@ def _pilot_entry_allowed(*, strategy_research, strategy_memory: dict | None) -> 
     return bool(
         pilot_candidate_id
         and selected_strategy_id == pilot_candidate_id
-        and entry_order_type == "limit"
-        and entry_liquidity == "maker"
+        and (
+            (entry_order_type == "limit" and entry_liquidity == "maker")
+            or (entry_order_type == "market" and entry_liquidity == "taker")
+        )
     )
 
 

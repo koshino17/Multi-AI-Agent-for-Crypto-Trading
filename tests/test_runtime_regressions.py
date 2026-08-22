@@ -287,7 +287,71 @@ class RuntimeRegressionTests(unittest.TestCase):
             perp_min_liquidation_buffer_pct=8.0,
         )
 
-        self.assertTrue(any("capital-preservation pilot active" in item for item in approval.warnings))
+        self.assertTrue(any("capital-preservation maker pilot active" in item for item in approval.warnings))
+
+    def test_taker_pilot_caps_exposure_more_tightly(self) -> None:
+        agent = RiskSupervisorAgent(llm_client=None)
+        idea = TradeIdea("buy", 0.8, "test buy", "invalidate", "intraday")
+        sentiment = SentimentSnapshot(2, 0.1, "ok", [])
+        fallback_backtest = BacktestSnapshot(0, 0, 0.0, 0.0, 0.0, "no replay")
+        selected_backtest = BacktestSnapshot(20, 8, 0.55, 0.18, 1.25, "selected replay", 0.7, -0.4, 0.18, 1.4)
+        strategy_research = StrategyResearchSnapshot(
+            base_strategy_id="grid_range_reversion_maker_v1",
+            selected_strategy_id="donchian_adx_perp_v1",
+            selected_strategy_name="Donchian",
+            summary="selected donchian taker",
+            candidates=[
+                StrategyCandidate(
+                    strategy_id="donchian_adx_perp_v1",
+                    name="Donchian",
+                    source="public_classic",
+                    credibility="external_public",
+                    description="taker trend strategy",
+                    backtest=selected_backtest,
+                )
+            ],
+            selected_execution_profile={"entry_order_type": "market", "entry_liquidity": "taker"},
+        )
+
+        approval = agent.review(
+            idea=idea,
+            sentiment=sentiment,
+            backtest=fallback_backtest,
+            strategy_research=strategy_research,
+            available_usdt=200.0,
+            available_base_asset=0.0,
+            position_side="flat",
+            last_price=95.0,
+            min_order_value_usdt=5.0,
+            min_signal_score=0.55,
+            max_position_pct=0.40,
+            trading_mode="bybit-demo-perp",
+            aggressive_mode=False,
+            expectancy_floor_pct=-0.03,
+            taker_fee_pct=0.001,
+            buy_balance_buffer_pct=0.95,
+            fee_hurdle_multiplier=1.15,
+            cycle_mode="full",
+            strategy_memory={
+                "controls": {
+                    "entry_mode": "capital_preservation_pilot",
+                    "pilot_candidate_id": "donchian_adx_perp_v1",
+                    "pilot_max_position_pct": 0.10,
+                }
+            },
+            use_llm=False,
+            total_equity_usdt=200.0,
+            current_position_notional_usdt=0.0,
+            current_leverage=0.0,
+            liq_price=0.0,
+            position_mm_usdt=0.0,
+            perp_max_leverage=2.0,
+            perp_min_available_balance_ratio_pct=10.0,
+            perp_min_liquidation_buffer_pct=8.0,
+        )
+
+        self.assertAlmostEqual(approval.max_notional_usdt, 9.5, places=2)
+        self.assertTrue(any("taker pilot active" in item for item in approval.warnings))
 
     def test_runtime_settings_respect_web_form_overrides(self) -> None:
         effective = _runtime_settings("bybit-demo-perp", "SOL/USDT,BTC/USDT", "15")
@@ -452,6 +516,73 @@ class RuntimeRegressionTests(unittest.TestCase):
         reflection = agent.evaluate("2026-05-13-day", daily_summary, reflection_context=reflection_context)
         self.assertEqual(str(reflection.controls.get("entry_mode", "")), "capital_preservation_pilot")
         self.assertEqual(str(reflection.controls.get("pilot_candidate_id", "")), "grid_range_reversion_maker_v1")
+
+    def test_strategy_reflection_promotes_tiny_pilot_from_positive_live_cost_benchmark(self) -> None:
+        agent = StrategyReflectionAgent(llm_client=None)
+        daily_summary = {
+            "blocked_reason_counts": {},
+            "rejection_reason_counts": {},
+            "selected_symbol_counts": {"SOL/USDT": 20},
+            "financial_snapshot": {
+                "daily_pnl_usdt": 0.15,
+                "realized_pnl_usdt": 0.0,
+                "unrealized_pnl_usdt": 0.0,
+                "daily_fees_usdt": 0.0,
+            },
+            "accepted_source_counts": {"fallback": 0, "base_strategy": 0},
+            "accepted_orders": 0,
+            "blocked": 0,
+            "loss_attribution": {"closed_episode_count": 0},
+            "external_benchmarks": {"top_candidates": [{}]},
+        }
+        reflection_context = {
+            "live_symbols": ["SOL/USDT"],
+            "current_live_symbol": "SOL/USDT",
+            "lookback_days": 5,
+            "negative_day_count": 1,
+            "negative_streak": 0,
+            "positive_streak": 4,
+            "low_participation_window_count": 5,
+            "low_participation_streak": 5,
+            "carry_in_loss_window_count": 0,
+            "carry_in_loss_streak": 0,
+            "stagnation_exit_window_count": 0,
+            "stagnation_exit_streak": 0,
+            "multi_day_pnl_usdt": -63.5,
+            "drawdown_pct": 12.7,
+            "current_equity_usdt": 436.4,
+            "configured_initial_usdt": 500.0,
+            "live_trade_expectancy_pct": 0.0,
+            "live_profit_factor": 0.0,
+            "force_fallback_base_only": True,
+            "capital_preservation_mode": True,
+            "preserve_cooldown_scale": 0.65,
+            "previous_controls": {
+                "fallback_entry_mode": "base_only",
+                "entry_mode": "capital_preservation",
+                "pilot_max_position_pct": 0.10,
+            },
+            "current_window_accepted_orders": 0,
+            "current_window_closed_episodes": 0,
+            "strategy_research_recommendation": {
+                "candidate_id": "grid_range_reversion_maker_v1",
+                "verdict": "research_only",
+            },
+            "live_symbol_benchmark": {
+                "candidate_id": "donchian_adx_perp_v1",
+                "symbol": "SOL/USDT",
+                "expectancy_pct": 0.0426,
+                "profit_factor": 1.10,
+                "uses_custom_cost_model": False,
+                "total_round_trip_cost_pct": 0.24,
+            },
+        }
+
+        reflection = agent.evaluate("2026-08-22-day", daily_summary, reflection_context=reflection_context)
+
+        self.assertEqual(str(reflection.controls.get("entry_mode", "")), "capital_preservation_pilot")
+        self.assertEqual(str(reflection.controls.get("pilot_candidate_id", "")), "donchian_adx_perp_v1")
+        self.assertEqual(str(reflection.controls.get("fallback_entry_mode", "")), "normal")
 
     def test_low_sample_guard_does_not_stack_base_only_on_top_of_pilot(self) -> None:
         agent = StrategyReflectionAgent(llm_client=None)

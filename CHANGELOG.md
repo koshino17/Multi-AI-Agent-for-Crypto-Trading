@@ -16,6 +16,30 @@
 
 ---
 
+## v1.1.5 - Let positive benchmark pilots break observe-only deadlock
+
+### Why
+
+- TradePulse reviewed the `2026-08-21T12:00:00+08:00` to `2026-08-22T12:00:00+08:00` window with `SOL/USDT` up about `+8.9%`, yet still produced `160` straight `hold` decisions and `0` accepted orders.
+- In that same window, the strategy memory guard converted `19` non-hold setups into `hold`, including `16` long signals, even while the live-cost benchmark leader stayed positive after fees and slippage.
+- The reflection logic required pilot candidates to use a custom cost model and the entry gate only allowed maker-style pilots, so the positive taker-style Donchian benchmark could be watched forever without ever becoming bounded live evidence.
+
+### What Changed
+
+- `trading_agents/agents.py`
+  - Treats positive live-cost benchmark leaders as pilot-eligible when their benchmark cost model is comparable to the live external benchmark assumptions, instead of requiring a custom-cost candidate.
+  - Allows repeated high-hold / low-trade windows to escalate into `capital_preservation_pilot` when the benchmark edge is still positive after costs, even if the research recommendation stays `research_only`.
+  - Caps taker-style pilots more tightly than maker pilots during risk review so the first live probe stays small.
+
+- `trading_agents/main.py`
+  - Lets `capital_preservation_pilot` approve the nominated pilot candidate for either maker-limit or taker-market execution profiles.
+  - Updates the memory-guard rationale so pilot mode is described as a bounded live-evidence path rather than a maker-only path.
+
+### Result
+
+- TradePulse can now run a tiny bounded pilot instead of remaining permanently observe-only when repeated live windows show a positive benchmark edge after costs.
+- Maker pilots remain supported, while taker pilots are explicitly size-limited to a smaller probe instead of opening at normal exposure.
+
 ## v1.1.4 - Clarify account balance versus PnL baseline
 
 ### Why
