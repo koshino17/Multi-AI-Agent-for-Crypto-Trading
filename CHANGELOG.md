@@ -16,6 +16,27 @@
 
 ---
 
+## v1.1.11 - Let low-sample reflection retire stale pilot mode
+
+### Why
+
+- The TradePulse daily stewardship run on Sunday, August 23, 2026 reviewed the completed `2026-08-22T12:00:00+08:00 -> 2026-08-23T12:00:00+08:00` window and found the installed `bybit-demo-perp` runner healthy, fresh, and still syncing Notion heartbeats.
+- The real problem was the learning loop: TradePulse stayed in `capital_preservation_pilot` for `donchian_adx_perp_v1` even though the latest reflection context no longer had pilot-grade evidence for that candidate.
+- The low-sample guard was preserving the previous pilot whenever accepted orders stayed below threshold, which could lock TradePulse into stale observe-only behavior after the pilot edge had already faded.
+
+### What Changed
+
+- `trading_agents/agents.py`
+  - Low-sample control guarding now checks whether the previous pilot candidate is still supported by current reflection evidence before preserving `capital_preservation_pilot`.
+  - When the current reflection no longer reaffirms the pilot candidate, TradePulse can demote back to the current non-pilot entry mode instead of carrying stale pilot state forward.
+
+- `tests/test_runtime_regressions.py`
+  - Updated regression coverage so stale pilot controls are cleared when research and live benchmark evidence no longer justify keeping the pilot alive.
+
+### Result
+
+- TradePulse still preserves conservative controls under low sample, but it no longer lets a weak or unqualified pilot candidate freeze the next noon window into the wrong entry regime.
+
 ## v1.1.10 - Separate live-cost benchmark evidence from custom-cost research leaders
 
 ### Why

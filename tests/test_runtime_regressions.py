@@ -517,8 +517,8 @@ class RuntimeRegressionTests(unittest.TestCase):
             },
         }
         reflection = agent.evaluate("2026-05-13-day", daily_summary, reflection_context=reflection_context)
-        self.assertEqual(str(reflection.controls.get("entry_mode", "")), "capital_preservation_pilot")
-        self.assertEqual(str(reflection.controls.get("pilot_candidate_id", "")), "grid_range_reversion_maker_v1")
+        self.assertEqual(str(reflection.controls.get("entry_mode", "")), "normal")
+        self.assertNotIn("pilot_candidate_id", reflection.controls)
 
     def test_low_sample_guard_does_not_stack_base_only_on_top_of_pilot(self) -> None:
         agent = StrategyReflectionAgent(llm_client=None)
@@ -537,6 +537,7 @@ class RuntimeRegressionTests(unittest.TestCase):
             },
             accepted_orders=0,
             closed_episode_count=0,
+            reflection_context={},
         )
         normalized = agent._normalize_controls(  # type: ignore[attr-defined]
             guarded,

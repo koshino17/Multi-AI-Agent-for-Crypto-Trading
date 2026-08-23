@@ -2208,6 +2208,7 @@ class StrategyReflectionAgent:
             previous_controls,
             accepted_orders=accepted_orders,
             closed_episode_count=int((daily_summary.get("loss_attribution") or {}).get("closed_episode_count", 0) or 0),
+            reflection_context=reflection_context,
         )
         summary_parts = [
             f"12h reflection for {slot}: focus on executable positive-expectancy setups",
@@ -2384,7 +2385,9 @@ class StrategyReflectionAgent:
         *,
         accepted_orders: int,
         closed_episode_count: int,
+        reflection_context: dict[str, object] | None = None,
     ) -> dict[str, object]:
+        reflection_context = reflection_context or {}
         min_accepted_orders = int(self.settings.strategy_learning_min_accepted_orders or 0)
         min_closed_episodes = int(self.settings.strategy_learning_min_closed_episodes or 0)
         if accepted_orders >= min_accepted_orders and closed_episode_count >= min_closed_episodes:
@@ -2398,19 +2401,55 @@ class StrategyReflectionAgent:
                 guarded[key] = current[key]
         previous_entry_mode = str((previous_controls or {}).get("entry_mode", "") or "").strip().lower()
         current_entry_mode = str(current.get("entry_mode", previous_entry_mode or "normal") or "normal").strip().lower()
+        previous_pilot_candidate_id = str((previous_controls or {}).get("pilot_candidate_id", "") or "").strip()
+        research_recommendation = reflection_context.get("strategy_research_recommendation") or {}
+        research_candidate_id = str(research_recommendation.get("candidate_id", "") or "").strip()
+        research_verdict = str(research_recommendation.get("verdict", "") or "").strip().lower()
+        live_symbol_benchmark = reflection_context.get("live_symbol_benchmark") or {}
+        live_benchmark_candidate_id = str(live_symbol_benchmark.get("candidate_id", "") or "").strip()
+        live_benchmark_expectancy = float(live_symbol_benchmark.get("expectancy_pct", 0.0) or 0.0)
+        live_benchmark_profit_factor = float(live_symbol_benchmark.get("profit_factor", 0.0) or 0.0)
+        live_benchmark_uses_custom_cost = bool(live_symbol_benchmark.get("uses_custom_cost_model"))
+        min_pilot_expectancy = float(self.settings.strategy_learning_pilot_min_expectancy_pct or 0.0)
+        min_pilot_profit_factor = float(self.settings.strategy_learning_pilot_min_profit_factor or 0.0)
+        pilot_still_qualified = bool(
+            previous_pilot_candidate_id
+            and (
+                (
+                    "pilot_candidate_id" in current
+                    and str(current.get("pilot_candidate_id", "") or "").strip() == previous_pilot_candidate_id
+                    and current_entry_mode == "capital_preservation_pilot"
+                )
+                or (
+                    research_candidate_id == previous_pilot_candidate_id
+                    and research_verdict in {"shadow_candidate", "promotion_candidate"}
+                )
+                or (
+                    live_benchmark_candidate_id == previous_pilot_candidate_id
+                    and live_benchmark_expectancy >= min_pilot_expectancy
+                    and live_benchmark_profit_factor >= min_pilot_profit_factor
+                    and live_benchmark_uses_custom_cost
+                )
+            )
+        )
         if "entry_mode" not in current:
-            if previous_entry_mode in {"capital_preservation", "capital_preservation_pilot"}:
+            if previous_entry_mode == "capital_preservation_pilot" and not pilot_still_qualified:
+                guarded.pop("entry_mode", None)
+            elif previous_entry_mode in {"capital_preservation", "capital_preservation_pilot"}:
                 guarded["entry_mode"] = previous_entry_mode
             else:
                 guarded.pop("entry_mode", None)
         elif previous_entry_mode == "capital_preservation_pilot" and current_entry_mode == "normal":
-            guarded["entry_mode"] = "capital_preservation_pilot"
+            if pilot_still_qualified:
+                guarded["entry_mode"] = "capital_preservation_pilot"
+            else:
+                guarded["entry_mode"] = current_entry_mode
         elif previous_entry_mode == "capital_preservation" and current_entry_mode == "normal":
             guarded["entry_mode"] = "capital_preservation"
         if "pilot_candidate_id" in current:
             guarded["pilot_candidate_id"] = current["pilot_candidate_id"]
-        elif previous_entry_mode == "capital_preservation_pilot" and str((previous_controls or {}).get("pilot_candidate_id", "") or "").strip():
-            guarded["pilot_candidate_id"] = str((previous_controls or {}).get("pilot_candidate_id", "") or "").strip()
+        elif previous_entry_mode == "capital_preservation_pilot" and previous_pilot_candidate_id and pilot_still_qualified:
+            guarded["pilot_candidate_id"] = previous_pilot_candidate_id
         else:
             guarded.pop("pilot_candidate_id", None)
 
