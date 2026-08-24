@@ -16,6 +16,27 @@
 
 ---
 
+## v1.1.12 - Retire negative benchmark-watch carryover
+
+### Why
+
+- The TradePulse daily stewardship run on Monday, August 24, 2026 reviewed the completed `2026-08-23T12:00:00+08:00 -> 2026-08-24T12:00:00+08:00` window and found the installed `bybit-demo-perp` runner healthy, fresh, and still syncing Notion heartbeats.
+- The problem was in the learning loop: `strategy_memory.json` was still carrying `benchmark_watch_candidate=donchian_adx_perp_v1` even though the current live-cost benchmark evidence for that candidate had turned negative (`expectancy=-0.18%`, `profit_factor=0.67`) and the report explicitly marked the shadow comparison as non-promotion-grade.
+- Reflection was falling back to the top benchmark row even when it lacked positive post-cost edge, which let stale benchmark-watch tasks survive across observe-only windows and repeated the wrong next-step in daily reviews.
+
+### What Changed
+
+- `trading_agents/agents.py`
+  - Strategy reflection no longer promotes a merely top-ranked benchmark into `benchmark_watch_candidate` unless it already qualifies through repeated leadership, research promotion verdicts, or positive post-cost live-symbol benchmark evidence.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage that a negative live-cost top benchmark does not persist as an active watch candidate, while the live symbol context still remains attached for reporting.
+
+### Result
+
+- TradePulse still tracks the live symbol and benchmark context, but it stops carrying stale negative benchmark-watch candidates into the next noon window.
+- That keeps the RL-style policy update aligned with promotion-grade evidence instead of repeating a watch task that the completed report already invalidated.
+
 ## v1.1.11 - Let low-sample reflection retire stale pilot mode
 
 ### Why

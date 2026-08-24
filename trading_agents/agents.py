@@ -2189,8 +2189,6 @@ class StrategyReflectionAgent:
             and float(live_symbol_benchmark.get("profit_factor", 0.0) or 0.0) > 1.0
         ):
             benchmark_candidate = live_symbol_benchmark
-        elif top_benchmark.get("candidate_id"):
-            benchmark_candidate = top_benchmark
         if benchmark_candidate.get("candidate_id"):
             biases.append(
                 f"keep live strategy honest against external benchmark leader `{benchmark_candidate.get('candidate_id')}`"
@@ -2317,6 +2315,8 @@ class StrategyReflectionAgent:
                 normalized[key] = value
             else:
                 normalized.pop(key, None)
+        if "benchmark_watch_candidate" not in raw:
+            normalized.pop("benchmark_watch_candidate", None)
         previous_controls = reflection_context.get("previous_controls") or {}
         previous_experiment = reflection_context.get("previous_experiment") or {}
         pilot_candidate_id = str(raw.get("pilot_candidate_id", "") or "").strip()
@@ -2399,6 +2399,11 @@ class StrategyReflectionAgent:
         for key in safety_keys:
             if key in current:
                 guarded[key] = current[key]
+        current_live_symbol = str(reflection_context.get("current_live_symbol", "") or "").strip()
+        if "benchmark_watch_candidate" not in current:
+            guarded.pop("benchmark_watch_candidate", None)
+        if "benchmark_watch_symbol" not in current and current_live_symbol:
+            guarded["benchmark_watch_symbol"] = current_live_symbol
         previous_entry_mode = str((previous_controls or {}).get("entry_mode", "") or "").strip().lower()
         current_entry_mode = str(current.get("entry_mode", previous_entry_mode or "normal") or "normal").strip().lower()
         previous_pilot_candidate_id = str((previous_controls or {}).get("pilot_candidate_id", "") or "").strip()
