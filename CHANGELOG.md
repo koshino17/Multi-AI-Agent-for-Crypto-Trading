@@ -16,7 +16,7 @@
 
 ---
 
-## v1.1.12 - Stop auto-filling shadow watch with cost-mismatched candidates
+## v1.1.13 - Stop auto-filling shadow watch with cost-mismatched candidates
 
 ### Why
 
