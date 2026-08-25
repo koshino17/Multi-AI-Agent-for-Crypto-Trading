@@ -1061,12 +1061,50 @@ class RuntimeRegressionTests(unittest.TestCase):
                 },
             },
             focus_symbol="SOL/USDT",
+            watch_candidate_id="grid_range_reversion_v1",
         )
 
         self.assertEqual(shadow["status"], "ready")
         self.assertEqual(shadow["verdict"], "cost_model_mismatch")
         self.assertFalse(shadow["cost_model_comparable"])
         self.assertIn("不能直接當成 live promotion 依據", shadow["summary"])
+
+    def test_shadow_benchmark_watch_skips_auto_mismatch_candidates(self) -> None:
+        shadow = _build_shadow_benchmark_watch(
+            {
+                "baseline_strategy_id": "grid_range_reversion_maker_v1",
+                "results": {
+                    "SOL/USDT": [
+                        {
+                            "candidate_id": "grid_range_reversion_maker_v1",
+                            "expectancy_pct": -0.10,
+                            "profit_factor": 0.45,
+                            "trade_count": 20,
+                            "cumulative_return_pct": -2.0,
+                            "total_round_trip_cost_pct": 0.05,
+                            "uses_custom_cost_model": True,
+                        },
+                        {
+                            "candidate_id": "grid_range_reversion_v1",
+                            "expectancy_pct": -0.29,
+                            "profit_factor": 0.10,
+                            "trade_count": 20,
+                            "cumulative_return_pct": -5.8,
+                            "total_round_trip_cost_pct": 0.24,
+                            "uses_custom_cost_model": False,
+                        },
+                    ]
+                },
+            },
+            focus_symbol="SOL/USDT",
+        )
+
+        self.assertEqual(shadow["status"], "baseline_only")
+        self.assertEqual(shadow["verdict"], "no_cost_comparable_shadow")
+        self.assertEqual(shadow["watch_candidate_id"], "")
+        self.assertEqual(shadow["selection_source"], "no_cost_comparable_shadow")
+        self.assertTrue(shadow["cost_model_comparable"])
+        self.assertIn("不要佔用 benchmark watch 槽位", shadow["summary"])
 
     def test_daily_summary_prefers_live_cost_benchmark_section(self) -> None:
         summary = {

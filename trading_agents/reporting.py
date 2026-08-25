@@ -1493,6 +1493,9 @@ def _build_shadow_benchmark_watch(
                 return item
         return {}
 
+    def _is_cost_comparable(row: dict[str, Any], baseline_cost_pct: float) -> bool:
+        return abs(float(row.get("total_round_trip_cost_pct", 0.0) or 0.0) - baseline_cost_pct) <= 1e-9
+
     baseline = _find(baseline_id)
     leader = symbol_rows[0] if symbol_rows and isinstance(symbol_rows[0], dict) else {}
     allowed_shadow_candidates = [
@@ -1568,6 +1571,7 @@ def _build_shadow_benchmark_watch(
             and recommended_watch_id != baseline_id
             and recommended_watch_id in allowed_shadow_candidates
             and bool(recommended_row)
+            and _is_cost_comparable(recommended_row, baseline_cost)
             and recommended_verdict in {"shadow_candidate", "promotion_candidate"}
             and int(recommended_row.get("trade_count", 0) or 0) >= 8
             and (
@@ -1583,6 +1587,7 @@ def _build_shadow_benchmark_watch(
             leader_id
             and leader_id != baseline_id
             and leader_id in allowed_shadow_candidates
+            and _is_cost_comparable(leader, baseline_cost)
             and int(leader.get("trade_count", 0) or 0) >= 8
         ):
             chosen_watch_id = leader_id
@@ -1592,12 +1597,39 @@ def _build_shadow_benchmark_watch(
                 (
                     candidate_id
                     for candidate_id in allowed_shadow_candidates
-                    if candidate_id != baseline_id and _find(candidate_id)
+                    if candidate_id != baseline_id
+                    and _find(candidate_id)
+                    and _is_cost_comparable(_find(candidate_id), baseline_cost)
                 ),
                 "",
             )
-            selection_source = "fallback_first_available"
+            selection_source = "fallback_first_cost_comparable"
     watch = _find(chosen_watch_id)
+    if not requested_watch and not watch:
+        return {
+            "status": "baseline_only",
+            "focus_symbol": focus_symbol,
+            "baseline_candidate_id": baseline_id,
+            "watch_candidate_id": "",
+            "selection_source": "no_cost_comparable_shadow",
+            "baseline": baseline,
+            "watch": {},
+            "leader": leader,
+            "cost_model_comparable": True,
+            "expectancy_delta_pct": 0.0,
+            "profit_factor_delta": 0.0,
+            "cumulative_return_delta_pct": 0.0,
+            "trade_count_delta": 0,
+            "is_watch_leader": False,
+            "promotion_streak": 0,
+            "current_snapshot_qualified": False,
+            "verdict": "no_cost_comparable_shadow",
+            "summary": (
+                f"{focus_symbol} 上，目前沒有與 live baseline `{baseline_id}` 具有相同 round-trip 成本假設的 shadow "
+                "candidate 可供自動追蹤；保留 benchmark 資訊作研究參考，但不要佔用 benchmark watch 槽位。"
+            ),
+            "next_step": "維持 live baseline，後續只在出現成本可比且樣本足夠的候選時再啟用 shadow watch。",
+        }
     if not baseline or not watch:
         return {
             "status": "partial",
@@ -4123,7 +4155,7 @@ def build_daily_summary(
                     f"trades={int(payload.get('trade_count', 0))})"
                 )
 
-    if shadow_benchmark_watch and shadow_benchmark_watch.get("status") in {"ready", "baseline_confirmed"}:
+    if shadow_benchmark_watch and shadow_benchmark_watch.get("status") in {"ready", "baseline_confirmed", "baseline_only"}:
         baseline = shadow_benchmark_watch.get("baseline") or {}
         watch = shadow_benchmark_watch.get("watch") or {}
         lines.extend(["", "## Shadow Benchmark Watch", ""])

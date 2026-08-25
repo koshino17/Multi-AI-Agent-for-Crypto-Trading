@@ -16,6 +16,28 @@
 
 ---
 
+## v1.1.12 - Stop auto-filling shadow watch with cost-mismatched candidates
+
+### Why
+
+- The TradePulse daily stewardship run on Tuesday, August 25, 2026 reviewed the completed `2026-08-24T12:00:00+08:00 -> 2026-08-25T12:00:00+08:00` window and found the installed `bybit-demo-perp` runner healthy, fresh, and still cycling on `SOL/USDT`.
+- The issue was in the learning loop rather than execution health: the daily report kept auto-selecting a shadow benchmark candidate even when the only available fallback used a different round-trip cost model than the live baseline.
+- That meant TradePulse repeatedly rendered a known `cost_model_mismatch` comparison, which polluted operator guidance and wasted the benchmark-watch slot on evidence that could never justify a live promotion decision.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Shadow benchmark auto-selection now filters fallback candidates by round-trip cost comparability with the live baseline.
+  - When no cost-comparable shadow candidate exists, reporting emits an explicit `baseline_only` / `no_cost_comparable_shadow` result instead of manufacturing a mismatch comparison.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage that auto-selection leaves the benchmark-watch slot empty when only cost-mismatched fallback candidates are available, while preserving the existing manual mismatch case.
+
+### Result
+
+- TradePulse still preserves research-only benchmark rows, but it no longer treats a known cost-mismatched fallback as the active shadow watch.
+- The noon-window review now leaves the watch slot open until a cost-comparable candidate with usable evidence actually exists.
+
 ## v1.1.11 - Let low-sample reflection retire stale pilot mode
 
 ### Why
