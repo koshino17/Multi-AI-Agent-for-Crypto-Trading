@@ -176,6 +176,8 @@ def _daily_review_fingerprint(daily_summary: dict) -> str:
     loss = daily_summary.get("loss_attribution") or {}
     postmortem = daily_summary.get("symbol_postmortem") or {}
     external_benchmarks = daily_summary.get("external_benchmarks") or {}
+    shadow_watch = daily_summary.get("shadow_benchmark_watch") or {}
+    current_watch = daily_summary.get("benchmark_watch_candidate_current") or {}
     top_by_symbol = external_benchmarks.get("top_by_symbol") or {}
     if not isinstance(top_by_symbol, dict):
         top_by_symbol = {}
@@ -183,6 +185,10 @@ def _daily_review_fingerprint(daily_summary: dict) -> str:
     focus_benchmark = top_by_symbol.get(focus_symbol, {}) if focus_symbol else {}
     if not isinstance(focus_benchmark, dict):
         focus_benchmark = {}
+    if not isinstance(shadow_watch, dict):
+        shadow_watch = {}
+    if not isinstance(current_watch, dict):
+        current_watch = {}
     strategy_memory_current = daily_summary.get("strategy_memory_current") or {}
     current_controls = strategy_memory_current.get("controls") if isinstance(strategy_memory_current, dict) else {}
     current_experiment = strategy_memory_current.get("experiment") if isinstance(strategy_memory_current, dict) else {}
@@ -202,6 +208,15 @@ def _daily_review_fingerprint(daily_summary: dict) -> str:
         "focus_symbol": focus_symbol,
         "focus_benchmark_candidate": str(focus_benchmark.get("candidate_id", "") or ""),
         "focus_benchmark_expectancy": round(float(focus_benchmark.get("expectancy_pct", 0.0) or 0.0), 4),
+        "shadow_watch_candidate": str(shadow_watch.get("watch_candidate_id", "") or ""),
+        "shadow_baseline_candidate": str(shadow_watch.get("baseline_candidate_id", "") or ""),
+        "shadow_watch_verdict": str(shadow_watch.get("verdict", "") or ""),
+        "shadow_watch_selection_source": str(shadow_watch.get("selection_source", "") or ""),
+        "shadow_watch_cost_comparable": bool(shadow_watch.get("cost_model_comparable", True)),
+        "shadow_watch_expectancy_delta": round(float(shadow_watch.get("expectancy_delta_pct", 0.0) or 0.0), 4),
+        "shadow_watch_profit_factor_delta": round(float(shadow_watch.get("profit_factor_delta", 0.0) or 0.0), 4),
+        "current_watch_candidate": str(current_watch.get("candidate_id", "") or ""),
+        "current_watch_expectancy": round(float(current_watch.get("expectancy_pct", 0.0) or 0.0), 4),
         "benchmark_watch_candidate": str(current_controls.get("benchmark_watch_candidate", "") or ""),
         "benchmark_watch_symbol": str(current_controls.get("benchmark_watch_symbol", "") or ""),
         "entry_mode": str(current_controls.get("entry_mode", "") or ""),

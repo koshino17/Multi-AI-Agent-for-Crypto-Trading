@@ -1068,6 +1068,57 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertFalse(shadow["cost_model_comparable"])
         self.assertIn("不能直接當成 live promotion 依據", shadow["summary"])
 
+    def test_shadow_benchmark_watch_confirms_baseline_when_only_noncomparable_upgrade_exists(self) -> None:
+        shadow = _build_shadow_benchmark_watch(
+            {
+                "baseline_strategy_id": "grid_range_reversion_maker_v1",
+                "results": {
+                    "SOL/USDT": [
+                        {
+                            "candidate_id": "bollinger_keltner_extreme_reversion_v1",
+                            "expectancy_pct": 0.71,
+                            "profit_factor": 999.0,
+                            "trade_count": 1,
+                            "cumulative_return_pct": 0.71,
+                            "total_round_trip_cost_pct": 0.24,
+                            "uses_custom_cost_model": False,
+                        },
+                        {
+                            "candidate_id": "grid_range_reversion_maker_v1",
+                            "expectancy_pct": 0.31,
+                            "profit_factor": 3.8,
+                            "trade_count": 10,
+                            "cumulative_return_pct": 1.20,
+                            "total_round_trip_cost_pct": 0.05,
+                            "uses_custom_cost_model": True,
+                        },
+                        {
+                            "candidate_id": "grid_range_reversion_v1",
+                            "expectancy_pct": 0.12,
+                            "profit_factor": 1.82,
+                            "trade_count": 10,
+                            "cumulative_return_pct": -0.70,
+                            "total_round_trip_cost_pct": 0.24,
+                            "uses_custom_cost_model": False,
+                        },
+                    ]
+                },
+            },
+            focus_symbol="SOL/USDT",
+            strategy_research_latest={
+                "recommendation": {
+                    "candidate_id": "grid_range_reversion_maker_v1",
+                    "verdict": "promotion_candidate",
+                }
+            },
+        )
+
+        self.assertEqual(shadow["status"], "baseline_confirmed")
+        self.assertEqual(shadow["watch_candidate_id"], "grid_range_reversion_maker_v1")
+        self.assertEqual(shadow["selection_source"], "baseline_research_aligned_no_comparable_upgrade")
+        self.assertTrue(shadow["cost_model_comparable"])
+        self.assertIn("目前沒有更強的替代 shadow candidate 需要推進", shadow["summary"])
+
     def test_daily_summary_prefers_live_cost_benchmark_section(self) -> None:
         summary = {
             "mode": "bybit-demo-perp",
@@ -1322,6 +1373,77 @@ class RuntimeRegressionTests(unittest.TestCase):
             self.assertEqual(reviewer.calls, 1)
             self.assertEqual(first.get("review_status"), "fallback_error")
             self.assertEqual(second.get("review_status"), "fallback_error")
+
+    def test_daily_review_recomputes_when_shadow_watch_context_changes(self) -> None:
+        class StubReviewer:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def evaluate_with_metadata(self, date_label: str, daily_summary: dict):
+                from trading_agents.models import DailyReviewSnapshot
+
+                self.calls += 1
+                return (
+                    DailyReviewSnapshot(
+                        title=f"Trading Agents Daily Review - {date_label}",
+                        operations_summary=str((daily_summary.get("shadow_benchmark_watch") or {}).get("verdict", "")),
+                        decision_summary="decision",
+                        improvement_directions=["one"],
+                        action_items=["two"],
+                    ),
+                    {"review_status": "ok"},
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            storage = SimpleNamespace(service=root)
+            base_summary = {
+                "financial_snapshot": {"daily_pnl_usdt": -1.0, "realized_pnl_usdt": 0.0, "unrealized_pnl_usdt": 0.0},
+                "loss_attribution": {},
+                "symbol_postmortem": {"symbol": "SOL/USDT"},
+                "external_benchmarks": {},
+                "strategy_memory_current": {},
+                "shadow_benchmark_watch": {
+                    "watch_candidate_id": "grid_range_reversion_v1",
+                    "baseline_candidate_id": "grid_range_reversion_maker_v1",
+                    "verdict": "cost_model_mismatch",
+                    "selection_source": "fallback_first_available",
+                    "cost_model_comparable": False,
+                    "expectancy_delta_pct": -0.19,
+                    "profit_factor_delta": -1.98,
+                },
+                "benchmark_watch_candidate_current": {},
+            }
+            reviewer = StubReviewer()
+            first = _resolve_daily_review(
+                storage=storage,
+                date_label="2026-08-26",
+                daily_summary=base_summary,
+                daily_reviewer=reviewer,
+            )
+            updated_summary = dict(base_summary)
+            updated_summary["shadow_benchmark_watch"] = {
+                "watch_candidate_id": "grid_range_reversion_maker_v1",
+                "baseline_candidate_id": "grid_range_reversion_maker_v1",
+                "verdict": "baseline_confirmed",
+                "selection_source": "baseline_research_aligned_no_comparable_upgrade",
+                "cost_model_comparable": True,
+                "expectancy_delta_pct": 0.0,
+                "profit_factor_delta": 0.0,
+            }
+            updated_summary["benchmark_watch_candidate_current"] = {
+                "candidate_id": "grid_range_reversion_maker_v1",
+                "expectancy_pct": 0.31,
+            }
+            second = _resolve_daily_review(
+                storage=storage,
+                date_label="2026-08-26",
+                daily_summary=updated_summary,
+                daily_reviewer=reviewer,
+            )
+            self.assertEqual(reviewer.calls, 2)
+            self.assertEqual(first.get("operations_summary"), "cost_model_mismatch")
+            self.assertEqual(second.get("operations_summary"), "baseline_confirmed")
 
     def test_prefilter_blocks_negative_edge_candidate_before_risk(self) -> None:
         strategy_research = StrategyResearchSnapshot(

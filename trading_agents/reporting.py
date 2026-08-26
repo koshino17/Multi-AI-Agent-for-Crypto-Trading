@@ -1527,21 +1527,33 @@ def _build_shadow_benchmark_watch(
         and float(baseline.get("profit_factor", 0.0) or 0.0) > 1.0
     )
     baseline_cost = float(baseline.get("total_round_trip_cost_pct", 0.0) or 0.0)
+    comparable_shadow_ids = [
+        str(item.get("candidate_id", "")).strip()
+        for item in symbol_rows
+        if isinstance(item, dict)
+        and str(item.get("candidate_id", "")).strip()
+        and str(item.get("candidate_id", "")).strip() != baseline_id
+        and abs(float(item.get("total_round_trip_cost_pct", 0.0) or 0.0) - baseline_cost) <= 1e-9
+    ]
+    comparable_alternative_exists = bool(comparable_shadow_ids)
     if (
         not requested_watch
         and recommended_watch_id
         and recommended_watch_id == baseline_id
         and recommended_verdict in {"shadow_candidate", "promotion_candidate"}
-        and leader_id == baseline_id
         and baseline_positive_edge
-        and not bool(baseline.get("uses_custom_cost_model", False))
+        and (leader_id == baseline_id or not comparable_alternative_exists)
     ):
         return {
             "status": "baseline_confirmed",
             "focus_symbol": focus_symbol,
             "baseline_candidate_id": baseline_id,
             "watch_candidate_id": baseline_id,
-            "selection_source": "baseline_and_research_aligned",
+            "selection_source": (
+                "baseline_and_research_aligned"
+                if leader_id == baseline_id
+                else "baseline_research_aligned_no_comparable_upgrade"
+            ),
             "baseline": baseline,
             "watch": baseline,
             "leader": leader,
@@ -1583,6 +1595,7 @@ def _build_shadow_benchmark_watch(
             leader_id
             and leader_id != baseline_id
             and leader_id in allowed_shadow_candidates
+            and leader_id in comparable_shadow_ids
             and int(leader.get("trade_count", 0) or 0) >= 8
         ):
             chosen_watch_id = leader_id
@@ -1592,11 +1605,21 @@ def _build_shadow_benchmark_watch(
                 (
                     candidate_id
                     for candidate_id in allowed_shadow_candidates
-                    if candidate_id != baseline_id and _find(candidate_id)
+                    if candidate_id in comparable_shadow_ids and _find(candidate_id)
                 ),
                 "",
             )
-            selection_source = "fallback_first_available"
+            selection_source = "fallback_first_comparable"
+            if not chosen_watch_id:
+                chosen_watch_id = next(
+                    (
+                        candidate_id
+                        for candidate_id in allowed_shadow_candidates
+                        if candidate_id != baseline_id and _find(candidate_id)
+                    ),
+                    "",
+                )
+                selection_source = "fallback_first_available"
     watch = _find(chosen_watch_id)
     if not baseline or not watch:
         return {

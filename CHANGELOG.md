@@ -16,6 +16,32 @@
 
 ---
 
+## v1.1.12 - Stop non-comparable shadow watch churn when baseline already wins
+
+### Why
+
+- The TradePulse daily stewardship run on Wednesday, August 26, 2026 reviewed the completed `2026-08-25T12:00:00+08:00 -> 2026-08-26T12:00:00+08:00` window and found a repeat review-quality problem rather than a fresh execution failure.
+- TradePulse correctly stayed flat during a low-confidence window, but the daily report kept auto-selecting a shadow benchmark candidate whose round-trip cost model did not match the live baseline.
+- That produced the same `cost_model_mismatch` reminder across multiple windows even when idle-time strategy research already confirmed the current live baseline, which wastes research attention and can keep `benchmark_watch_candidate` anchored to a non-actionable comparison.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Shadow benchmark watch now detects when the current live baseline is already the research-backed candidate and there is no same-cost alternative eligible for upgrade.
+  - In that case, TradePulse returns `baseline_confirmed` instead of auto-falling back to a non-comparable shadow candidate.
+  - Automatic fallback selection now prefers same-cost alternatives first and only emits a mismatch comparison when that comparison is intentionally the only available evidence path.
+
+- `trading_agents/main.py`
+  - Daily review fingerprinting now includes shadow benchmark watch state so regenerated reports do not reuse stale strategy-review text after benchmark-watch verdicts change.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for the August 26 scenario where `grid_range_reversion_maker_v1` remains the correct baseline but only higher-cost alternatives are present in the external benchmark snapshot.
+  - Added regression coverage to force a fresh daily review when shadow-watch verdicts change from `cost_model_mismatch` to `baseline_confirmed`.
+
+### Result
+
+- TradePulse still warns on real cost-model mismatches, but it no longer turns an already-confirmed live baseline into a recurring shadow-watch distraction when there is no comparable upgrade path.
+
 ## v1.1.11 - Let low-sample reflection retire stale pilot mode
 
 ### Why
