@@ -20,6 +20,7 @@ from trading_agents.main import (
 )
 from trading_agents.models import BacktestSnapshot, SentimentSnapshot, StrategyCandidate, StrategyResearchSnapshot, TradeIdea
 from trading_agents.reporting import (
+    _build_control_impact_summary,
     _build_shadow_benchmark_watch,
     _build_financial_snapshot,
     _build_market_path_review,
@@ -628,6 +629,94 @@ class RuntimeRegressionTests(unittest.TestCase):
             },
         )
         self.assertEqual(experiment, {})
+
+    def test_strategy_memory_normalizes_promotion_plan_shape(self) -> None:
+        normalized = normalize_strategy_memory_payload({"promotion_plan": ["invalid"]})
+        self.assertEqual(normalized.get("promotion_plan"), {})
+
+    def test_low_participation_reflection_builds_promotion_plan(self) -> None:
+        agent = StrategyReflectionAgent(llm_client=None)
+        reflection = agent._fallback(  # type: ignore[attr-defined]
+            "2026-08-27-night",
+            {
+                "financial_snapshot": {
+                    "daily_pnl_usdt": 0.05,
+                    "realized_pnl_usdt": 0.0,
+                    "unrealized_pnl_usdt": 0.0,
+                    "daily_fees_usdt": 0.0,
+                },
+                "accepted_orders": 0,
+                "total": 142,
+                "holds": 142,
+                "blocked": 0,
+                "accepted_source_counts": {},
+                "blocked_reason_counts": {},
+                "rejection_reason_counts": {},
+                "selected_symbol_counts": {"SOL/USDT": 142},
+                "loss_attribution": {"closed_episode_count": 0},
+            },
+            reflection_context={
+                "current_live_symbol": "SOL/USDT",
+                "previous_controls": {},
+                "capital_preservation_mode": True,
+                "benchmark_leader_streak": 2,
+                "repeated_benchmark_leader_id": "grid_range_reversion_maker_v1",
+                "low_participation_window_count": 4,
+                "low_participation_streak": 4,
+                "positive_streak": 2,
+                "negative_day_count": 2,
+                "negative_streak": 0,
+                "multi_day_pnl_usdt": -64.33,
+                "current_equity_usdt": 435.66,
+                "configured_initial_usdt": 500.0,
+                "drawdown_pct": 12.86,
+                "live_trade_expectancy_pct": 0.0,
+                "live_profit_factor": 0.0,
+                "force_fallback_base_only": True,
+                "restore_positive_days": 2,
+                "restore_equity_floor_usdt": 475.0,
+                "current_window_accepted_orders": 0,
+                "current_window_closed_episodes": 0,
+                "strategy_research_recommendation": {
+                    "candidate_id": "grid_range_reversion_maker_v1",
+                    "verdict": "promotion_candidate",
+                },
+                "live_symbol_benchmark": {
+                    "candidate_id": "grid_range_reversion_maker_v1",
+                    "expectancy_pct": 0.145,
+                    "profit_factor": 1.72,
+                    "trade_count": 12,
+                    "uses_custom_cost_model": True,
+                },
+            },
+        )
+        self.assertEqual(reflection.promotion_plan.get("candidate_id"), "grid_range_reversion_maker_v1")
+        self.assertEqual(reflection.promotion_plan.get("stage"), "guarded_pilot_ready")
+        self.assertIn("rollback", str(reflection.promotion_plan.get("rollback_condition", "")).lower())
+
+    def test_control_impact_summary_keeps_promotion_plan(self) -> None:
+        summary = _build_control_impact_summary(
+            {
+                "strategy_memory_current": {
+                    "controls": {"benchmark_watch_candidate": "grid_range_reversion_maker_v1"},
+                    "promotion_plan": {
+                        "candidate_id": "grid_range_reversion_maker_v1",
+                        "stage": "shadow_watch",
+                        "benchmark_streak": 2,
+                        "success_metrics": ["accepted_orders"],
+                    },
+                    "reflection_context": {"previous_controls": {}},
+                },
+                "total": 100,
+                "accepted_orders": 0,
+                "holds": 100,
+                "loss_attribution": {},
+                "policy_exit_diagnostics": {},
+                "trade_review": {},
+            },
+            {},
+        )
+        self.assertEqual((summary.get("promotion_plan") or {}).get("candidate_id"), "grid_range_reversion_maker_v1")
 
     def test_strategy_research_uses_memory_to_bias_candidate_selection(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

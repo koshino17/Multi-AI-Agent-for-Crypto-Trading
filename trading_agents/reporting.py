@@ -472,10 +472,13 @@ def _build_control_impact_summary(
     strategy_memory = current_summary.get("strategy_memory_current") or {}
     controls = strategy_memory.get("controls") or {}
     experiment = strategy_memory.get("experiment") or {}
+    promotion_plan = strategy_memory.get("promotion_plan") or {}
     if not isinstance(controls, dict):
         controls = {}
     if not isinstance(experiment, dict):
         experiment = {}
+    if not isinstance(promotion_plan, dict):
+        promotion_plan = {}
     reflection_context = strategy_memory.get("reflection_context") or {}
     previous_controls = reflection_context.get("previous_controls") or {}
     if not isinstance(previous_controls, dict):
@@ -488,7 +491,7 @@ def _build_control_impact_summary(
         for key, value in controls.items()
         if previous_controls.get(key) != value
     }
-    if not changed_controls and not experiment:
+    if not changed_controls and not experiment and not promotion_plan:
         return {}
 
     previous_summary = previous_summary or {}
@@ -514,6 +517,7 @@ def _build_control_impact_summary(
     return {
         "changed_controls": changed_controls,
         "experiment": experiment,
+        "promotion_plan": promotion_plan,
         "accepted_rate_pct": round(current_accepted_rate * 100.0, 2),
         "accepted_rate_delta_pct": round((current_accepted_rate - previous_accepted_rate) * 100.0, 2),
         "hold_ratio_pct": round(current_hold_ratio * 100.0, 2),
@@ -4376,6 +4380,24 @@ def build_daily_summary(
             lines.append(
                 f"- Sample Guard: {'on' if bool(experiment.get('sample_guard_active')) else 'off'}"
             )
+        promotion_plan = control_impact.get("promotion_plan") or {}
+        if promotion_plan:
+            lines.append(
+                f"- Promotion Plan: {promotion_plan.get('candidate_id', 'n/a')} "
+                f"({promotion_plan.get('stage', 'n/a')} | streak={int(promotion_plan.get('benchmark_streak', 0) or 0)} | "
+                f"expectancy={float(promotion_plan.get('expectancy_pct', 0.0) or 0.0):+.2f}% | pf={float(promotion_plan.get('profit_factor', 0.0) or 0.0):.2f})"
+            )
+            success_metrics = promotion_plan.get("success_metrics") or []
+            if success_metrics:
+                lines.append(f"- Promotion Metrics: {', '.join(str(item) for item in success_metrics)}")
+            if promotion_plan.get("sample_size_note"):
+                lines.append(f"- Promotion Sample Note: {promotion_plan.get('sample_size_note')}")
+            if promotion_plan.get("pilot_criteria"):
+                lines.append(f"- Promotion Gate: {promotion_plan.get('pilot_criteria')}")
+            if promotion_plan.get("rollback_condition"):
+                lines.append(f"- Promotion Rollback: {promotion_plan.get('rollback_condition')}")
+            if promotion_plan.get("next_step"):
+                lines.append(f"- Promotion Next Step: {promotion_plan.get('next_step')}")
         lines.append(
             f"- Accepted Rate: {float(control_impact.get('accepted_rate_pct', 0.0)):.2f}% "
             f"(delta {float(control_impact.get('accepted_rate_delta_pct', 0.0)):+.2f}pp)"

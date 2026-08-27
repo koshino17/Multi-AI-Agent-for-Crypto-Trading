@@ -16,6 +16,33 @@
 
 ---
 
+## v1.1.12 - Persist shadow promotion plans in strategy memory
+
+### Why
+
+- The TradePulse daily stewardship run on Thursday, August 27, 2026 reviewed the completed `2026-08-26T12:00:00+08:00 -> 2026-08-27T12:00:00+08:00` window and found the installed `bybit-demo-perp` runner healthy, fresh, and still publishing reports and Notion heartbeats.
+- The real issue was repetition in the learning loop: TradePulse had logged four consecutive low-participation noon windows with `hold_ratio=100%`, while the same `grid_range_reversion_maker_v1` candidate remained the repeated research-aligned benchmark leader.
+- Reflection already recognized that this candidate should become a formal shadow promotion target, but it only wrote a generic bias/action item. That left no machine-readable pilot gate, success metrics, or rollback condition for downstream reports and prompts to follow.
+
+### What Changed
+
+- `trading_agents/agents.py`
+  - Strategy reflection now builds a persisted `promotion_plan` whenever a repeated benchmark leader deserves explicit shadow-watch or guarded-pilot tracking.
+  - The strategy-memory LLM brief now includes the active promotion-plan headline so downstream reasoning can stop repeating vague “watch this candidate” language.
+
+- `trading_agents/main.py` / `trading_agents/models.py` / `trading_agents/strategy_memory.py`
+  - TradePulse now saves `promotion_plan` alongside controls and experiments in `strategy_memory.json`, with normalization that fails closed on malformed payloads.
+
+- `trading_agents/reporting.py`
+  - Daily summaries now surface the active promotion plan, including stage, success metrics, sample-size note, gate text, rollback condition, and next step.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for promotion-plan normalization, low-participation reflection output, and daily control-impact summaries.
+
+### Result
+
+- TradePulse keeps the live runtime conservative, but the noon-window learning loop now turns repeated benchmark evidence into an explicit, reviewable promotion plan instead of resetting to the same generic action item every day.
+
 ## v1.1.11 - Let low-sample reflection retire stale pilot mode
 
 ### Why

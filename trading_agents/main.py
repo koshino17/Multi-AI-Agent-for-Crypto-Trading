@@ -2050,6 +2050,7 @@ def _finalize_reporting(
                 "focus_symbols": reflection.focus_symbols,
                 "controls": reflection.controls,
                 "experiment": reflection.experiment,
+                "promotion_plan": reflection.promotion_plan,
                 "reflection_context": reflection_context,
             }
             save_strategy_memory(storage.strategy_memory_state, payload)

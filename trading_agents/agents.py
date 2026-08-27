@@ -483,6 +483,7 @@ def _strategy_memory_llm_brief(strategy_memory: dict | None) -> str:
     payload = strategy_memory if isinstance(strategy_memory, dict) else {}
     controls = payload.get("controls") if isinstance(payload.get("controls"), dict) else {}
     experiment = payload.get("experiment") if isinstance(payload.get("experiment"), dict) else {}
+    promotion_plan = payload.get("promotion_plan") if isinstance(payload.get("promotion_plan"), dict) else {}
     focus_symbols = payload.get("focus_symbols") if isinstance(payload.get("focus_symbols"), list) else []
     summary = str(payload.get("summary", "") or "").strip()
     lines = [
@@ -501,6 +502,19 @@ def _strategy_memory_llm_brief(strategy_memory: dict | None) -> str:
                     "trigger": str(experiment.get("trigger", "") or ""),
                     "ttl_windows": int(experiment.get("ttl_windows", 0) or 0),
                     "status": str(experiment.get("status", "") or ""),
+                },
+                ensure_ascii=False,
+            )
+        )
+    if promotion_plan:
+        lines.append(
+            "promotion_plan="
+            + json.dumps(
+                {
+                    "candidate_id": str(promotion_plan.get("candidate_id", "") or ""),
+                    "stage": str(promotion_plan.get("stage", "") or ""),
+                    "benchmark_streak": int(promotion_plan.get("benchmark_streak", 0) or 0),
+                    "next_step": str(promotion_plan.get("next_step", "") or ""),
                 },
                 ensure_ascii=False,
             )
@@ -1970,6 +1984,7 @@ class StrategyReflectionAgent:
                 focus_symbols=[str(item).strip() for item in focus_symbols if str(item).strip()][:4] or fallback.focus_symbols,
                 controls=normalized_controls,
                 experiment=self._build_experiment(slot, normalized_controls, reflection_context=reflection_context),
+                promotion_plan=fallback.promotion_plan,
             )
         except Exception:
             return fallback
@@ -2265,6 +2280,17 @@ class StrategyReflectionAgent:
             )
         summary = "; ".join(summary_parts) + "."
         normalized_controls = self._normalize_controls(controls, previous_controls, reflection_context=reflection_context)
+        promotion_plan = self._build_promotion_plan(
+            normalized_controls,
+            reflection_context=reflection_context,
+            pilot_candidate_id=pilot_candidate_id,
+            pilot_expectancy_pct=pilot_expectancy_pct,
+            pilot_profit_factor=pilot_profit_factor,
+            pilot_uses_custom_cost_model=pilot_uses_custom_cost_model,
+            pilot_trade_count=int(live_symbol_benchmark.get("trade_count", 0) or 0),
+            pilot_ready=pilot_ready,
+            low_participation_pilot_ready=low_participation_pilot_ready,
+        )
         return StrategyReflectionSnapshot(
             slot=slot,
             summary=summary,
@@ -2273,7 +2299,72 @@ class StrategyReflectionAgent:
             focus_symbols=focus_symbols,
             controls=normalized_controls,
             experiment=self._build_experiment(slot, normalized_controls, reflection_context=reflection_context),
+            promotion_plan=promotion_plan,
         )
+
+    def _build_promotion_plan(
+        self,
+        controls: dict[str, object],
+        *,
+        reflection_context: dict | None = None,
+        pilot_candidate_id: str = "",
+        pilot_expectancy_pct: float = 0.0,
+        pilot_profit_factor: float = 0.0,
+        pilot_uses_custom_cost_model: bool = False,
+        pilot_trade_count: int = 0,
+        pilot_ready: bool = False,
+        low_participation_pilot_ready: bool = False,
+    ) -> dict[str, object]:
+        reflection_context = reflection_context or {}
+        candidate_id = str(controls.get("benchmark_watch_candidate", "") or pilot_candidate_id or "").strip()
+        symbol = str(controls.get("benchmark_watch_symbol", "") or reflection_context.get("current_live_symbol", "") or "").strip()
+        benchmark_streak = int(reflection_context.get("benchmark_leader_streak", 0) or 0)
+        low_participation_streak = int(reflection_context.get("low_participation_streak", 0) or 0)
+        positive_streak = int(reflection_context.get("positive_streak", 0) or 0)
+        if not candidate_id or benchmark_streak < 2:
+            return {}
+
+        stage = "shadow_watch"
+        if pilot_ready or low_participation_pilot_ready:
+            stage = "guarded_pilot_ready"
+
+        success_metrics = ["accepted_orders", "hold_ratio", "live_trade_expectancy_pct"]
+        pilot_criteria = (
+            f"Allow only a bounded maker-style pilot after `{candidate_id}` stays benchmark leader for >= {benchmark_streak} windows, "
+            f"keeps expectancy > 0, profit_factor > 1, and trade_count >= {max(pilot_trade_count, 8)}."
+            if stage == "guarded_pilot_ready"
+            else f"Keep `{candidate_id}` in shadow until it preserves positive expectancy, profit_factor > 1, and enough sample size to justify a bounded pilot."
+        )
+        rollback_condition = (
+            "Rollback the pilot immediately if the next completed window finishes with negative live trade expectancy, higher hold ratio, or zero accepted pilot orders."
+            if stage == "guarded_pilot_ready"
+            else "Do not promote if benchmark leadership breaks, expectancy turns non-positive, or sample size stays too small."
+        )
+        next_step = (
+            f"Run a tiny bybit-demo-perp pilot for `{candidate_id}` with `pilot_max_position_pct={float(controls.get('pilot_max_position_pct', 0.10) or 0.10):.2f}` and review the next noon window."
+            if stage == "guarded_pilot_ready"
+            else f"Keep `{candidate_id}` shadow-only and re-check the next noon window for streak, sample size, and cost-aware edge."
+        )
+        sample_size_note = (
+            f"Current sample: {pilot_trade_count} benchmark trades under {'custom maker-style' if pilot_uses_custom_cost_model else 'live-cost'} assumptions."
+        )
+        return {
+            "candidate_id": candidate_id,
+            "symbol": symbol,
+            "stage": stage,
+            "benchmark_streak": benchmark_streak,
+            "low_participation_streak": low_participation_streak,
+            "positive_streak": positive_streak,
+            "expectancy_pct": round(pilot_expectancy_pct, 4),
+            "profit_factor": round(pilot_profit_factor, 4),
+            "trade_count": pilot_trade_count,
+            "uses_custom_cost_model": pilot_uses_custom_cost_model,
+            "success_metrics": success_metrics,
+            "pilot_criteria": pilot_criteria,
+            "rollback_condition": rollback_condition,
+            "sample_size_note": sample_size_note,
+            "next_step": next_step,
+        }
 
     def _normalize_controls(
         self,

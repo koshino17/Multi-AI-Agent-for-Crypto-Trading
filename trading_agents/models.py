@@ -143,3 +143,4 @@ class StrategyReflectionSnapshot:
     focus_symbols: list[str]
     controls: dict[str, object]
     experiment: dict[str, object] = field(default_factory=dict)
+    promotion_plan: dict[str, object] = field(default_factory=dict)

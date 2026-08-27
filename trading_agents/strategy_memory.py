@@ -57,6 +57,7 @@ def normalize_strategy_memory_payload(payload: dict[str, Any] | None, *, current
     normalized.setdefault("focus_symbols", [])
     normalized.setdefault("controls", {})
     normalized.setdefault("experiment", {})
+    normalized.setdefault("promotion_plan", {})
     if not isinstance(normalized.get("controls"), dict):
         normalized["controls"] = {}
     experiment = normalized.get("experiment")
@@ -64,6 +65,8 @@ def normalize_strategy_memory_payload(payload: dict[str, Any] | None, *, current
         normalized["experiment"] = {}
     elif experiment and not experiment_is_active(experiment, current_slot=current_slot):
         normalized["experiment"] = {}
+    if not isinstance(normalized.get("promotion_plan"), dict):
+        normalized["promotion_plan"] = {}
     return normalized
 
 
