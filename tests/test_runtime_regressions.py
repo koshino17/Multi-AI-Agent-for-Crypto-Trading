@@ -520,6 +520,55 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(str(reflection.controls.get("entry_mode", "")), "normal")
         self.assertNotIn("pilot_candidate_id", reflection.controls)
 
+    def test_strategy_reflection_does_not_auto_watch_custom_cost_research_candidate(self) -> None:
+        agent = StrategyReflectionAgent(llm_client=None)
+        daily_summary = {
+            "blocked_reason_counts": {},
+            "rejection_reason_counts": {},
+            "selected_symbol_counts": {"SOL/USDT": 10},
+            "financial_snapshot": {
+                "daily_pnl_usdt": 0.0,
+                "realized_pnl_usdt": 0.0,
+                "unrealized_pnl_usdt": 0.0,
+                "daily_fees_usdt": 0.0,
+            },
+            "accepted_source_counts": {"fallback": 0, "base_strategy": 0},
+            "accepted_orders": 0,
+            "blocked": 0,
+            "loss_attribution": {"closed_episode_count": 0},
+            "external_benchmarks": {"top_candidates": [{}]},
+        }
+        reflection = agent.evaluate(
+            "2026-08-28-day",
+            daily_summary,
+            reflection_context={
+                "live_symbols": ["SOL/USDT"],
+                "current_live_symbol": "SOL/USDT",
+                "lookback_days": 5,
+                "negative_day_count": 1,
+                "negative_streak": 0,
+                "positive_streak": 2,
+                "low_participation_window_count": 5,
+                "low_participation_streak": 5,
+                "carry_in_loss_window_count": 0,
+                "carry_in_loss_streak": 0,
+                "stagnation_exit_window_count": 0,
+                "stagnation_exit_streak": 0,
+                "previous_controls": {},
+                "current_window_accepted_orders": 0,
+                "current_window_closed_episodes": 0,
+                "strategy_research_recommendation": {
+                    "candidate_id": "grid_range_reversion_maker_v1",
+                    "verdict": "promotion_candidate",
+                    "rationale": "positive under maker-cost research windows",
+                    "uses_custom_cost_model": True,
+                },
+                "live_symbol_benchmark": {},
+            },
+        )
+        self.assertNotIn("benchmark_watch_candidate", reflection.controls)
+        self.assertEqual(str(reflection.controls.get("benchmark_watch_symbol", "")), "SOL/USDT")
+
     def test_low_sample_guard_does_not_stack_base_only_on_top_of_pilot(self) -> None:
         agent = StrategyReflectionAgent(llm_client=None)
         guarded = agent._apply_low_sample_guard(  # type: ignore[attr-defined]

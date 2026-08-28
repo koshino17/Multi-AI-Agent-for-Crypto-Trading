@@ -261,6 +261,7 @@ def _daily_summary_llm_context(daily_summary: dict) -> dict[str, object]:
                 "candidate_id": recommendation.get("candidate_id", ""),
                 "verdict": recommendation.get("verdict", ""),
                 "rationale": recommendation.get("rationale", ""),
+                "uses_custom_cost_model": bool(recommendation.get("uses_custom_cost_model", False)),
             },
             "shadow_benchmark_watch": {
                 "watch_candidate_id": shadow_watch.get("watch_candidate_id", ""),
@@ -330,6 +331,7 @@ def _reflection_context_llm_context(reflection_context: dict | None) -> dict[str
             "candidate_id": ((context.get("strategy_research_recommendation") or {}).get("candidate_id", "")),
             "verdict": ((context.get("strategy_research_recommendation") or {}).get("verdict", "")),
             "rationale": ((context.get("strategy_research_recommendation") or {}).get("rationale", "")),
+            "uses_custom_cost_model": bool(((context.get("strategy_research_recommendation") or {}).get("uses_custom_cost_model", False))),
         },
         "live_symbol_benchmark": {
             "candidate_id": ((context.get("live_symbol_benchmark") or {}).get("candidate_id", "")),
@@ -2037,6 +2039,7 @@ class StrategyReflectionAgent:
         research_recommendation = reflection_context.get("strategy_research_recommendation") or {}
         research_candidate_id = str(research_recommendation.get("candidate_id", "") or "").strip()
         research_verdict = str(research_recommendation.get("verdict", "") or "").strip().lower()
+        research_uses_custom_cost_model = bool(research_recommendation.get("uses_custom_cost_model", False))
         low_participation_threshold = int(self.settings.strategy_learning_pilot_low_participation_windows or 0)
         recent_windows = reflection_context.get("recent_windows") or []
         if not isinstance(recent_windows, list):
@@ -2177,7 +2180,11 @@ class StrategyReflectionAgent:
             except (TypeError, ValueError):
                 pass
         benchmark_candidate = {}
-        if research_candidate_id and research_verdict in {"shadow_candidate", "promotion_candidate"}:
+        if (
+            research_candidate_id
+            and research_verdict in {"shadow_candidate", "promotion_candidate"}
+            and not research_uses_custom_cost_model
+        ):
             benchmark_candidate = {
                 "candidate_id": research_candidate_id,
                 "symbol": current_live_symbol,
@@ -2362,12 +2369,17 @@ class StrategyReflectionAgent:
         research_recommendation = reflection_context.get("strategy_research_recommendation") or {}
         research_candidate_id = str(research_recommendation.get("candidate_id", "") or "").strip()
         research_verdict = str(research_recommendation.get("verdict", "") or "").strip().lower()
+        research_uses_custom_cost_model = bool(research_recommendation.get("uses_custom_cost_model", False))
         live_benchmark_positive_edge = (
             isinstance(live_symbol_benchmark, dict)
             and float(live_symbol_benchmark.get("expectancy_pct", 0.0) or 0.0) > 0.0
             and float(live_symbol_benchmark.get("profit_factor", 0.0) or 0.0) > 1.0
         )
-        if research_candidate_id and research_verdict in {"shadow_candidate", "promotion_candidate"}:
+        if (
+            research_candidate_id
+            and research_verdict in {"shadow_candidate", "promotion_candidate"}
+            and not research_uses_custom_cost_model
+        ):
             normalized["benchmark_watch_candidate"] = research_candidate_id
             if current_live_symbol:
                 normalized["benchmark_watch_symbol"] = current_live_symbol

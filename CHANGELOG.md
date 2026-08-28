@@ -16,6 +16,31 @@
 
 ---
 
+## v1.1.12 - Stop auto-watching custom-cost research leaders in live controls
+
+### Why
+
+- The TradePulse daily stewardship run on Friday, August 28, 2026 reviewed the completed `2026-08-27T12:00:00+08:00 -> 2026-08-28T12:00:00+08:00` window and found the installed `bybit-demo-perp` runner healthy, fresh, and still cycling on `SOL/USDT`.
+- The real defect was in the learning loop: reflection logic could auto-write `grid_range_reversion_maker_v1` into `benchmark_watch_candidate` because strategy research marked it a promotion candidate, even though that candidate only cleared the gate under a custom maker-style cost model and the report already labeled the live shadow comparison `cost_model_mismatch`.
+- That contaminated strategy memory and selector context with a research-only benchmark target, which is not valid live-comparable evidence and can bias TradePulse toward the wrong watch state.
+
+### What Changed
+
+- `trading_agents/strategy_research.py`
+  - Strategy research aggregate ranking and recommendation payloads now carry `uses_custom_cost_model` so downstream controls can distinguish research-only maker-cost leaders from live-cost-comparable candidates.
+
+- `trading_agents/agents.py`
+  - Reflection and control normalization now refuse to auto-promote custom-cost research recommendations into `benchmark_watch_candidate`.
+  - TradePulse still preserves those candidates in research outputs, but live watch controls now prefer only cost-comparable benchmark evidence unless a separate pilot path explicitly justifies the candidate.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage that a custom-cost research recommendation does not become an automatic live benchmark-watch control.
+
+### Result
+
+- TradePulse keeps custom-cost PO3/range research visible without letting research-only maker assumptions silently steer live benchmark-watch memory.
+- The next noon-window review should show cleaner separation between research leaders and live-comparable watch candidates.
+
 ## v1.1.11 - Let low-sample reflection retire stale pilot mode
 
 ### Why
