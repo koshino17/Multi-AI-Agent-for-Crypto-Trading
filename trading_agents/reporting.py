@@ -3619,6 +3619,16 @@ def load_daily_summary_data(
         focus_symbol=focus_symbol,
     )
     summary["strategy_memory_current"] = normalize_strategy_memory_payload(_read_json_file(storage.strategy_memory_state))
+    strategy_memory_controls = (
+        summary.get("strategy_memory_current", {}).get("controls", {})
+        if isinstance(summary.get("strategy_memory_current"), dict)
+        else {}
+    )
+    active_watch_candidate_id = (
+        str(strategy_memory_controls.get("benchmark_watch_candidate", "") or "").strip()
+        if isinstance(strategy_memory_controls, dict)
+        else ""
+    )
     summary["runner_health"] = _build_runner_health_summary(
         _read_json_file(storage.runner_status),
         window_end=window_end,
@@ -3630,6 +3640,7 @@ def load_daily_summary_data(
     summary["shadow_benchmark_watch"] = _build_shadow_benchmark_watch(
         summary["external_benchmarks"],
         focus_symbol=focus_symbol or str(summary.get("symbol_postmortem", {}).get("symbol", "")).strip(),
+        watch_candidate_id=active_watch_candidate_id,
         strategy_research_latest=summary["strategy_research_latest"],
         benchmark_reports_dir=storage.benchmark_reports,
         cutoff=window_end,
@@ -3637,7 +3648,11 @@ def load_daily_summary_data(
     if isinstance(summary.get("shadow_benchmark_watch"), dict):
         shadow_payload = summary["shadow_benchmark_watch"]
         summary["benchmark_watch_candidate_current"] = (
-            {}
+            shadow_payload.get("watch")
+            if active_watch_candidate_id
+            and isinstance(shadow_payload.get("watch"), dict)
+            and str(shadow_payload.get("watch", {}).get("candidate_id", "")).strip() == active_watch_candidate_id
+            else {}
             if not bool(shadow_payload.get("cost_model_comparable", True))
             else
             shadow_payload.get("watch")

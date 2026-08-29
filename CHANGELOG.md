@@ -16,6 +16,28 @@
 
 ---
 
+## v1.1.13 - Keep active shadow-watch experiments aligned across reports and memory
+
+### Why
+
+- The TradePulse daily stewardship run on Saturday, August 29, 2026 reviewed the completed `2026-08-28T12:00:00+08:00 -> 2026-08-29T12:00:00+08:00` window and found the installed `bybit-demo-perp` runner healthy, fresh, and still cycling on `SOL/USDT`.
+- The defect was in the learning loop handoff: strategy memory had already moved `benchmark_watch_candidate` to `donchian_adx_fast_14_v1`, but the daily summary rebuilt the shadow benchmark section without that requested watch id and fell back to `grid_range_reversion_v1`.
+- That made the report, reflection context, and active experiment disagree about which candidate TradePulse was actually watching, weakening control-impact evidence and making the next noon-window review less trustworthy.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Daily summary generation now passes the active `benchmark_watch_candidate` from strategy memory into the shadow benchmark builder.
+  - When a requested watch candidate is active, the summary preserves that exact watch snapshot in `benchmark_watch_candidate_current` even if the comparison is flagged `cost_model_mismatch`, so downstream reflection evaluates the experiment that actually ran.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for the August 29 failure mode where a requested watch candidate must survive a cost-mismatch comparison instead of being silently replaced by a fallback candidate.
+
+### Result
+
+- TradePulse keeps cost-model warnings intact, but the active shadow-watch experiment now stays coherent across the report, strategy memory, and next reflection window.
+- The next stewardship run can judge the `donchian_adx_fast_14_v1` watch experiment on its real metrics instead of mixing it with a different fallback candidate.
+
 ## v1.1.12 - Stop auto-watching custom-cost research leaders in live controls
 
 ### Why

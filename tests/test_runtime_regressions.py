@@ -1117,6 +1117,75 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertFalse(shadow["cost_model_comparable"])
         self.assertIn("不能直接當成 live promotion 依據", shadow["summary"])
 
+    def test_daily_summary_preserves_requested_watch_candidate_when_costs_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = build_storage_layout(tmpdir)
+            storage.strategy_memory_state.write_text(
+                json.dumps(
+                    {
+                        "slot": "2026-08-29-day",
+                        "controls": {"benchmark_watch_candidate": "donchian_adx_fast_14_v1"},
+                    }
+                )
+            )
+            storage.external_benchmark_state.write_text(
+                json.dumps(
+                    {
+                        "generated_at": "2026-08-29T01:15:29+00:00",
+                        "baseline_strategy_id": "grid_range_reversion_maker_v1",
+                        "results": {
+                            "SOL/USDT": [
+                                {
+                                    "candidate_id": "grid_range_reversion_maker_v1",
+                                    "symbol": "SOL/USDT",
+                                    "expectancy_pct": 0.09,
+                                    "profit_factor": 1.38,
+                                    "trade_count": 5,
+                                    "cumulative_return_pct": 0.45,
+                                    "total_round_trip_cost_pct": 0.05,
+                                    "uses_custom_cost_model": True,
+                                },
+                                {
+                                    "candidate_id": "donchian_adx_fast_14_v1",
+                                    "symbol": "SOL/USDT",
+                                    "expectancy_pct": -0.14,
+                                    "profit_factor": 0.69,
+                                    "trade_count": 46,
+                                    "cumulative_return_pct": -6.53,
+                                    "total_round_trip_cost_pct": 0.24,
+                                    "uses_custom_cost_model": False,
+                                },
+                            ]
+                        },
+                    }
+                )
+            )
+            settings = SimpleNamespace(
+                trading_mode="bybit-demo-perp",
+                data_root=tmpdir,
+                initial_balance_usdt=500.0,
+                taker_fee_pct=0.001,
+                observation_pool=["SOL/USDT"],
+                symbol="SOL/USDT",
+                external_ai_review_enabled=False,
+            )
+            with mock.patch("trading_agents.config.load_settings", return_value=settings):
+                summary = load_daily_summary_data(
+                    storage.trade_logs,
+                    "2026-08-29",
+                    storage.runner_log,
+                    trading_mode="bybit-demo-perp",
+                    storage_root=tmpdir,
+                )
+
+        self.assertEqual(summary["shadow_benchmark_watch"]["selection_source"], "requested")
+        self.assertEqual(summary["shadow_benchmark_watch"]["watch_candidate_id"], "donchian_adx_fast_14_v1")
+        self.assertFalse(summary["shadow_benchmark_watch"]["cost_model_comparable"])
+        self.assertEqual(
+            summary["benchmark_watch_candidate_current"]["candidate_id"],
+            "donchian_adx_fast_14_v1",
+        )
+
     def test_daily_summary_prefers_live_cost_benchmark_section(self) -> None:
         summary = {
             "mode": "bybit-demo-perp",
