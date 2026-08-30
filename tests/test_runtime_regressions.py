@@ -734,6 +734,61 @@ class RuntimeRegressionTests(unittest.TestCase):
             )
             self.assertEqual(result.selected_strategy_id, "grid_range_reversion_maker_v1")
 
+    def test_strategy_research_keeps_base_when_memory_bias_hits_zero_trade_alternate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            library_path = Path(tmpdir) / "strategy_library.json"
+            library_path.write_text(
+                json.dumps(
+                    {
+                        "base_strategy": "grid_range_reversion_maker_v1",
+                        "strategies": [
+                            {
+                                "id": "grid_range_reversion_maker_v1",
+                                "name": "Grid Maker",
+                                "generator": "grid_range_reversion",
+                                "execution": {"entry_order_type": "limit", "entry_liquidity": "maker"},
+                            },
+                            {
+                                "id": "donchian_adx_perp_v1",
+                                "name": "Donchian",
+                                "generator": "donchian_adx",
+                                "execution": {"entry_order_type": "market", "entry_liquidity": "taker"},
+                            },
+                        ],
+                    }
+                )
+            )
+            agent = StrategyResearchAgent(str(library_path))
+
+            def fake_run_strategy(item, snapshot, sentiment):
+                if item.get("id") == "donchian_adx_perp_v1":
+                    return BacktestSnapshot(20, 0, 0.0, 0.0, 0.0, "donchian no trades", 0.0, 0.0, 0.0, 0.0)
+                return BacktestSnapshot(20, 2, 0.5, -0.03, -0.06, "grid has trades", 0.04, -0.10, -0.03, 0.40)
+
+            agent._run_strategy = fake_run_strategy  # type: ignore[method-assign]
+            snapshot = SimpleNamespace(
+                symbol="SOL/USDT",
+                timeframe="15m",
+                opens=[1.0] * 40,
+                highs=[1.0] * 40,
+                lows=[1.0] * 40,
+                closes=[1.0] * 40,
+                volumes=[1.0] * 40,
+                last_price=1.0,
+            )
+            sentiment = SentimentSnapshot(0, 0.0, "", [])
+            result = agent.evaluate_with_memory(
+                snapshot,
+                sentiment,
+                strategy_memory={
+                    "controls": {
+                        "benchmark_watch_candidate": "donchian_adx_perp_v1",
+                    }
+                },
+            )
+            self.assertEqual(result.selected_strategy_id, "grid_range_reversion_maker_v1")
+            self.assertIn("selection_mode=memory_base_guard", result.summary)
+
     def test_fee_hurdle_multiplier_applies_in_bybit_demo_perp(self) -> None:
         agent = RiskSupervisorAgent(llm_client=None)
         idea = TradeIdea("buy", 0.8, "test buy", "invalidate", "intraday")

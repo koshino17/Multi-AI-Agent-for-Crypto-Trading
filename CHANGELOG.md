@@ -16,6 +16,28 @@
 
 ---
 
+## v1.1.14 - Keep zero-trade alternates from overriding the live base strategy
+
+### Why
+
+- The TradePulse daily stewardship run on Saturday, August 30, 2026 reviewed the completed `2026-08-29T12:00:00+08:00 -> 2026-08-30T12:00:00+08:00` window and found the installed `bybit-demo-perp` runner healthy, fresh, and still cycling on `SOL/USDT`.
+- The main defect was in strategy selection integrity: TradePulse was configured with `grid_range_reversion_maker_v1` as the active base strategy, but memory-ranked selection could still label a different strategy as selected even when that alternate had zero replay trades in the current window.
+- That weak override polluted execution metadata, changed TTL/liquidity assumptions in reports, and made the learning loop look like TradePulse had switched strategies without sample-backed evidence.
+
+### What Changed
+
+- `trading_agents/research.py`
+  - Added a base-strategy guard inside memory-ranked selection so a non-base candidate with zero replay trades cannot override the configured base when the base still has actual replay participation.
+  - The selection summary now records this fallback as `memory_base_guard`, preserving an audit trail when TradePulse refuses a weak alternate override.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for the August 30 failure mode where a benchmark-watched alternate with zero trades must not displace the configured base strategy in live selection output.
+
+### Result
+
+- TradePulse still allows memory, pilot, and benchmark controls to bias strategy choice, but it now requires at least minimal replay evidence before a non-base candidate can become the selected live strategy.
+- The next noon-window review should keep execution assumptions and strategy attribution aligned with real evidence instead of zero-trade alternates.
+
 ## v1.1.13 - Keep active shadow-watch experiments aligned across reports and memory
 
 ### Why

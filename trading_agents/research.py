@@ -241,12 +241,14 @@ class StrategyResearchAgent:
     ) -> tuple[StrategyCandidate, dict[str, Any], str]:
         if not candidates:
             raise ValueError("at least one strategy candidate is required")
+        base_id = str(self.library.get("base_strategy", "") or "").strip()
         controls = (strategy_memory or {}).get("controls") if isinstance(strategy_memory, dict) else {}
         controls = controls if isinstance(controls, dict) else {}
         pilot_candidate_id = str(controls.get("pilot_candidate_id", "") or "").strip()
         benchmark_watch_candidate = str(controls.get("benchmark_watch_candidate", "") or "").strip()
         entry_mode = str(controls.get("entry_mode", "") or "").strip().lower()
         carry_in_mode = str(controls.get("carry_in_mode", "") or "").strip().lower()
+        base_candidate = next((candidate for candidate in candidates if candidate.strategy_id == base_id), None)
 
         def _score(candidate: StrategyCandidate) -> float:
             score = float(candidate.backtest.expectancy_pct or 0.0) * 8.0
@@ -271,6 +273,14 @@ class StrategyResearchAgent:
         ranked = sorted(candidates, key=_score, reverse=True)
         selected = ranked[0]
         selection_mode = "memory_ranked"
+        if (
+            base_candidate is not None
+            and selected.strategy_id != base_candidate.strategy_id
+            and selected.backtest.trade_count <= 0
+            and base_candidate.backtest.trade_count > 0
+        ):
+            selected = base_candidate
+            selection_mode = "memory_base_guard"
         if pilot_candidate_id and selected.strategy_id == pilot_candidate_id:
             selection_mode = "memory_pilot_aligned"
         elif benchmark_watch_candidate and selected.strategy_id == benchmark_watch_candidate:
