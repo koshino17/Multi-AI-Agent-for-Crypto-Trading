@@ -16,6 +16,29 @@
 
 ---
 
+## v1.1.14 - Use canonical Bybit candles for completed daily market-path reviews
+
+### Why
+
+- The TradePulse daily stewardship run on Monday, August 31, 2026 reviewed the completed `2026-08-30T12:00:00+08:00 -> 2026-08-31T12:00:00+08:00` `bybit-demo-perp` window and found the runner, decision logs, daily report, and Notion heartbeat all fresh enough to trust.
+- The defect was in the review evidence: completed daily reports were still building `market_path_review` from decision-time price samples, not the canonical Bybit candle path for the full noon-to-noon window.
+- That weakens PO3, POC, VAH, VAL, FVG, rebound, and drawdown diagnosis because sparse monitor samples can drift from the real 15m market path even when the runner is healthy.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Completed `bybit-demo-perp` daily summaries now prefer Bybit public OHLCV candles for the focus symbol and report window when building `market_path_review`.
+  - The action overlay for rebound and drawdown legs still comes from TradePulse decision records, so the report keeps showing what the system actually did during the real market move.
+  - If public candle fetch fails or the mode is not `bybit-demo-perp`, TradePulse falls back to the prior decision-sample path instead of breaking report generation.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage that completed perp windows use public OHLCV and that fetch failures cleanly fall back to decision samples.
+
+### Result
+
+- TradePulse daily review, ground truth, and oracle postmortem can now judge the completed market path from the real Bybit candle series instead of sparse monitor snapshots.
+- The next noon-window review should produce more reliable PO3 and participation diagnostics before any strategy or pilot decision is considered.
+
 ## v1.1.13 - Keep active shadow-watch experiments aligned across reports and memory
 
 ### Why

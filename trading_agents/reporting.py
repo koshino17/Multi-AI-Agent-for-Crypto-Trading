@@ -10,6 +10,7 @@ from statistics import fmean
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from trading_agents.alpha_arena import fetch_bybit_public_klines
 from trading_agents.strategy_memory import normalize_strategy_memory_payload
 
 
@@ -36,6 +37,16 @@ STAGE_LABELS = {
     "selector": "Selector",
     "executor": "Executor",
     "post_trade_evaluator": "Evaluator",
+}
+TIMEFRAME_TO_MINUTES = {
+    "1m": 1.0,
+    "3m": 3.0,
+    "5m": 5.0,
+    "15m": 15.0,
+    "30m": 30.0,
+    "1h": 60.0,
+    "4h": 240.0,
+    "1d": 1440.0,
 }
 
 
@@ -539,13 +550,7 @@ def _build_control_impact_summary(
     }
 
 
-def _build_market_path_review(records: list[dict[str, Any]], *, focus_symbol: str = "") -> dict[str, Any]:
-    symbol_counts = Counter(str(item.get("selected_symbol", "")).strip() for item in records if item.get("selected_symbol"))
-    symbol_counts = Counter({symbol: count for symbol, count in symbol_counts.items() if symbol})
-    chosen_symbol = focus_symbol.strip() or (symbol_counts.most_common(1)[0][0] if symbol_counts else "")
-    if not chosen_symbol:
-        return {}
-
+def _market_path_samples_from_records(records: list[dict[str, Any]], chosen_symbol: str) -> list[dict[str, Any]]:
     samples: list[dict[str, Any]] = []
     for item in _symbol_observation_records(records, chosen_symbol):
         price = _safe_float(item.get("last_price"))
@@ -564,9 +569,17 @@ def _build_market_path_review(records: list[dict[str, Any]], *, focus_symbol: st
                 "source": _decision_source(item),
             }
         )
-    if len(samples) < 2:
-        return {}
+    return samples
 
+
+def _build_market_path_review_from_samples(
+    samples: list[dict[str, Any]],
+    *,
+    records: list[dict[str, Any]],
+    chosen_symbol: str,
+    summary_label: str,
+    source: str,
+) -> dict[str, Any]:
     samples.sort(key=lambda item: item["timestamp_dt"])
     first_sample = samples[0]
     last_sample = samples[-1]
@@ -606,20 +619,24 @@ def _build_market_path_review(records: list[dict[str, Any]], *, focus_symbol: st
 
     def _window_action_counts(start_dt: datetime, end_dt: datetime) -> dict[str, int]:
         counts: Counter[str] = Counter()
-        for sample in samples:
-            if start_dt <= sample["timestamp_dt"] <= end_dt:
-                counts[sample["action"]] += 1
+        for item in _symbol_observation_records(records, chosen_symbol):
+            timestamp_dt = _parse_timestamp_local(
+                item.get("__record_timestamp_local") or item.get("timestamp") or _accepted_trade_timestamp(item)
+            )
+            if timestamp_dt is None or not (start_dt <= timestamp_dt <= end_dt):
+                continue
+            counts[str(item.get("idea", {}).get("action", "hold")).strip().lower()] += 1
         return dict(counts)
 
     drawdown_actions = _window_action_counts(max_drawdown_start["timestamp_dt"], max_drawdown_end["timestamp_dt"])
     rebound_actions = _window_action_counts(max_rebound_start["timestamp_dt"], max_rebound_end["timestamp_dt"])
 
     summary = (
-        f"{chosen_symbol} 在此報告窗口的採樣盤面由 {first_sample['timestamp_local']} {first_price:.4f} "
+        f"{chosen_symbol} 在此報告窗口的{summary_label}由 {first_sample['timestamp_local']} {first_price:.4f} "
         f"走到 {last_sample['timestamp_local']} {last_price:.4f} ({net_move_pct:+.2f}%)。"
-        f" 採樣高點出現在 {high_sample['timestamp_local']} @ {high_price:.4f}，"
+        f" 高點出現在 {high_sample['timestamp_local']} @ {high_price:.4f}，"
         f"低點出現在 {low_sample['timestamp_local']} @ {low_price:.4f}，"
-        f"採樣區間約 {range_pct:.2f}%。"
+        f"區間約 {range_pct:.2f}%。"
     )
     if max_drawdown_pct < -0.2:
         summary += (
@@ -636,6 +653,7 @@ def _build_market_path_review(records: list[dict[str, Any]], *, focus_symbol: st
 
     return {
         "symbol": chosen_symbol,
+        "source": source,
         "sample_count": len(samples),
         "first_price": round(first_price, 6),
         "first_timestamp_local": str(first_sample["timestamp_local"]),
@@ -661,6 +679,94 @@ def _build_market_path_review(records: list[dict[str, Any]], *, focus_symbol: st
         "max_rebound_action_counts": rebound_actions,
         "summary": summary,
     }
+
+
+def _timeframe_minutes(timeframe: str) -> float:
+    return TIMEFRAME_TO_MINUTES.get(str(timeframe or "").strip().lower(), 0.0)
+
+
+def _bybit_public_market_path_samples(
+    symbol: str,
+    *,
+    timeframe: str,
+    window_start: datetime,
+    window_end: datetime,
+) -> list[dict[str, Any]]:
+    timeframe_minutes = _timeframe_minutes(timeframe)
+    if timeframe_minutes <= 0:
+        return []
+    expected_bars = max(int(((window_end - window_start).total_seconds() / 60.0) / timeframe_minutes), 2)
+    candles = fetch_bybit_public_klines(symbol, timeframe, limit=min(max(expected_bars + 8, 16), 1000))
+    samples: list[dict[str, Any]] = []
+    for candle in candles:
+        timestamp_ms = int(candle.get("timestamp_ms", 0) or 0)
+        if timestamp_ms <= 0:
+            continue
+        timestamp_dt = datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc).astimezone(LOCAL_TZ)
+        if not (window_start <= timestamp_dt < window_end):
+            continue
+        samples.append(
+            {
+                "timestamp_local": timestamp_dt.isoformat(),
+                "timestamp_dt": timestamp_dt,
+                "price": _safe_float(candle.get("close")),
+                "action": "hold",
+                "source": "public_ohlcv",
+            }
+        )
+    return samples
+
+
+def _build_market_path_review(
+    records: list[dict[str, Any]],
+    *,
+    focus_symbol: str = "",
+    timeframe: str = "",
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
+    trading_mode: str = "",
+) -> dict[str, Any]:
+    symbol_counts = Counter(str(item.get("selected_symbol", "")).strip() for item in records if item.get("selected_symbol"))
+    symbol_counts = Counter({symbol: count for symbol, count in symbol_counts.items() if symbol})
+    chosen_symbol = focus_symbol.strip() or (symbol_counts.most_common(1)[0][0] if symbol_counts else "")
+    if not chosen_symbol:
+        return {}
+
+    public_samples: list[dict[str, Any]] = []
+    if (
+        str(trading_mode).strip().lower() == "bybit-demo-perp"
+        and timeframe
+        and window_start is not None
+        and window_end is not None
+    ):
+        try:
+            public_samples = _bybit_public_market_path_samples(
+                chosen_symbol,
+                timeframe=timeframe,
+                window_start=window_start,
+                window_end=window_end,
+            )
+        except Exception:
+            public_samples = []
+    if len(public_samples) >= 2:
+        return _build_market_path_review_from_samples(
+            public_samples,
+            records=records,
+            chosen_symbol=chosen_symbol,
+            summary_label="實際 15m K 線盤面",
+            source="bybit_public_ohlcv",
+        )
+
+    record_samples = _market_path_samples_from_records(records, chosen_symbol)
+    if len(record_samples) < 2:
+        return {}
+    return _build_market_path_review_from_samples(
+        record_samples,
+        records=records,
+        chosen_symbol=chosen_symbol,
+        summary_label="採樣盤面",
+        source="decision_samples",
+    )
 
 
 def _annotate_market_path_coverage(
@@ -3601,6 +3707,10 @@ def load_daily_summary_data(
         _build_market_path_review(
             records,
             focus_symbol=focus_symbol,
+            timeframe=str(getattr(settings, "timeframe", "") or ""),
+            window_start=window_start,
+            window_end=window_end,
+            trading_mode=effective_mode,
         ),
         window_start=window_start,
         window_end=window_end,

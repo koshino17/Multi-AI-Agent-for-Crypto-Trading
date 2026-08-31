@@ -1394,6 +1394,104 @@ class RuntimeRegressionTests(unittest.TestCase):
             self.assertIn("stale_market_path_evidence", oracle_payload["root_cause_tags"])
             self.assertEqual(oracle_payload["live_gap"]["market_data_coverage_status"], "low_coverage")
 
+    def test_market_path_review_prefers_bybit_public_ohlcv_for_completed_perp_window(self) -> None:
+        records = [
+            {
+                "selected_symbol": "SOL/USDT",
+                "last_price": 100.0,
+                "__record_timestamp_local": "2026-08-30T12:00:00+08:00",
+                "idea": {"action": "hold"},
+                "decision_source": "base_strategy",
+            },
+            {
+                "selected_symbol": "SOL/USDT",
+                "last_price": 99.5,
+                "__record_timestamp_local": "2026-08-30T12:15:00+08:00",
+                "idea": {"action": "sell"},
+                "decision_source": "base_strategy",
+            },
+        ]
+        window_start = datetime.fromisoformat("2026-08-30T12:00:00+08:00")
+        window_end = datetime.fromisoformat("2026-08-30T12:45:00+08:00")
+        candle_times = [
+            datetime.fromisoformat("2026-08-30T12:00:00+08:00"),
+            datetime.fromisoformat("2026-08-30T12:15:00+08:00"),
+            datetime.fromisoformat("2026-08-30T12:30:00+08:00"),
+        ]
+        candles = [
+            {
+                "timestamp_ms": int(candle_times[0].timestamp() * 1000),
+                "open": 100.0,
+                "high": 100.4,
+                "low": 99.8,
+                "close": 100.2,
+                "volume": 10.0,
+            },
+            {
+                "timestamp_ms": int(candle_times[1].timestamp() * 1000),
+                "open": 100.2,
+                "high": 100.3,
+                "low": 99.0,
+                "close": 99.1,
+                "volume": 12.0,
+            },
+            {
+                "timestamp_ms": int(candle_times[2].timestamp() * 1000),
+                "open": 99.1,
+                "high": 99.6,
+                "low": 98.9,
+                "close": 99.4,
+                "volume": 8.0,
+            },
+        ]
+        with mock.patch("trading_agents.reporting.fetch_bybit_public_klines", return_value=candles):
+            market_path = _build_market_path_review(
+                records,
+                focus_symbol="SOL/USDT",
+                timeframe="15m",
+                window_start=window_start,
+                window_end=window_end,
+                trading_mode="bybit-demo-perp",
+            )
+        self.assertEqual(market_path["source"], "bybit_public_ohlcv")
+        self.assertEqual(market_path["sample_count"], 3)
+        self.assertEqual(market_path["first_price"], 100.2)
+        self.assertEqual(market_path["last_price"], 99.4)
+        self.assertEqual(market_path["max_drawdown_action_counts"], {"hold": 1, "sell": 1})
+
+    def test_market_path_review_falls_back_to_decision_samples_when_public_fetch_fails(self) -> None:
+        records = [
+            {
+                "selected_symbol": "SOL/USDT",
+                "last_price": 101.0,
+                "__record_timestamp_local": "2026-08-30T12:00:00+08:00",
+                "idea": {"action": "hold"},
+                "decision_source": "base_strategy",
+            },
+            {
+                "selected_symbol": "SOL/USDT",
+                "last_price": 102.5,
+                "__record_timestamp_local": "2026-08-30T12:15:00+08:00",
+                "idea": {"action": "buy"},
+                "decision_source": "base_strategy",
+            },
+        ]
+        window_start = datetime.fromisoformat("2026-08-30T12:00:00+08:00")
+        window_end = datetime.fromisoformat("2026-08-30T12:30:00+08:00")
+        with mock.patch("trading_agents.reporting.fetch_bybit_public_klines", side_effect=RuntimeError("offline")):
+            market_path = _build_market_path_review(
+                records,
+                focus_symbol="SOL/USDT",
+                timeframe="15m",
+                window_start=window_start,
+                window_end=window_end,
+                trading_mode="bybit-demo-perp",
+            )
+        self.assertEqual(market_path["source"], "decision_samples")
+        self.assertEqual(market_path["sample_count"], 2)
+        self.assertEqual(market_path["first_price"], 101.0)
+        self.assertEqual(market_path["last_price"], 102.5)
+
     def test_daily_review_fallback_error_is_persisted_without_repeat_for_same_fingerprint(self) -> None:
         class StubReviewer:
             def __init__(self) -> None:
