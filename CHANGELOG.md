@@ -16,6 +16,29 @@
 
 ---
 
+## v1.1.15 - Retry timed-out daily reviews with a compact brief
+
+### Why
+
+- The TradePulse daily stewardship run on Tuesday, September 1, 2026 reviewed the completed `2026-08-31T12:00:00+08:00 -> 2026-09-01T12:00:00+08:00` `bybit-demo-perp` window and found the runner, decision logs, market-path data, and Notion heartbeat fresh enough to trust.
+- The concrete failure was in the review layer: `daily_strategy_review-2026-09-01.json` still persisted `review_status=fallback_error` with `review_error=timed out`, so the saved daily review degraded to fallback prose even though the underlying evidence bundle was healthy.
+- This has recurred across multiple completed windows, which weakens the learning loop and makes noon-window postmortems less reliable than the available runtime data.
+
+### What Changed
+
+- `trading_agents/agents.py`
+  - Added a timeout-aware retry path for `DailyReviewAgent`.
+  - TradePulse now keeps the existing detailed daily-review prompt as the first attempt, but retries once with a much smaller summary brief when the initial LLM call fails with a timeout-shaped error.
+  - The compact retry preserves the same JSON schema and fallback safety, so only timeout cases change behavior.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage that a timed-out first daily-review call retries with a shorter prompt and returns a normal review instead of persisting a fallback error.
+
+### Result
+
+- TradePulse should recover more daily reviews from local LLM latency spikes without relaxing the fallback guardrail when the model is actually unavailable or returns unusable output.
+- The next noon-window review should be more likely to produce a real stored review on the first completed pass instead of another timeout-driven fallback artifact.
+
 ## v1.1.14 - Use canonical Bybit candles for completed daily market-path reviews
 
 ### Why

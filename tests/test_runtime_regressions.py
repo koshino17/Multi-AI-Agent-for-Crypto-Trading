@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from trading_agents.agents import RiskSupervisorAgent, StrategistAgent, StrategyReflectionAgent
+from trading_agents.agents import DailyReviewAgent, RiskSupervisorAgent, StrategistAgent, StrategyReflectionAgent
 from trading_agents.exchange import _build_fvg_features, _build_microstructure_features, _infer_po3_phase_hint
 from trading_agents.llm import _trace_date_label
 from trading_agents.main import (
@@ -1538,6 +1538,79 @@ class RuntimeRegressionTests(unittest.TestCase):
             self.assertEqual(reviewer.calls, 1)
             self.assertEqual(first.get("review_status"), "fallback_error")
             self.assertEqual(second.get("review_status"), "fallback_error")
+
+    def test_daily_review_retries_with_compact_brief_after_timeout(self) -> None:
+        class StubLLM:
+            def __init__(self) -> None:
+                self.prompts: list[str] = []
+                self.traces: list[dict] = []
+
+            def generate_json(self, prompt: str, trace: dict | None = None) -> dict:
+                self.prompts.append(prompt)
+                self.traces.append(trace or {})
+                if len(self.prompts) == 1:
+                    raise TimeoutError("timed out")
+                return {
+                    "title": "Trading Agents Daily Review - 2026-09-01",
+                    "operations_summary": "ops ok",
+                    "decision_summary": "decision ok",
+                    "strategist_review": "strategist ok",
+                    "risk_review": "risk ok",
+                    "benchmark_review": "benchmark ok",
+                    "execution_review": "execution ok",
+                    "consensus_summary": "consensus ok",
+                    "improvement_directions": ["one"],
+                    "action_items": ["two"],
+                }
+
+        reviewer = DailyReviewAgent(llm_client=StubLLM())
+        snapshot, metadata = reviewer.evaluate_with_metadata(
+            "2026-09-01",
+            {
+                "date_label": "2026-09-01",
+                "window_start": "2026-08-31T12:00:00+08:00",
+                "window_end": "2026-09-01T12:00:00+08:00",
+                "financial_snapshot": {"daily_pnl_usdt": -0.09, "daily_pnl_pct": -0.02, "capital_utilization_pct": 0.0},
+                "loss_attribution": {"primary_driver": "no-trade day", "carry_in_closed_count": 0, "new_closed_count": 0},
+                "symbol_postmortem": {"symbol": "SOL/USDT", "summary": "hold day"},
+                "market_path_review": {"symbol": "SOL/USDT", "max_drawdown_pct": -1.9, "max_rebound_pct": 3.8},
+                "latest": {
+                    "selected_symbol": "SOL/USDT",
+                    "idea": {"action": "hold", "score": 0.45},
+                    "decision_source": "memory_guard",
+                    "approval": {},
+                    "strategy_research": {
+                        "selected_strategy_id": "grid_range_reversion_maker_v1",
+                        "current_signal": "hold",
+                        "current_adx": 13.47,
+                        "current_volume_ratio": 1.31,
+                    },
+                },
+                "external_benchmarks": {
+                    "top_candidates_live_cost": [
+                        {
+                            "candidate_id": "donchian_adx_keltner_v1",
+                            "symbol": "SOL/USDT",
+                            "expectancy_pct": 0.08,
+                            "profit_factor": 1.26,
+                        }
+                    ]
+                },
+                "strategy_memory_current": {
+                    "controls": {
+                        "fallback_entry_mode": "base_only",
+                        "entry_mode": "capital_preservation",
+                        "benchmark_watch_candidate": "donchian_adx_keltner_v1",
+                    }
+                },
+            },
+        )
+        self.assertEqual(metadata["review_status"], "ok")
+        self.assertFalse(metadata["used_fallback"])
+        self.assertEqual(snapshot.operations_summary, "ops ok")
+        self.assertEqual(reviewer.llm_client.traces[0]["stage"], "evaluate")
+        self.assertEqual(reviewer.llm_client.traces[1]["stage"], "evaluate_compact_retry")
+        self.assertLess(len(reviewer.llm_client.prompts[1]), len(reviewer.llm_client.prompts[0]))
 
     def test_prefilter_blocks_negative_edge_candidate_before_risk(self) -> None:
         strategy_research = StrategyResearchSnapshot(
