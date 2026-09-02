@@ -16,7 +16,7 @@
 
 ---
 
-## v1.1.15 - Add live-cost proxy evidence to shadow benchmark mismatch reviews
+## v1.1.16 - Add live-cost proxy evidence to shadow benchmark mismatch reviews
 
 ### Why
 
