@@ -16,6 +16,28 @@
 
 ---
 
+## v1.1.15 - Add live-cost proxy evidence to shadow benchmark mismatch reviews
+
+### Why
+
+- The TradePulse daily stewardship run on Tuesday, September 2, 2026 reviewed the completed `2026-09-01T12:00:00+08:00 -> 2026-09-02T12:00:00+08:00` `bybit-demo-perp` window and found the installed runner, decision logs, Notion review, and Bybit candle-backed ground truth fresh enough to trust.
+- The defect was in the profitability review loop: `Shadow Benchmark Watch` kept comparing live-cost candidates against the custom-cost `grid_range_reversion_maker_v1` baseline, then repeating the same `cost_model_mismatch` warning without surfacing a same-cost reference.
+- That left TradePulse with a non-actionable research warning across multiple windows even when the same benchmark snapshot already contained a valid live-cost proxy baseline for the equivalent grid strategy.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - When the live baseline uses a custom maker-cost variant, shadow-watch mismatch reports now look for a same-symbol live-cost proxy baseline (`grid_range_reversion_v1`) in the same benchmark snapshot.
+  - Shadow-watch payloads now carry proxy-baseline deltas so the daily report can show an apples-to-apples live-cost comparison without pretending the real live baseline changed.
+  - Daily summaries now render `Live-Cost Proxy Baseline` and `Comparable Delta vs Proxy` inside `Shadow Benchmark Watch` whenever that proxy evidence exists.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage that cost-mismatch shadow reviews expose proxy-baseline evidence and render it in the daily summary.
+
+### Result
+
+- TradePulse still blocks unsafe promotion from mixed-cost comparisons, but the next noon-window review can judge whether a shadow candidate is genuinely improving against a comparable live-cost reference instead of looping on the same generic mismatch warning.
+
 ## v1.1.14 - Use canonical Bybit candles for completed daily market-path reviews
 
 ### Why

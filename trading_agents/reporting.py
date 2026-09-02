@@ -1580,6 +1580,9 @@ def _build_shadow_benchmark_watch(
     benchmark_reports_dir: Path | None = None,
     cutoff: datetime | None = None,
 ) -> dict[str, Any]:
+    comparable_baseline_aliases = {
+        "grid_range_reversion_maker_v1": "grid_range_reversion_v1",
+    }
     payload = external_benchmarks or {}
     baseline_id = str(payload.get("baseline_strategy_id", "")).strip() or "donchian_adx_perp_v1"
     focus_symbol = str(focus_symbol or "").strip()
@@ -1722,6 +1725,30 @@ def _build_shadow_benchmark_watch(
     trade_count_delta = int(watch.get("trade_count", 0) or 0) - int(baseline.get("trade_count", 0) or 0)
     watch_cost = float(watch.get("total_round_trip_cost_pct", 0.0) or 0.0)
     cost_model_comparable = abs(watch_cost - baseline_cost) <= 1e-9
+    comparable_baseline_id = str(comparable_baseline_aliases.get(baseline_id, "") or "").strip()
+    comparable_baseline = {}
+    comparable_expectancy_delta = 0.0
+    comparable_profit_factor_delta = 0.0
+    comparable_cumulative_delta = 0.0
+    comparable_trade_count_delta = 0
+    if not cost_model_comparable and comparable_baseline_id:
+        comparable_baseline = _find(comparable_baseline_id)
+        comparable_baseline_cost = float(comparable_baseline.get("total_round_trip_cost_pct", 0.0) or 0.0)
+        if not comparable_baseline or abs(comparable_baseline_cost - watch_cost) > 1e-9:
+            comparable_baseline = {}
+        else:
+            comparable_expectancy_delta = float(watch.get("expectancy_pct", 0.0)) - float(
+                comparable_baseline.get("expectancy_pct", 0.0)
+            )
+            comparable_profit_factor_delta = float(watch.get("profit_factor", 0.0)) - float(
+                comparable_baseline.get("profit_factor", 0.0)
+            )
+            comparable_cumulative_delta = float(watch.get("cumulative_return_pct", 0.0)) - float(
+                comparable_baseline.get("cumulative_return_pct", 0.0)
+            )
+            comparable_trade_count_delta = int(watch.get("trade_count", 0) or 0) - int(
+                comparable_baseline.get("trade_count", 0) or 0
+            )
     is_watch_leader = str(leader.get("candidate_id", "")).strip() == chosen_watch_id
     streak = _shadow_promotion_streak(
         benchmark_reports_dir,
@@ -1758,6 +1785,15 @@ def _build_shadow_benchmark_watch(
         else "no_upgrade_signal"
     )
     next_step = (
+        (
+            f"這個 watch 仍不能直接拿去對比 live baseline `{baseline_id}`；"
+            f"但同快照的 live-cost proxy `{comparable_baseline_id}` 已可作研究對照，"
+            f"目前 delta=expectancy {comparable_expectancy_delta:+.2f}% / "
+            f"profit factor {comparable_profit_factor_delta:+.2f} / trades {comparable_trade_count_delta:+d}。"
+            " 若 proxy 對照持續改善，再決定是否升級成更正式的 live-cost shadow watch。"
+        )
+        if verdict == "cost_model_mismatch" and comparable_baseline
+        else
         "先不要把這個 shadow delta 當成 promotion 證據；請改用相同 round-trip 成本假設的 baseline/candidate 比較，或直接查看 live-cost leaderboard。"
         if verdict == "cost_model_mismatch"
         else f"將 `{chosen_watch_id}` 納入更正式的 shadow-vs-live 追蹤，並觀察是否連續多次 benchmark 快照維持領先。"
@@ -1777,6 +1813,14 @@ def _build_shadow_benchmark_watch(
         + (
             f" 但兩者 round-trip cost 假設不同（baseline {baseline_cost:.2f}% vs watch {watch_cost:.2f}%），"
             "這個差值只能作研究參考，不能直接當成 live promotion 依據。"
+            + (
+                f" 同快照 live-cost proxy `{comparable_baseline_id}` 對照下，"
+                f"watch 的 expectancy 差值為 {comparable_expectancy_delta:+.2f}% 、"
+                f"profit factor 差值為 {comparable_profit_factor_delta:+.2f}，"
+                f"trade count 差值 {comparable_trade_count_delta:+d}。"
+                if comparable_baseline
+                else ""
+            )
             if not cost_model_comparable
             else ""
         )
@@ -1791,6 +1835,12 @@ def _build_shadow_benchmark_watch(
         "watch": watch,
         "leader": leader,
         "cost_model_comparable": cost_model_comparable,
+        "comparable_baseline": comparable_baseline,
+        "comparable_baseline_candidate_id": comparable_baseline_id if comparable_baseline else "",
+        "comparable_expectancy_delta_pct": round(comparable_expectancy_delta, 4) if comparable_baseline else 0.0,
+        "comparable_profit_factor_delta": round(comparable_profit_factor_delta, 4) if comparable_baseline else 0.0,
+        "comparable_cumulative_return_delta_pct": round(comparable_cumulative_delta, 4) if comparable_baseline else 0.0,
+        "comparable_trade_count_delta": comparable_trade_count_delta if comparable_baseline else 0,
         "expectancy_delta_pct": round(expectancy_delta, 4),
         "profit_factor_delta": round(profit_factor_delta, 4),
         "cumulative_return_delta_pct": round(cumulative_delta, 4),
@@ -4267,6 +4317,17 @@ def build_daily_summary(
         lines.append(
             f"- Cost Comparable: {'yes' if bool(shadow_benchmark_watch.get('cost_model_comparable', True)) else 'no'}"
         )
+        comparable_baseline = shadow_benchmark_watch.get("comparable_baseline") or {}
+        if comparable_baseline:
+            lines.append(
+                f"- Live-Cost Proxy Baseline: {comparable_baseline.get('candidate_id', 'n/a')} "
+                f"(expectancy={float(comparable_baseline.get('expectancy_pct', 0.0)):+.2f}% | "
+                f"profit_factor={float(comparable_baseline.get('profit_factor', 0.0)):.2f} | "
+                f"trades={int(comparable_baseline.get('trade_count', 0))})"
+            )
+            comparable_cost_note = _benchmark_cost_note(comparable_baseline)
+            if comparable_cost_note:
+                lines.append(f"  cost={comparable_cost_note}")
         if shadow_benchmark_watch.get("status") == "ready":
             lines.append(
                 f"- Shadow Candidate: {watch.get('candidate_id', 'n/a')} "
@@ -4287,6 +4348,13 @@ def build_daily_summary(
                 f"- Promotion Streak: {int(shadow_benchmark_watch.get('promotion_streak', 0))} "
                 f"(qualified now={bool(shadow_benchmark_watch.get('current_snapshot_qualified', False))})"
             )
+            if comparable_baseline:
+                lines.append(
+                    f"- Comparable Delta vs Proxy: expectancy {float(shadow_benchmark_watch.get('comparable_expectancy_delta_pct', 0.0)):+.2f}% | "
+                    f"profit factor {float(shadow_benchmark_watch.get('comparable_profit_factor_delta', 0.0)):+.2f} | "
+                    f"cumulative {float(shadow_benchmark_watch.get('comparable_cumulative_return_delta_pct', 0.0)):+.2f}% | "
+                    f"trades {int(shadow_benchmark_watch.get('comparable_trade_count_delta', 0)):+d}"
+                )
         lines.append(f"- Verdict: {shadow_benchmark_watch.get('verdict', 'n/a')}")
         if shadow_benchmark_watch.get("summary"):
             lines.append(f"- Summary: {shadow_benchmark_watch.get('summary')}")

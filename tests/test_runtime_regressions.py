@@ -1089,6 +1089,15 @@ class RuntimeRegressionTests(unittest.TestCase):
                 "results": {
                     "SOL/USDT": [
                         {
+                            "candidate_id": "bollinger_keltner_extreme_reversion_v1",
+                            "expectancy_pct": 0.16,
+                            "profit_factor": 1.65,
+                            "trade_count": 12,
+                            "cumulative_return_pct": 0.8,
+                            "total_round_trip_cost_pct": 0.24,
+                            "uses_custom_cost_model": False,
+                        },
+                        {
                             "candidate_id": "grid_range_reversion_maker_v1",
                             "expectancy_pct": -0.10,
                             "profit_factor": 0.45,
@@ -1116,6 +1125,10 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(shadow["verdict"], "cost_model_mismatch")
         self.assertFalse(shadow["cost_model_comparable"])
         self.assertIn("不能直接當成 live promotion 依據", shadow["summary"])
+        self.assertEqual(shadow["comparable_baseline_candidate_id"], "grid_range_reversion_v1")
+        self.assertAlmostEqual(shadow["comparable_expectancy_delta_pct"], 0.45, places=4)
+        self.assertIn("live-cost proxy `grid_range_reversion_v1`", shadow["summary"])
+        self.assertIn("live-cost proxy `grid_range_reversion_v1`", shadow["next_step"])
 
     def test_daily_summary_preserves_requested_watch_candidate_when_costs_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1298,6 +1311,122 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertIn("Top benchmark under live cost model: donchian_adx_perp_v1", content)
         self.assertIn("Research-only custom-cost leader: grid_range_reversion_maker_v1", content)
         self.assertIn("do not compare this custom-cost leader directly", content)
+
+    def test_daily_summary_renders_live_cost_proxy_for_shadow_mismatch(self) -> None:
+        summary = {
+            "mode": "bybit-demo-perp",
+            "total": 0,
+            "proposals": 0,
+            "approved": 0,
+            "executed": 0,
+            "submitted_orders": 0,
+            "rejected_orders": 0,
+            "holds": 0,
+            "blocked": 0,
+            "monitor_heartbeats": 0,
+            "avg_decision_latency_seconds": 0.0,
+            "exchange_minimum_blocked": 0,
+            "latest": {},
+            "blocked_reason_counts": {},
+            "financial_snapshot": {},
+            "equity_curve": {},
+            "avg_scores": {},
+            "action_counts": {},
+            "decision_source_counts": {},
+            "accepted_source_counts": {},
+            "selected_symbol_counts": {},
+            "result_status_counts": {},
+            "long_proposals": 0,
+            "short_proposals": 0,
+            "long_accepted": 0,
+            "short_accepted": 0,
+            "stage_latency_seconds": {},
+            "stage_latency_p95_seconds": {},
+            "llm_wake_enabled_count": 0,
+            "llm_wake_candidate_count": 0,
+            "llm_backend_ok_count": 0,
+            "llm_backend_unavailable_count": 0,
+            "llm_enabled_cycles": 0,
+            "top_traded_symbol": ("n/a", 0),
+            "executed_trade_timeline": [],
+            "external_benchmarks": {},
+            "symbol_postmortem": {},
+            "market_path_review": {},
+            "loss_attribution": {},
+            "shadow_benchmark_watch": {
+                "status": "ready",
+                "focus_symbol": "SOL/USDT",
+                "baseline": {
+                    "candidate_id": "grid_range_reversion_maker_v1",
+                    "expectancy_pct": -0.05,
+                    "profit_factor": 0.82,
+                    "trade_count": 10,
+                    "total_round_trip_cost_pct": 0.05,
+                    "round_trip_fee_pct": 0.04,
+                    "round_trip_slippage_pct": 0.01,
+                    "uses_custom_cost_model": True,
+                },
+                "watch": {
+                    "candidate_id": "bollinger_keltner_extreme_reversion_v1",
+                    "expectancy_pct": 0.16,
+                    "profit_factor": 1.65,
+                    "trade_count": 12,
+                    "total_round_trip_cost_pct": 0.24,
+                    "round_trip_fee_pct": 0.20,
+                    "round_trip_slippage_pct": 0.04,
+                    "uses_custom_cost_model": False,
+                },
+                "comparable_baseline": {
+                    "candidate_id": "grid_range_reversion_v1",
+                    "expectancy_pct": -0.24,
+                    "profit_factor": 0.38,
+                    "trade_count": 10,
+                    "total_round_trip_cost_pct": 0.24,
+                    "round_trip_fee_pct": 0.20,
+                    "round_trip_slippage_pct": 0.04,
+                    "uses_custom_cost_model": False,
+                },
+                "cost_model_comparable": False,
+                "comparable_expectancy_delta_pct": 0.40,
+                "comparable_profit_factor_delta": 1.27,
+                "comparable_cumulative_return_delta_pct": 3.24,
+                "comparable_trade_count_delta": 2,
+                "promotion_streak": 0,
+                "current_snapshot_qualified": False,
+                "verdict": "cost_model_mismatch",
+                "summary": "summary",
+                "next_step": "next",
+            },
+            "strategy_research_latest": {},
+            "daily_strategy_review": {},
+            "external_ai_review": {},
+            "mentor_review": {},
+            "control_impact": {},
+            "agent_trace_archive": {},
+            "ground_truth_artifact": {},
+            "oracle_postmortem_artifact": {},
+            "runner_health": {},
+            "notion_review_status": {},
+            "rejection_reason_counts": {},
+            "trade_review": {},
+        }
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch(
+            "trading_agents.reporting.load_daily_summary_data",
+            return_value=summary,
+        ):
+            content = build_daily_summary(
+                Path(tmpdir),
+                "2026-08-16",
+                Path(tmpdir) / "runner.log",
+                trading_mode="bybit-demo-perp",
+                storage_root=tmpdir,
+            )
+
+        self.assertIn("Live-Cost Proxy Baseline: grid_range_reversion_v1", content)
+        self.assertIn(
+            "Comparable Delta vs Proxy: expectancy +0.40% | profit factor +1.27 | cumulative +3.24% | trades +2",
+            content,
+        )
 
     def test_multi_symbol_daily_focus_prefers_research_focus_for_market_path(self) -> None:
         settings = SimpleNamespace(
