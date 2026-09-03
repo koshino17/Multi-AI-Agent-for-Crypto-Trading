@@ -1599,6 +1599,34 @@ def _build_shadow_benchmark_watch(
                 return item
         return {}
 
+    def _normalized_live_cost_view(row: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(row, dict) or not row:
+            return {}
+        if not bool(row.get("uses_custom_cost_model", False)):
+            return dict(row)
+        live_cost = float(row.get("comparable_live_cost_total_round_trip_cost_pct", 0.0) or 0.0)
+        if live_cost <= 0.0:
+            return {}
+        normalized = dict(row)
+        normalized["expectancy_pct"] = float(row.get("comparable_live_cost_expectancy_pct", row.get("expectancy_pct", 0.0)) or 0.0)
+        normalized["profit_factor"] = float(row.get("comparable_live_cost_profit_factor", row.get("profit_factor", 0.0)) or 0.0)
+        normalized["cumulative_return_pct"] = float(
+            row.get("comparable_live_cost_cumulative_return_pct", row.get("cumulative_return_pct", 0.0)) or 0.0
+        )
+        normalized["avg_return_pct"] = float(row.get("comparable_live_cost_avg_return_pct", row.get("avg_return_pct", 0.0)) or 0.0)
+        normalized["avg_win_pct"] = float(row.get("comparable_live_cost_avg_win_pct", row.get("avg_win_pct", 0.0)) or 0.0)
+        normalized["avg_loss_pct"] = float(row.get("comparable_live_cost_avg_loss_pct", row.get("avg_loss_pct", 0.0)) or 0.0)
+        normalized["trade_count"] = int(row.get("comparable_live_cost_trade_count", row.get("trade_count", 0)) or 0)
+        normalized["round_trip_fee_pct"] = float(row.get("comparable_live_cost_round_trip_fee_pct", row.get("round_trip_fee_pct", 0.0)) or 0.0)
+        normalized["round_trip_slippage_pct"] = float(
+            row.get("comparable_live_cost_round_trip_slippage_pct", row.get("round_trip_slippage_pct", 0.0)) or 0.0
+        )
+        normalized["funding_fee_pct"] = float(row.get("comparable_live_cost_funding_fee_pct", row.get("funding_fee_pct", 0.0)) or 0.0)
+        normalized["total_round_trip_cost_pct"] = live_cost
+        normalized["uses_custom_cost_model"] = False
+        normalized["comparison_normalized_from_custom_cost"] = True
+        return normalized
+
     baseline = _find(baseline_id)
     leader = symbol_rows[0] if symbol_rows and isinstance(symbol_rows[0], dict) else {}
     allowed_shadow_candidates = [
@@ -1716,11 +1744,32 @@ def _build_shadow_benchmark_watch(
             "leader": leader,
         }
 
-    expectancy_delta = float(watch.get("expectancy_pct", 0.0)) - float(baseline.get("expectancy_pct", 0.0))
-    profit_factor_delta = float(watch.get("profit_factor", 0.0)) - float(baseline.get("profit_factor", 0.0))
-    cumulative_delta = float(watch.get("cumulative_return_pct", 0.0)) - float(baseline.get("cumulative_return_pct", 0.0))
-    trade_count_delta = int(watch.get("trade_count", 0) or 0) - int(baseline.get("trade_count", 0) or 0)
-    watch_cost = float(watch.get("total_round_trip_cost_pct", 0.0) or 0.0)
+    baseline_for_compare = baseline
+    watch_for_compare = watch
+    comparison_mode = "direct"
+    if (
+        bool(baseline.get("uses_custom_cost_model", False))
+        and not bool(watch.get("uses_custom_cost_model", False))
+    ):
+        normalized_baseline = _normalized_live_cost_view(baseline)
+        if normalized_baseline:
+            baseline_for_compare = normalized_baseline
+            comparison_mode = "baseline_normalized_to_live_cost"
+    elif (
+        bool(watch.get("uses_custom_cost_model", False))
+        and not bool(baseline.get("uses_custom_cost_model", False))
+    ):
+        normalized_watch = _normalized_live_cost_view(watch)
+        if normalized_watch:
+            watch_for_compare = normalized_watch
+            comparison_mode = "watch_normalized_to_live_cost"
+
+    expectancy_delta = float(watch_for_compare.get("expectancy_pct", 0.0)) - float(baseline_for_compare.get("expectancy_pct", 0.0))
+    profit_factor_delta = float(watch_for_compare.get("profit_factor", 0.0)) - float(baseline_for_compare.get("profit_factor", 0.0))
+    cumulative_delta = float(watch_for_compare.get("cumulative_return_pct", 0.0)) - float(baseline_for_compare.get("cumulative_return_pct", 0.0))
+    trade_count_delta = int(watch_for_compare.get("trade_count", 0) or 0) - int(baseline_for_compare.get("trade_count", 0) or 0)
+    baseline_cost = float(baseline_for_compare.get("total_round_trip_cost_pct", 0.0) or 0.0)
+    watch_cost = float(watch_for_compare.get("total_round_trip_cost_pct", 0.0) or 0.0)
     cost_model_comparable = abs(watch_cost - baseline_cost) <= 1e-9
     is_watch_leader = str(leader.get("candidate_id", "")).strip() == chosen_watch_id
     streak = _shadow_promotion_streak(
@@ -1735,14 +1784,14 @@ def _build_shadow_benchmark_watch(
         is_watch_leader=is_watch_leader,
         expectancy_delta=expectancy_delta,
         profit_factor_delta=profit_factor_delta,
-        trade_count=int(watch.get("trade_count", 0) or 0),
-        watch_expectancy_pct=float(watch.get("expectancy_pct", 0.0) or 0.0),
-        watch_profit_factor=float(watch.get("profit_factor", 0.0) or 0.0),
+        trade_count=int(watch_for_compare.get("trade_count", 0) or 0),
+        watch_expectancy_pct=float(watch_for_compare.get("expectancy_pct", 0.0) or 0.0),
+        watch_profit_factor=float(watch_for_compare.get("profit_factor", 0.0) or 0.0),
     ) if cost_model_comparable else False
     promotion_ready = current_snapshot_qualified and streak >= 3
     watch_positive_edge = (
-        float(watch.get("expectancy_pct", 0.0) or 0.0) > 0.0
-        and float(watch.get("profit_factor", 0.0) or 0.0) > 1.0
+        float(watch_for_compare.get("expectancy_pct", 0.0) or 0.0) > 0.0
+        and float(watch_for_compare.get("profit_factor", 0.0) or 0.0) > 1.0
     )
     verdict = (
         "cost_model_mismatch"
@@ -1778,6 +1827,8 @@ def _build_shadow_benchmark_watch(
             f" 但兩者 round-trip cost 假設不同（baseline {baseline_cost:.2f}% vs watch {watch_cost:.2f}%），"
             "這個差值只能作研究參考，不能直接當成 live promotion 依據。"
             if not cost_model_comparable
+            else " 此比較已將 custom-cost 一側正規化到 live cost。"
+            if comparison_mode != "direct"
             else ""
         )
     )
@@ -1787,9 +1838,12 @@ def _build_shadow_benchmark_watch(
         "baseline_candidate_id": baseline_id,
         "watch_candidate_id": chosen_watch_id,
         "selection_source": selection_source,
-        "baseline": baseline,
-        "watch": watch,
+        "baseline": baseline_for_compare,
+        "watch": watch_for_compare,
+        "baseline_raw": baseline,
+        "watch_raw": watch,
         "leader": leader,
+        "comparison_mode": comparison_mode,
         "cost_model_comparable": cost_model_comparable,
         "expectancy_delta_pct": round(expectancy_delta, 4),
         "profit_factor_delta": round(profit_factor_delta, 4),

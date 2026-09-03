@@ -51,6 +51,17 @@ class ExternalBenchmarkResult:
     funding_fee_pct: float = 0.0
     total_round_trip_cost_pct: float = 0.0
     uses_custom_cost_model: bool = False
+    comparable_live_cost_trade_count: int = 0
+    comparable_live_cost_avg_return_pct: float = 0.0
+    comparable_live_cost_cumulative_return_pct: float = 0.0
+    comparable_live_cost_avg_win_pct: float = 0.0
+    comparable_live_cost_avg_loss_pct: float = 0.0
+    comparable_live_cost_expectancy_pct: float = 0.0
+    comparable_live_cost_profit_factor: float = 0.0
+    comparable_live_cost_round_trip_fee_pct: float = 0.0
+    comparable_live_cost_round_trip_slippage_pct: float = 0.0
+    comparable_live_cost_funding_fee_pct: float = 0.0
+    comparable_live_cost_total_round_trip_cost_pct: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -235,6 +246,17 @@ def refresh_external_benchmark_suite(
             ).get(candidate.id)
             if result is None:
                 continue
+            comparable_live_cost_result = None
+            if candidate_cost_model != default_cost_model:
+                comparable_live_cost_result = benchmark_signal_groups(
+                    candles,
+                    {candidate.id: signals},
+                    hold_bars=candidate.hold_bars,
+                    take_profit_pct=candidate.take_profit_pct,
+                    stop_loss_pct=candidate.stop_loss_pct,
+                    candidate=candidate,
+                    cost_model=default_cost_model,
+                ).get(candidate.id)
             results_for_symbol.append(
                 ExternalBenchmarkResult(
                     candidate_id=candidate.id,
@@ -256,6 +278,37 @@ def refresh_external_benchmark_suite(
                     funding_fee_pct=candidate_cost_model.funding_fee_pct * 100.0,
                     total_round_trip_cost_pct=candidate_cost_model.total_round_trip_cost_pct * 100.0,
                     uses_custom_cost_model=candidate_cost_model != default_cost_model,
+                    comparable_live_cost_trade_count=(
+                        comparable_live_cost_result.trade_count if comparable_live_cost_result is not None else result.trade_count
+                    ),
+                    comparable_live_cost_avg_return_pct=(
+                        comparable_live_cost_result.avg_return_pct if comparable_live_cost_result is not None else result.avg_return_pct
+                    ),
+                    comparable_live_cost_cumulative_return_pct=(
+                        comparable_live_cost_result.cumulative_return_pct
+                        if comparable_live_cost_result is not None
+                        else result.cumulative_return_pct
+                    ),
+                    comparable_live_cost_avg_win_pct=(
+                        comparable_live_cost_result.avg_win_pct if comparable_live_cost_result is not None else result.avg_win_pct
+                    ),
+                    comparable_live_cost_avg_loss_pct=(
+                        comparable_live_cost_result.avg_loss_pct if comparable_live_cost_result is not None else result.avg_loss_pct
+                    ),
+                    comparable_live_cost_expectancy_pct=(
+                        comparable_live_cost_result.expectancy_pct
+                        if comparable_live_cost_result is not None
+                        else result.expectancy_pct
+                    ),
+                    comparable_live_cost_profit_factor=(
+                        comparable_live_cost_result.profit_factor
+                        if comparable_live_cost_result is not None
+                        else result.profit_factor
+                    ),
+                    comparable_live_cost_round_trip_fee_pct=default_cost_model.round_trip_fee_pct * 100.0,
+                    comparable_live_cost_round_trip_slippage_pct=default_cost_model.round_trip_slippage_pct * 100.0,
+                    comparable_live_cost_funding_fee_pct=default_cost_model.funding_fee_pct * 100.0,
+                    comparable_live_cost_total_round_trip_cost_pct=default_cost_model.total_round_trip_cost_pct * 100.0,
                 )
             )
         results_for_symbol.sort(key=_benchmark_sort_key, reverse=True)

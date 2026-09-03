@@ -1117,6 +1117,52 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertFalse(shadow["cost_model_comparable"])
         self.assertIn("不能直接當成 live promotion 依據", shadow["summary"])
 
+    def test_shadow_benchmark_watch_normalizes_custom_cost_baseline_when_live_cost_view_exists(self) -> None:
+        shadow = _build_shadow_benchmark_watch(
+            {
+                "baseline_strategy_id": "grid_range_reversion_maker_v1",
+                "results": {
+                    "SOL/USDT": [
+                        {
+                            "candidate_id": "bollinger_keltner_extreme_reversion_v1",
+                            "expectancy_pct": 0.05,
+                            "profit_factor": 1.16,
+                            "trade_count": 4,
+                            "cumulative_return_pct": 0.19,
+                            "total_round_trip_cost_pct": 0.24,
+                            "uses_custom_cost_model": False,
+                        },
+                        {
+                            "candidate_id": "grid_range_reversion_maker_v1",
+                            "expectancy_pct": 0.10,
+                            "profit_factor": 1.54,
+                            "trade_count": 29,
+                            "cumulative_return_pct": 2.99,
+                            "total_round_trip_cost_pct": 0.05,
+                            "uses_custom_cost_model": True,
+                            "comparable_live_cost_trade_count": 29,
+                            "comparable_live_cost_expectancy_pct": -0.03,
+                            "comparable_live_cost_profit_factor": 0.92,
+                            "comparable_live_cost_cumulative_return_pct": -0.30,
+                            "comparable_live_cost_total_round_trip_cost_pct": 0.24,
+                            "comparable_live_cost_round_trip_fee_pct": 0.20,
+                            "comparable_live_cost_round_trip_slippage_pct": 0.04,
+                        },
+                    ]
+                },
+            },
+            focus_symbol="SOL/USDT",
+            watch_candidate_id="bollinger_keltner_extreme_reversion_v1",
+        )
+
+        self.assertEqual(shadow["status"], "ready")
+        self.assertTrue(shadow["cost_model_comparable"])
+        self.assertEqual(shadow["comparison_mode"], "baseline_normalized_to_live_cost")
+        self.assertEqual(shadow["verdict"], "keep_shadow_watch")
+        self.assertAlmostEqual(shadow["expectancy_delta_pct"], 0.08)
+        self.assertTrue(shadow["baseline"].get("comparison_normalized_from_custom_cost"))
+        self.assertIn("正規化到 live cost", shadow["summary"])
+
     def test_daily_summary_preserves_requested_watch_candidate_when_costs_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = build_storage_layout(tmpdir)

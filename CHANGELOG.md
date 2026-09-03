@@ -16,6 +16,32 @@
 
 ---
 
+## v1.1.15 - Normalize custom-cost baselines into live-cost shadow comparisons
+
+### Why
+
+- The TradePulse daily stewardship run on Thursday, September 3, 2026 reviewed the completed `2026-09-02T12:00:00+08:00 -> 2026-09-03T12:00:00+08:00` `bybit-demo-perp` window and found the installed runner, decision logs, daily report, and Notion heartbeat fresh enough to trust.
+- The main learning-loop defect was not a broken runner or missing data. It was that the shadow benchmark watch kept comparing the live baseline `grid_range_reversion_maker_v1` under its custom maker-style cost model (`0.05%` round trip) against watch candidates under the live friction model (`0.24%` round trip).
+- That repeatedly collapsed the verdict into `cost_model_mismatch`, which blocked TradePulse from getting a usable baseline-vs-watch attribution even when the benchmark suite had enough information to restate the baseline under live cost.
+
+### What Changed
+
+- `trading_agents/external_benchmarks.py`
+  - External benchmark snapshots now persist a live-cost-normalized view for custom-cost candidates alongside their native research-cost metrics.
+  - This preserves maker-assumption research while also keeping a cost-comparable baseline view available for downstream reporting.
+
+- `trading_agents/reporting.py`
+  - Shadow benchmark watch now reuses the live-cost-normalized view when one side only differs because of a custom cost assumption.
+  - Reports keep the original raw candidate data, but the delta, verdict, and next-step logic can now use a same-cost comparison instead of defaulting to `cost_model_mismatch`.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage for the exact September 3 failure mode where a custom-cost baseline should be normalized to live cost before judging the watch candidate.
+
+### Result
+
+- TradePulse can keep conservative live behavior while producing a more actionable noon-window benchmark attribution for `bybit-demo-perp`.
+- The next completed daily review should be able to say whether the watch candidate is actually better than the baseline under the same friction model, instead of stopping at a cost mismatch warning.
+
 ## v1.1.14 - Use canonical Bybit candles for completed daily market-path reviews
 
 ### Why
