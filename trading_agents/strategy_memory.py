@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 
 LOCAL_TZ = ZoneInfo("Asia/Taipei")
+_BENCHMARK_WATCH_ALIASES = {
+    "bollinger_keltner_extversion_v1": "bollinger_keltner_extreme_reversion_v1",
+}
 
 
 def current_strategy_slot(now: datetime | None = None) -> str:
@@ -47,6 +51,33 @@ def experiment_is_active(experiment: dict[str, Any] | None, *, current_slot: str
     return (current_index - experiment_index) < ttl_windows
 
 
+@lru_cache(maxsize=1)
+def _known_benchmark_candidate_ids() -> frozenset[str]:
+    config_path = Path(__file__).resolve().parent.parent / "config" / "external_benchmark_library.json"
+    try:
+        payload = json.loads(config_path.read_text())
+    except Exception:
+        return frozenset()
+    strategies = payload.get("strategies") if isinstance(payload, dict) else []
+    ids = {
+        str(item.get("id", "")).strip()
+        for item in strategies
+        if isinstance(item, dict) and str(item.get("id", "")).strip()
+    }
+    return frozenset(ids)
+
+
+def normalize_benchmark_watch_candidate(value: Any) -> str:
+    candidate_id = str(value or "").strip()
+    if not candidate_id:
+        return ""
+    candidate_id = _BENCHMARK_WATCH_ALIASES.get(candidate_id, candidate_id)
+    known_ids = _known_benchmark_candidate_ids()
+    if known_ids and candidate_id not in known_ids:
+        return ""
+    return candidate_id
+
+
 def normalize_strategy_memory_payload(payload: dict[str, Any] | None, *, current_slot: str | None = None) -> dict[str, Any]:
     normalized = payload if isinstance(payload, dict) else {}
     normalized.setdefault("slot", "")
@@ -59,11 +90,32 @@ def normalize_strategy_memory_payload(payload: dict[str, Any] | None, *, current
     normalized.setdefault("experiment", {})
     if not isinstance(normalized.get("controls"), dict):
         normalized["controls"] = {}
+    controls = normalized.get("controls") or {}
+    benchmark_watch_candidate = normalize_benchmark_watch_candidate(controls.get("benchmark_watch_candidate"))
+    if benchmark_watch_candidate:
+        controls["benchmark_watch_candidate"] = benchmark_watch_candidate
+    else:
+        controls.pop("benchmark_watch_candidate", None)
     experiment = normalized.get("experiment")
     if not isinstance(experiment, dict):
         normalized["experiment"] = {}
     elif experiment and not experiment_is_active(experiment, current_slot=current_slot):
         normalized["experiment"] = {}
+    elif experiment:
+        control_deltas = experiment.get("control_deltas")
+        if isinstance(control_deltas, dict):
+            delta = control_deltas.get("benchmark_watch_candidate")
+            if isinstance(delta, dict):
+                current_value = normalize_benchmark_watch_candidate(delta.get("current"))
+                previous_value = normalize_benchmark_watch_candidate(delta.get("previous"))
+                if current_value:
+                    delta["current"] = current_value
+                else:
+                    delta.pop("current", None)
+                if previous_value:
+                    delta["previous"] = previous_value
+                else:
+                    delta.pop("previous", None)
     return normalized
 
 

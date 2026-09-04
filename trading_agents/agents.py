@@ -18,7 +18,7 @@ from trading_agents.models import (
     TradeIdea,
 )
 from trading_agents.sentiment import SentimentDataProvider
-from trading_agents.strategy_memory import experiment_is_active
+from trading_agents.strategy_memory import experiment_is_active, normalize_benchmark_watch_candidate
 
 
 def _order_flow_bias(snapshot: MarketSnapshot) -> float:
@@ -2320,6 +2320,8 @@ class StrategyReflectionAgent:
             normalized[key] = max(lower, min(value, upper))
         for key in ("benchmark_watch_candidate", "benchmark_watch_symbol"):
             value = str(raw.get(key, normalized.get(key, "")) or "").strip()
+            if key == "benchmark_watch_candidate":
+                value = normalize_benchmark_watch_candidate(value)
             if value:
                 normalized[key] = value
             else:
@@ -2380,11 +2382,19 @@ class StrategyReflectionAgent:
             and research_verdict in {"shadow_candidate", "promotion_candidate"}
             and not research_uses_custom_cost_model
         ):
-            normalized["benchmark_watch_candidate"] = research_candidate_id
+            normalized_candidate = normalize_benchmark_watch_candidate(research_candidate_id)
+            if normalized_candidate:
+                normalized["benchmark_watch_candidate"] = normalized_candidate
+            else:
+                normalized.pop("benchmark_watch_candidate", None)
             if current_live_symbol:
                 normalized["benchmark_watch_symbol"] = current_live_symbol
         elif live_benchmark_positive_edge and live_symbol_benchmark.get("candidate_id"):
-            normalized["benchmark_watch_candidate"] = str(live_symbol_benchmark.get("candidate_id", "")).strip()
+            normalized_candidate = normalize_benchmark_watch_candidate(live_symbol_benchmark.get("candidate_id", ""))
+            if normalized_candidate:
+                normalized["benchmark_watch_candidate"] = normalized_candidate
+            else:
+                normalized.pop("benchmark_watch_candidate", None)
             normalized["benchmark_watch_symbol"] = str(live_symbol_benchmark.get("symbol", current_live_symbol)).strip()
         elif current_live_symbol:
             normalized["benchmark_watch_symbol"] = current_live_symbol

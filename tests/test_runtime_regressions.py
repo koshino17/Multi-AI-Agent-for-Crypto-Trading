@@ -660,6 +660,46 @@ class RuntimeRegressionTests(unittest.TestCase):
             loaded = load_strategy_memory(path)
         self.assertEqual(loaded.get("experiment"), {})
 
+    def test_strategy_memory_normalizes_misspelled_benchmark_watch_candidate(self) -> None:
+        normalized = normalize_strategy_memory_payload(
+            {
+                "slot": "2026-09-04-night",
+                "controls": {"benchmark_watch_candidate": "bollinger_keltner_extversion_v1"},
+                "experiment": {
+                    "experiment_id": "2026-09-04-night:benchmark_watch_candidate",
+                    "slot": "2026-09-04-night",
+                    "trigger": "benchmark_watch_candidate",
+                    "ttl_windows": 2,
+                    "status": "active",
+                    "control_deltas": {
+                        "benchmark_watch_candidate": {
+                            "previous": "bollinger_keltner_extreme_reversion_v1",
+                            "current": "bollinger_keltner_extversion_v1",
+                        }
+                    },
+                },
+            },
+            current_slot="2026-09-04-night",
+        )
+        self.assertEqual(
+            normalized.get("controls", {}).get("benchmark_watch_candidate"),
+            "bollinger_keltner_extreme_reversion_v1",
+        )
+        self.assertEqual(
+            normalized.get("experiment", {}).get("control_deltas", {}).get("benchmark_watch_candidate", {}).get("current"),
+            "bollinger_keltner_extreme_reversion_v1",
+        )
+
+    def test_strategy_reflection_drops_unknown_benchmark_watch_candidate(self) -> None:
+        agent = StrategyReflectionAgent(llm_client=None)
+        normalized = agent._normalize_controls(  # type: ignore[attr-defined]
+            {"benchmark_watch_candidate": "not_a_real_candidate_v1"},
+            {},
+            reflection_context={"current_live_symbol": "SOL/USDT"},
+        )
+        self.assertNotIn("benchmark_watch_candidate", normalized)
+        self.assertEqual(str(normalized.get("benchmark_watch_symbol", "")), "SOL/USDT")
+
     def test_build_experiment_drops_expired_previous_experiment_when_controls_hold(self) -> None:
         agent = StrategyReflectionAgent(llm_client=None)
         experiment = agent._build_experiment(  # type: ignore[attr-defined]

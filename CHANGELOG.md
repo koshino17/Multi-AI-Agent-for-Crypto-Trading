@@ -16,6 +16,25 @@
 
 ---
 
+## v1.1.16 - Restore complete benchmark learning controls in the live release
+
+### Why
+
+- The TradePulse daily stewardship run on Saturday, September 5, 2026 reviewed the completed `2026-09-04T12:00:00+08:00 -> 2026-09-05T12:00:00+08:00` `bybit-demo-perp` window and found the runner, decision logs, daily report, and Notion heartbeat fresh enough to trust.
+- The window had 98 holds and no orders while SOL/USDT fell 1.69%, including a 3.70% down leg. More importantly, the installed release had drifted across two prior scoped branches: benchmark snapshots lacked the live-cost-normalized fields, while benchmark-watch ID validation was also absent from the installed Python modules.
+- That regression let a custom-cost `grid_range_reversion_maker_v1` result at 0.05% round-trip friction steer strategy memory even though the configured live-cost model was 0.24%, so the reported `baseline_confirmed` conclusion was not valid promotion evidence.
+
+### What Changed
+
+- Integrated the live-cost-normalized benchmark evidence path and shadow comparison logic with benchmark-watch ID normalization in one release branch.
+- Preserved custom maker-cost research separately while requiring cost-comparable evidence for live shadow decisions.
+- Added regression coverage for both live-cost comparison and invalid or misspelled watch IDs so a later runtime sync cannot silently drop either safeguard.
+
+### Result
+
+- TradePulse can rebuild benchmark and daily-review artifacts using the complete learning-control release rather than a partial branch deployment.
+- The live baseline remains in capital-preservation mode; no strategy is promoted from this low-sample, cost-mismatched window.
+
 ## v1.1.15 - Normalize custom-cost baselines into live-cost shadow comparisons
 
 ### Why
