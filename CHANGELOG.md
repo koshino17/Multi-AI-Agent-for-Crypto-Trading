@@ -16,6 +16,32 @@
 
 ---
 
+## v1.1.15 - Normalize invalid benchmark watch ids before they poison strategy memory
+
+### Why
+
+- The TradePulse daily stewardship run on Friday, September 4, 2026 reviewed the completed `2026-09-03T12:00:00+08:00 -> 2026-09-04T12:00:00+08:00` `bybit-demo-perp` window and found the installed runner healthy, fresh, and still cycling on `SOL/USDT`.
+- The completed evidence bundle showed a learning-loop defect: reflection and selector memory carried `benchmark_watch_candidate=bollinger_keltner_extversion_v1`, but that id does not exist in the external benchmark library.
+- That invalid watch id can pollute strategy memory, shadow-watch experiments, selector context, and the next noon-window review even when the live runtime is otherwise healthy.
+
+### What Changed
+
+- `trading_agents/strategy_memory.py`
+  - Added benchmark-watch candidate normalization that repairs known aliases and drops unknown ids when strategy memory is loaded or normalized.
+  - Active experiment `control_deltas` for `benchmark_watch_candidate` now get the same canonicalization so the saved watch state remains internally coherent.
+
+- `trading_agents/agents.py`
+  - Reflection control normalization now validates `benchmark_watch_candidate` before preserving LLM output, research recommendations, or live benchmark fallbacks.
+
+- `tests/test_runtime_regressions.py`
+  - Added regression coverage that the known `bollinger_keltner_extversion_v1` typo is repaired to `bollinger_keltner_extreme_reversion_v1`.
+  - Added regression coverage that unknown benchmark watch ids are dropped instead of being written into live controls.
+
+### Result
+
+- TradePulse no longer lets an invalid shadow-watch candidate id survive into saved strategy memory and downstream reflection state.
+- The next noon-window review should evaluate a real benchmark candidate instead of a misspelled placeholder.
+
 ## v1.1.14 - Use canonical Bybit candles for completed daily market-path reviews
 
 ### Why
