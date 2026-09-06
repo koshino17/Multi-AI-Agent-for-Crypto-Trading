@@ -1661,6 +1661,39 @@ def _build_shadow_benchmark_watch(
         and float(baseline.get("profit_factor", 0.0) or 0.0) > 1.0
     )
     baseline_cost = float(baseline.get("total_round_trip_cost_pct", 0.0) or 0.0)
+    if requested_watch and requested_watch == baseline_id and baseline:
+        baseline_for_report = _normalized_live_cost_view(baseline) or dict(baseline)
+        return {
+            "status": "baseline_confirmed",
+            "focus_symbol": focus_symbol,
+            "baseline_candidate_id": baseline_id,
+            "watch_candidate_id": baseline_id,
+            "selection_source": "requested_baseline",
+            "baseline": baseline_for_report,
+            "watch": baseline_for_report,
+            "baseline_raw": baseline,
+            "watch_raw": baseline,
+            "leader": leader,
+            "comparison_mode": (
+                "baseline_normalized_to_live_cost"
+                if bool(baseline_for_report.get("comparison_normalized_from_custom_cost"))
+                else "direct"
+            ),
+            "cost_model_comparable": True,
+            "expectancy_delta_pct": 0.0,
+            "profit_factor_delta": 0.0,
+            "cumulative_return_delta_pct": 0.0,
+            "trade_count_delta": 0,
+            "is_watch_leader": leader_id == baseline_id,
+            "promotion_streak": 0,
+            "current_snapshot_qualified": False,
+            "verdict": "baseline_confirmed",
+            "summary": (
+                f"{focus_symbol} 上，requested shadow candidate `{baseline_id}` 就是 live baseline，"
+                "因此沒有獨立候選或可用的 promotion delta。"
+            ),
+            "next_step": "清除自我對照 watch，並用下一個具成本可比性的非 baseline 候選建立 shadow 證據。",
+        }
     if (
         not requested_watch
         and recommended_watch_id

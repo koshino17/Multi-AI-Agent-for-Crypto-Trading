@@ -1203,6 +1203,41 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertTrue(shadow["baseline"].get("comparison_normalized_from_custom_cost"))
         self.assertIn("正規化到 live cost", shadow["summary"])
 
+    def test_shadow_benchmark_watch_does_not_treat_baseline_as_its_own_candidate(self) -> None:
+        shadow = _build_shadow_benchmark_watch(
+            {
+                "baseline_strategy_id": "grid_range_reversion_maker_v1",
+                "results": {
+                    "SOL/USDT": [
+                        {
+                            "candidate_id": "grid_range_reversion_maker_v1",
+                            "expectancy_pct": -0.09,
+                            "profit_factor": 0.67,
+                            "trade_count": 6,
+                            "cumulative_return_pct": -0.54,
+                            "total_round_trip_cost_pct": 0.05,
+                            "uses_custom_cost_model": True,
+                            "comparable_live_cost_trade_count": 6,
+                            "comparable_live_cost_expectancy_pct": -0.28,
+                            "comparable_live_cost_profit_factor": 0.30,
+                            "comparable_live_cost_cumulative_return_pct": -1.68,
+                            "comparable_live_cost_total_round_trip_cost_pct": 0.24,
+                        },
+                    ]
+                },
+            },
+            focus_symbol="SOL/USDT",
+            watch_candidate_id="grid_range_reversion_maker_v1",
+        )
+
+        self.assertEqual(shadow["status"], "baseline_confirmed")
+        self.assertEqual(shadow["verdict"], "baseline_confirmed")
+        self.assertEqual(shadow["selection_source"], "requested_baseline")
+        self.assertEqual(shadow["comparison_mode"], "baseline_normalized_to_live_cost")
+        self.assertAlmostEqual(shadow["baseline"]["expectancy_pct"], -0.28)
+        self.assertFalse(shadow["current_snapshot_qualified"])
+        self.assertIn("沒有獨立候選", shadow["summary"])
+
     def test_daily_summary_preserves_requested_watch_candidate_when_costs_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = build_storage_layout(tmpdir)

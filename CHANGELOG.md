@@ -16,6 +16,27 @@
 
 ---
 
+## v1.1.17 - Reject self-referential shadow benchmark comparisons
+
+### Why
+
+- The TradePulse daily stewardship run on Sunday, September 6, 2026 reviewed the completed `2026-09-05T12:00:00+08:00 -> 2026-09-06T12:00:00+08:00` `bybit-demo-perp` window and found a misleading shadow comparison: the requested candidate and live baseline were both `grid_range_reversion_maker_v1`.
+- The report consequently described the same custom-cost row on both sides as cost-comparable and emitted a zero delta, even though a strategy cannot provide independent promotion evidence against itself.
+
+### What Changed
+
+- `trading_agents/reporting.py`
+  - Treats a requested watch candidate that equals the live baseline as `baseline_confirmed`, not a ready shadow comparison.
+  - Uses the live-cost-normalized baseline view when available and explicitly asks for a distinct, cost-comparable candidate.
+
+- `tests/test_runtime_regressions.py`
+  - Adds regression coverage for the exact self-watch and custom-cost combination observed in the completed September 6 report.
+
+### Result
+
+- TradePulse no longer manufactures a valid-looking shadow delta from one strategy compared with itself.
+- The live strategy remains in capital-preservation mode because all current live-cost benchmark evidence is negative; no strategy is promoted from this reporting correction.
+
 ## v1.1.16 - Restore complete benchmark learning controls in the live release
 
 ### Why
